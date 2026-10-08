@@ -1,0 +1,5 @@
+# Finance yard: keep ERPNext on loopback only (reach it through tailscale serve, not the LAN).
+services:
+  frontend:
+    ports: !override
+      - "127.0.0.1:8080:8080"
