@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "erpnext": {
+      "command": "/absolute/path/to/frappe_docker/finance/mcp/run-frappe-mcp.sh",
+      "args": []
+    }
+  }
+}

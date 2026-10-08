@@ -1,0 +1,2 @@
+# Pinned: the server we picked, see finance/docs/mcp.md.
+frappe-mcp-server==1.2.0
