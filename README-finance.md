@@ -37,8 +37,11 @@ deletes them, so the site and its data are lost.
 ## Login
 
 - User: `Administrator`.
-- The password is kept in `~/ws_yardr_finance/.erpnext-admin` (mode 600).
-  Read it from there. Never copy it into the repo, a commit, or a note.
+- The password reference is `~/ws_yardr_finance/.erpnext-admin` (mode 600); read
+  the current password from there. The `create-site` command in `pwd.yml` sets
+  the initial password to `admin`. The file is authoritative only if it was
+  updated to match the site (for example, after changing the password). Never
+  copy a password into the repo, a commit, or a note.
 
 ## Remotes
 
