@@ -49,6 +49,30 @@ deletes them, so the site and its data are lost.
   updated to match the site (for example, after changing the password). Never
   copy a password into the repo, a commit, or a note.
 
+## API access
+
+Scripts and agents call the API as `api-agent@finance.local`, not as
+`Administrator`. The user is a System User with no login password, and has the
+roles Accounts User, Sales User, Purchase User and Stock User.
+
+- Base URLs:
+  - https://bsaladins-mac-mini-1.tail61fee9.ts.net:8448/api/ (tailnet)
+  - http://127.0.0.1:8080/api/ (on the mini)
+- Header: `Authorization: token <key>:<secret>`
+- Credentials: `~/ws_yardr_finance/.erpnext-api` (mode 600, lines `url=`,
+  `api_key=`, `api_secret=`). Read them from there; never copy them into the
+  repo, a commit or a note.
+- Rerun the provisioning script from the repo root. It is idempotent: a second
+  run changes nothing.
+
+  ```sh
+  finance/scripts/create-api-user.sh            # create or repair the user
+  finance/scripts/create-api-user.sh --rotate   # also issue a new key and secret
+  ```
+
+  The script also issues keys when the keys file is missing, because the
+  secret cannot be read back from the site. Neither value is printed.
+
 ## Remotes
 
 - `origin`: `github.com/bsalad/frappe_docker` (our fork, base `main`).
