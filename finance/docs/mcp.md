@@ -82,13 +82,44 @@ diff it against the GitHub tag, and we did not run its own test suite.
 
 ## Read test
 
-Read-only: nothing was created, updated or deleted in ERPNext. The test client
-(not committed) starts the wrapper over stdio and calls the server.
+Read-only: nothing was created, updated or deleted in ERPNext. The inline
+client below starts the wrapper over stdio and calls the server.
 
-Commands:
+Repeatable command (requires the pinned venv and the private token file):
 
 ```sh
-finance/mcp/venv/bin/python <test client> finance/mcp/run-frappe-mcp.sh
+finance/mcp/venv/bin/python - <<'PY'
+import asyncio
+import json
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+async def main():
+    params = StdioServerParameters(command='finance/mcp/run-frappe-mcp.sh', args=[])
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            tools = await session.list_tools()
+            print('tools:', [tool.name for tool in tools.tools])
+            calls = [
+                ('frappe_ping', {}),
+                ('frappe_search_docs', {'doctype': 'Customer', 'fields': ['name'], 'limit': 1}),
+                ('frappe_search_docs', {'doctype': 'Item', 'fields': ['name', 'item_name'], 'limit': 1}),
+            ]
+            for name, args in calls:
+                result = await session.call_tool(name, args)
+                print(f'### {name} {json.dumps(args)}')
+                for block in result.content:
+                    print(block.text)
+            result = await session.call_tool('frappe_get_doc', {'doctype': 'Item', 'name': 'SKU008'})
+            print('### frappe_get_doc {"doctype": "Item", "name": "SKU008"}')
+            print(result.content[0].text[:700] + ' ...')
+            result = await session.call_tool('frappe_run_method', {'method': 'frappe.auth.get_logged_user'})
+            print('### frappe_run_method {"method": "frappe.auth.get_logged_user"}')
+            print(result.content[0].text)
+
+asyncio.run(main())
+PY
 ```
 
 Output, trimmed (the Item record is cut to its first fields):
