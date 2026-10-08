@@ -32,7 +32,13 @@ deletes them, so the site and its data are lost.
 
 - http://127.0.0.1:8080, bound to loopback only (`finance-local.yml` replaces
   the upstream port mapping with `127.0.0.1:8080:8080`).
-- From other machines, use `tailscale serve`. Do not open the port on the LAN.
+- From the tailnet: https://bsaladins-mac-mini-1.tail61fee9.ts.net:8448 (tailnet
+  only, not public). `tailscale serve` on the mini proxies it to 127.0.0.1:8080.
+- To check or recreate the mapping on the mini, use the Homebrew binary:
+  `/opt/homebrew/bin/tailscale serve status`. The `tailscale` wrapper in
+  `~/.local/bin` points to a missing app, so do not use it.
+- On the mini itself, use the loopback URL http://127.0.0.1:8080.
+- Do not open the port on the LAN.
 
 ## Login
 
