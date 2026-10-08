@@ -1,0 +1,11 @@
+[
+  {
+    "url": "https://github.com/frappe/erpnext",
+    "branch": "v16.50.0"
+  },
+  {
+    "url": "https://github.com/libracore/erpnextswiss",
+    "branch": "v16",
+    "commit": "5d85c45b48f4774cda6ba84ab75f138ad45a55c3"
+  }
+]
