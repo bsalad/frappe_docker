@@ -102,6 +102,23 @@ class MapEntryTest(unittest.TestCase):
         ])
         self.assertEqual(side_totals(doc), (Decimal("107.70"), Decimal("107.70")))
 
+    def test_sales_reversal_debits_the_umsatzsteuer(self):
+        # credit note: income debited 100.00, Umsatzsteuer debited 7.70, receivable credited 107.70
+        doc = ime.map_entry(entry(lines=[line(32, 12, 107.70, tax_id=22, tax_account_id=31)]), lookups(), CURRENCIES)
+        self.assertEqual(rows_of(doc), [
+            ("3000 - Testertrag - bic", 100.0, 0.0),
+            ("2200 - Umsatzsteuer Test - bic", 7.7, 0.0),
+            ("1100 - Debitoren Test - bic", 0.0, 107.7),
+        ])
+
+    def test_purchase_refund_credits_the_vorsteuer(self):
+        doc = ime.map_entry(entry(lines=[line(11, 21, 108.10, tax_id=35, tax_account_id=22)]), lookups(), CURRENCIES)
+        self.assertEqual(rows_of(doc), [
+            ("1020 - Bank Test - bic", 108.1, 0.0),
+            ("5001 - Testaufwand - bic", 0.0, 100.0),
+            ("1170 - Vorsteuer Test - bic", 0.0, 8.1),
+        ])
+
     def test_vat_rows_add_up_to_the_gross_on_odd_amounts(self):
         # 0.33 at 8.1 %: the net is rounded, the tax is the rest, so the gross is kept to the rappen
         doc = ime.map_entry(entry(lines=[line(21, 11, 0.33, tax_id=35, tax_account_id=22)]), lookups(), CURRENCIES)

@@ -20,9 +20,10 @@ screen or the repository.
 Each entry is one Journal Entry with a row for every debit and credit of its
 lines, so it always has at least two rows. Assumptions the posting plan has
 to confirm: the amount of a line is gross (incl. VAT) when the line has a
-tax_id; the VAT is then split off on the side of the tax account (assets and
-expenses are debited, liabilities, income and equity credited, which is the
-side the VAT account carries) and booked to tax_account_id at the rate of its
+tax_id; the VAT is then split off on the side of the income or expense account
+of the line (a purchase debits the Vorsteuer, a sale credits the Umsatzsteuer,
+a reversal the other way round; with no such account the root type of the tax
+account decides) and booked to tax_account_id at the rate of its
 code (import_purchase's VAT_OF_TAX_ID). A code without an Item Tax Template in
 ERPNext is reported, not guessed. Entries of type banking_transaction are
 mapped too, but counted apart: the posting plan decides whether they or the
@@ -51,6 +52,7 @@ BANKING = "banking_transaction"
 TYPES = (SINGLE, COMPOUND, GROUP)
 # the side a VAT account carries: Vorsteuer (assets) is debited, Umsatzsteuer (liabilities) credited
 SIDE_OF_ROOT = {"Asset": "debit", "Expense": "debit", "Liability": "credit", "Income": "credit", "Equity": "credit"}
+PROFIT_AND_LOSS = ("Income", "Expense")
 CENT = Decimal("0.01")
 ZERO = Decimal("0")
 
@@ -111,8 +113,8 @@ def _vat(line, lookups):
 
 def _line_parts(line, lookups, currencies):
     """The (account, side, amount in the line's currency, amount in CHF) of one bexio line, the VAT split off when it has one."""
-    debit, _ = _account(lookups, line.get("debit_account_id"))
-    credit, _ = _account(lookups, line.get("credit_account_id"))
+    debit, debit_root = _account(lookups, line.get("debit_account_id"))
+    credit, credit_root = _account(lookups, line.get("credit_account_id"))
     code = currencies.get(str(line.get("currency_id")))
     if not code:
         raise ip.MappingError("unknown currency {}".format(line.get("currency_id")))
@@ -122,7 +124,14 @@ def _line_parts(line, lookups, currencies):
     vat = _vat(line, lookups)
     if vat is None:
         return [(debit, "debit", amount, gross), (credit, "credit", amount, gross)], factor
-    rate, tax_account, side = vat
+    rate, tax_account, tax_side = vat
+    # the VAT sits on the side of the income or expense account it was charged on, so a reversal (income
+    # debited, receivable credited) debits the Umsatzsteuer; with no such account the tax account's own side decides
+    side = tax_side
+    if debit_root in PROFIT_AND_LOSS and credit_root not in PROFIT_AND_LOSS:
+        side = "debit"
+    elif credit_root in PROFIT_AND_LOSS and debit_root not in PROFIT_AND_LOSS:
+        side = "credit"
     net = (amount / (1 + _money(rate) / 100)).quantize(CENT, rounding=ROUND_HALF_UP)
     net_chf = _chf(net, factor)
     # the CHF tax is the rest of the gross, so the rows add up to the gross in CHF to the rappen
