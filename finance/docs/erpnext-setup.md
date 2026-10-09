@@ -111,6 +111,8 @@ prints what changed. A second run changes nothing.
   Transaction only Accounts Manager keeps it. Other roles lose it, so
   api-agent loses delete on all of them. Frappe already refuses to delete a
   submitted document, for everyone, so this covers drafts and cancelled ones.
+  Gap: Accounts Manager can still delete a cancelled document; closing that
+  needs a server hook or removing the right from Accounts Manager.
 - Track Changes (Version) on the same doctypes (a Property Setter, so a
   migrate keeps it). They were already on.
 
