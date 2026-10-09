@@ -47,6 +47,8 @@ FALLBACK_GROUPS = {
     "Income": ("7E", "Übriger Ertrag (bexio)", "7"),
     "Expense": ("6E", "Übriger Aufwand (bexio)", "6"),
 }
+# the free-text items of the sales and purchase imports (a position without an article): service items
+GENERIC_ITEMS = ("bexio Position", "bexio Aufwand")
 # KMU accounts whose currency follows bexio: 1020 is the CHF account of the bank
 CURRENCY_OF_ACCOUNT = {"1020": "CHF"}
 BANK_GL_ACCOUNTS = {"1020", "1021"}
@@ -67,7 +69,7 @@ VAT_OF_TAX_ID = {
 
 DOCTYPES = [
     "Currency", "Customer Group", "Supplier Group", "Account", "Item", "Item Price",
-    "Customer", "Supplier", "Contact", "Address", "Bank Account", "Purchase Invoice",
+    "Customer", "Supplier", "Contact", "Address", "Bank Account", "Sales Invoice", "Purchase Invoice",
 ]
 
 
@@ -238,7 +240,9 @@ class Importer:
         """Create or update the document keyed by bexio_id; returns its name.
 
         `plan_name` is the name a new document is expected to get, used when
-        nothing is written (dry run) so that links to it can be formed.
+        nothing is written (dry run) so that links to it can be formed. A
+        document that is already submitted (docstatus 1 or 2) is left as it is
+        and counted as skipped: an import never changes a booked document.
         """
         bexio_id = str(bexio_id)
         want = dict(want, bexio_id=bexio_id)
@@ -246,7 +250,11 @@ class Importer:
         try:
             if bexio_id in known:
                 name = known[bexio_id]
-                if differs(self.erp.get(doctype, name), want):
+                have = self.erp.get(doctype, name)
+                if have.get("docstatus", 0) != 0:
+                    self.stats.count(doctype, "skipped")
+                    return name
+                if differs(have, want):
                     if not self.dry_run:
                         self.erp.update(doctype, name, want)
                     self.stats.count(doctype, "updated")
@@ -411,6 +419,23 @@ class Importer:
                     "currency": currency.get(art["currency_id"], "CHF"),
                 }, "-")
 
+    def import_generic_items(self):
+        """The free-text items the sales and purchase imports book their positions to. They are not bexio articles, so they have no bexio id and are looked up by item code."""
+        present = {r["item_code"] for r in self.erp.list("Item", [["item_code", "in", list(GENERIC_ITEMS)]], ["item_code"])}
+        for code in GENERIC_ITEMS:
+            if code in present:
+                self.stats.count("Item", "unchanged")
+                continue
+            try:
+                if not self.dry_run:
+                    self.erp.insert("Item", {
+                        "item_code": code, "item_name": code, "description": code, "item_group": "Services",
+                        "stock_uom": "Nos", "is_stock_item": 0, "is_sales_item": 1, "is_purchase_item": 1,
+                    })
+                self.stats.count("Item", "created")
+            except ErpError as err:
+                self.stats.problem("Item", code, err)
+
     # ---- parties, contacts, addresses ----
 
     def _classify(self):
@@ -418,10 +443,12 @@ class Importer:
         contacts = {c["id"]: c for c in self.data["contacts"]}
         invoiced = {i["contact_id"] for i in self.data["invoices"]}
         vendors = {b["vendor"].strip().lower() for b in self.data["bills"] if b.get("vendor")}
+        # a bill names its vendor as it wrote it, which can be shorter than the contact's name: its supplier_id is the contact
+        billed_ids = {str(b["supplier_id"]) for b in self.data["bills"] if b.get("supplier_id") is not None}
         has_company = {r["contact_sub_id"] for r in self.data["contact_relations"] if r["contact_id"] in contacts}
         kinds = {}
         for c in self.data["contacts"]:
-            billed = display_name(c).lower() in vendors or c["name_1"].strip().lower() in vendors
+            billed = display_name(c).lower() in vendors or c["name_1"].strip().lower() in vendors or str(c["id"]) in billed_ids
             if c["contact_type_id"] == 2 and c["id"] in has_company and c["id"] not in invoiced and not billed:
                 kinds[c["id"]] = set()
                 continue
@@ -540,6 +567,7 @@ class Importer:
         self.import_groups()
         self.import_accounts()
         self.import_items()
+        self.import_generic_items()
         self.import_parties()
         self.import_contacts()
         self.import_addresses()

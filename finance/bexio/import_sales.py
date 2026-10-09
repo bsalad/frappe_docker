@@ -9,9 +9,12 @@ erp-a2ma's. So nothing is written here: --dry-run reads ERPNext and reports
 what a run would map.
 
 A record that cannot be mapped (an unknown VAT code, account, contact, item or
-position type, a discount, a credit note whose invoice is missing) raises
-Unmapped, and the report names it by bexio id only. Amounts are checked
-against bexio's own totals; a difference is reported, never adjusted.
+position type, a credit note whose invoice is missing, a total that differs
+from bexio's by more than 5 rappen) raises Unmapped, and the report names it by
+bexio id only. Amounts are checked against bexio's own totals: the net, the
+taxes per rate and the total. A difference is reported; the total is the one
+exception, a difference of up to 5 rappen goes into the last tax row so that
+the grand total is bexio's to the rappen.
 
 The export directory holds the documents with their positions (the
 single-document calls), next to the entity files of export.py:
@@ -57,14 +60,18 @@ DOCUMENTS = (
 
 # bexio position type -> how it maps. A type not listed here is refused, not guessed.
 POSITION_TYPES = {
-    "KbPositionCustom": "free",       # free-text position with a price and an account
-    "KbPositionArticle": "article",   # a position of an article: the Item by bexio_id
-    "KbPositionText": "text",         # a text line without a price: a row of 0
-    "KbPositionPagebreak": "skip",    # layout only
+    "KbPositionCustom": "free",        # free-text position with a price and an account
+    "KbPositionArticle": "article",    # a position of an article: the Item by bexio_id
+    "KbPositionText": "text",          # a text line without a price: a row of 0
+    "KbPositionPagebreak": "skip",     # layout only
+    "KbPositionSubtotal": "skip",      # a display row of the sum above: ERPNext totals the rows itself
+    "KbPositionDiscount": "discount",  # a document discount: no amount in the export, see _document
 }
 
 CENT = Decimal("0.01")
 ZERO = Decimal("0")
+# the most a document's total may differ from bexio's; the difference goes into the last tax row
+TOTAL_TOLERANCE = Decimal("0.05")
 
 
 class Unmapped(Exception):
@@ -102,23 +109,29 @@ def _tax(tax_id, lookups):
 
 
 def _rows(record, lookups):
-    """The item rows in bexio's order, and the taxable amount per bexio tax id. All amounts positive here."""
-    rows, taxable = [], {}
+    """The item rows in bexio's order, the amounts per bexio tax id, and whether the document has a discount row.
+
+    A position's rate is bexio's unit price. A position discount goes to ERPNext's own discount fields
+    (price list rate and discount percentage), with the rate worked out in cents the way ERPNext does it,
+    so that the row amount is the one ERPNext computes. A line without a tax id has no tax: its amount is
+    kept under the key None and gets no tax row.
+    """
+    rows, amounts, discount_row = [], {}, False
     for pos in record.get("positions") or []:
         kind = POSITION_TYPES.get(pos.get("type"))
         if kind is None:
             raise Unmapped("position type {} is not mapped".format(pos.get("type")))
         if kind == "skip":
             continue
+        if kind == "discount":
+            discount_row = True
+            continue
         text = pos.get("text") or ""
         if kind == "text":
             rows.append({"item_code": GENERIC_ITEM, "description": text, "qty": 1.0, "rate": 0.0, "amount": 0.0})
             continue
-        # a discount would need ERPNext's discount fields; refused until a document needs one
-        if _dec(pos.get("discount_in_percent") or 0):
-            raise Unmapped("position with a discount")
         qty, price = _dec(pos["amount"]), _dec(pos["unit_price"])
-        amount = _cents(qty * price)
+        percent = _dec(pos.get("discount_in_percent") or 0)
         if kind == "article":
             item = lookups["item"].get(str(pos.get("article_id")))
             if item is None:
@@ -128,56 +141,101 @@ def _rows(record, lookups):
         account = lookups["account"].get(str(pos.get("account_id")))
         if account is None:
             raise Unmapped("account {} has no Account".format(pos.get("account_id")))
-        tax_key = str(pos.get("tax_id"))
-        _tax(pos.get("tax_id"), lookups)
-        taxable[tax_key] = taxable.get(tax_key, ZERO) + amount
-        rows.append({"item_code": item, "description": text, "qty": float(qty), "rate": float(price),
-                     "amount": float(amount), "income_account": account})
-    return rows, taxable
+        unit_discount = _cents(price * percent / 100)
+        rate = price - unit_discount
+        row = {"item_code": item, "description": text, "qty": float(qty), "rate": float(rate),
+               "income_account": account}
+        if percent:
+            row.update(price_list_rate=float(price), discount_percentage=float(percent))
+        rows.append(row)
+        key = None
+        if pos.get("tax_id") is not None:
+            _tax(pos["tax_id"], lookups)
+            key = str(pos["tax_id"])
+        amounts[key] = amounts.get(key, ZERO) + _cents(qty * rate)
+    return rows, amounts, discount_row
 
 
 def _document(doctype, record, lookups, credit=False):
-    """(ERPNext document, differences, (net, tax, gross) in the document currency, rate to CHF)."""
+    """(ERPNext document, differences, (net, tax, gross) in the document currency, rate to CHF).
+
+    Prices are net, unless bexio says they include the VAT (mwst_is_net false): then the tax is taken out of
+    the gross and its row is marked as included. The tax is worked out per rate from the lines, the way
+    ERPNext would; bexio's own tax per rate is compared, never copied in. The total is bexio's `total`, the
+    one that includes the VAT after the discounts (total_gross is before them). A difference of up to
+    5 rappen against it goes into the last tax row; a larger one is unmapped.
+    """
     bexio_id = ("credit-" if credit else "") + str(record["id"])
     customer = lookups["customer"].get(str(record.get("contact_id")))
     if customer is None:
         raise Unmapped("contact {} has no Customer".format(record.get("contact_id")))
-    # unit prices that include the VAT would make the net, and so the tax rows, wrong
-    if record.get("mwst_is_net") is False:
-        raise Unmapped("prices include the VAT (mwst_is_net is false)")
+    included = record.get("mwst_is_net") is False
     currency, rate = _currency(record, lookups)
-    rows, taxable = _rows(record, lookups)
+    rows, amounts, discount_row = _rows(record, lookups)
+    if discount_row and (included or credit):
+        raise Unmapped("a document discount with prices including the VAT or on a credit note")
+    lines = sum(amounts.values(), ZERO)
 
-    # one tax row per bexio tax id, computed from the positions of that id with its template's rate;
-    # bexio's own tax per rate is compared below, never copied in
-    taxes, computed = [], {}
-    for key, amount in taxable.items():
+    # a document discount: bexio gives none as an amount, so it is the lines less bexio's net; the
+    # taxes are worked out on what is left, shared out over the lines
+    discount = ZERO
+    if discount_row:
+        if record.get("total_net") is None:
+            raise Unmapped("record has no total_net")
+        discount = lines - _dec(record["total_net"])
+        if discount <= ZERO:
+            raise Unmapped("the document discount does not reduce the net")
+    taxable = lines - discount
+
+    taxes, computed, differences = [], {}, []
+    last_rate = None
+    for key, amount in amounts.items():
+        if key is None:
+            continue
         template = _tax(key, lookups)
-        tax_amount = _cents(amount * template["rate"] / 100)
-        taxes.append({"charge_type": "Actual", "account_head": template["account"],
-                      "description": template["name"], "tax_amount": float(tax_amount)})
+        base = amount * taxable / lines if discount else amount
+        if included:
+            tax_amount = _cents(base * template["rate"] / (100 + template["rate"]))
+        else:
+            tax_amount = _cents(base * template["rate"] / 100)
+        row = {"charge_type": "Actual", "account_head": template["account"],
+               "description": template["name"], "tax_amount": float(tax_amount)}
+        if included:
+            row["included_in_print_rate"] = 1
+        taxes.append(row)
         computed[template["rate"]] = computed.get(template["rate"], ZERO) + tax_amount
-
-    net = sum(taxable.values(), ZERO)
+        last_rate = template["rate"]
     tax = sum(computed.values(), ZERO)
+
     given = {}
     for tax_line in record.get("taxs") or []:
         given[_dec(tax_line["percentage"])] = _cents(_dec(tax_line["value"]))
-    differences = []
     for percentage in sorted(set(computed) | set(given)):
         diff = given.get(percentage, ZERO) - computed.get(percentage, ZERO)
         if diff:
             differences.append("tax {:f}% {:+}".format(percentage.normalize(), diff))
-    gross = net + tax
-    for label, have, field in (("net", net, "total_net"), ("taxes", tax, "total_taxes"), ("gross", gross, "total_gross")):
+
+    if record.get("total") is None:
+        raise Unmapped("record has no total")
+    target = _dec(record["total"])
+    grand = lines if included else taxable + tax
+    absorb = target - grand
+    if abs(absorb) > TOTAL_TOLERANCE:
+        raise Unmapped("total differs from bexio's by {:+}".format(absorb))
+    if absorb:
+        if last_rate is None:
+            raise Unmapped("nothing to take a total difference of {:+} in".format(absorb))
+        taxes[-1]["tax_amount"] = float(_dec(taxes[-1]["tax_amount"]) + absorb)
+        computed[last_rate] += absorb
+        tax += absorb
+        differences.append("total {:+} taken into the last tax row".format(absorb))
+    net = target - tax if included else taxable
+    for label, have, field in (("net", net, "total_net"), ("taxes", tax, "total_taxes")):
         if record.get(field) is None:
             raise Unmapped("record has no {}".format(field))
         diff = have - _dec(record[field])
         if diff:
             differences.append("{} {:+}".format(label, diff))
-            # bexio rounds the gross to 5 rappen; named, but still a difference, never adjusted
-            if field == "total_gross" and _dec(record.get("total_rounding_difference") or 0) == -diff:
-                differences[-1] += " (bexio rounding difference)"
 
     doc = {
         "doctype": doctype, "company": COMPANY, "currency": currency, "conversion_rate": float(rate),
@@ -185,6 +243,8 @@ def _document(doctype, record, lookups, credit=False):
         "terms": "\n".join(part for part in (record.get("header"), record.get("footer")) if part),
         "items": rows, "taxes": taxes,
     }
+    if discount:
+        doc.update(apply_discount_on="Net Total", discount_amount=float(discount))
     if doctype == "Quotation":
         doc.update(quotation_to="Customer", party_name=customer, transaction_date=record["is_valid_from"],
                    valid_till=record.get("is_valid_until"))
@@ -192,7 +252,8 @@ def _document(doctype, record, lookups, credit=False):
         doc["customer"] = customer
     if doctype == "Sales Invoice":
         doc.update(remarks="bexio Nr. {}".format(record.get("document_nr") or ""),
-                   posting_date=record["is_valid_from"], due_date=record.get("is_valid_to"))
+                   posting_date=record["is_valid_from"], due_date=record.get("is_valid_to"),
+                   set_posting_time=1)
     else:
         # ERPNext's Sales Order and Quotation have neither a remarks field nor an income_account on their items
         for row in rows:
@@ -209,10 +270,10 @@ def _document(doctype, record, lookups, credit=False):
             raise Unmapped("original invoice {} is not in ERPNext or the export".format(record.get(ORIGINAL)))
         doc.update(is_return=1, return_against=original)
         for row in rows:
-            row["qty"], row["amount"] = -row["qty"], -row["amount"]
+            row["qty"] = -row["qty"]
         for row in taxes:
             row["tax_amount"] = -row["tax_amount"]
-    totals = tuple(sign * x for x in (net, tax, gross))
+    totals = tuple(sign * x for x in (net, tax, target))
     return doc, differences, totals, rate
 
 

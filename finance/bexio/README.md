@@ -83,8 +83,16 @@ paid). The differences and unmapped records, by bexio id, go to
   rate never picks a template. The tax rows are computed from the positions,
   and bexio's own tax per rate is compared, not copied.
 - Free-text positions and text lines go to the item `bexio Position`; the
-  description keeps the bexio text. Discounts and unknown position types are
-  unmapped, not guessed.
+  description keeps the bexio text. A position discount goes to ERPNext's
+  discount fields. A bexio discount row becomes the document's discount (the
+  lines less bexio's net); subtotal rows are left out. Prices that include the
+  VAT are mapped with the tax row marked as included. An unknown position type
+  is unmapped, not guessed.
+- The total is bexio's `total` (the VAT included, after the discounts). A
+  difference of up to 5 rappen goes into the last tax row; a larger one is
+  unmapped and listed by bexio id.
+- The free-text items `bexio Position` (sales) and `bexio Aufwand` (purchases)
+  are created by `import_master.py`, not by bexio.
 - Credit notes get `bexio_id` `credit-<id>`, since a credit note and an invoice
   can share an id. Their link to the invoice is the field `invoice_id`, not yet
   confirmed against a real export.

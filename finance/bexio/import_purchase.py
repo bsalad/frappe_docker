@@ -18,14 +18,21 @@ it exists. The dry run prints totals per year and currency only. The bexio ids
 of the records it cannot map, and the ones whose totals differ, go to
 <private>/bexio-purchase-dry-run.txt, never to the screen or the repository.
 
-Each bill: the supplier is the Supplier of its contact; each position is one
+Each bill: the supplier is the Supplier of its supplier_id; each line is one
 line of the generic service item "bexio Aufwand", expensed to the Account of
-its booking account. The VAT of a position is the Item Tax Template whose
-bexio_id is the position's bexio tax id, never one picked by rate; a tax id
-with no such template is reported, not guessed. The tax is booked to the
-Vorsteuer account of its kind (1170 Material/DL, 1171 Invest./Aufwand) as one
-tax row per account and template, with the amount worked out per position, so
-the tax total is bexio's to the rappen.
+its booking account. The lines are bills.json's line_items, which the full
+export carries; bills-detail.json (the positions with quantity and unit
+price) is read only where a bill has no line_items. A line's amount is its
+gross when the bill's prices include the VAT (item_net false), and its VAT is
+bexio's tax_calc: the net is the gross less it. A reverse-charge bill (item_net
+true) is not mapped here. The VAT of a line is the Item Tax Template whose
+bexio_id is the line's bexio tax id, never one picked by rate; a tax id with no
+such template is reported, not guessed. The tax is booked to the Vorsteuer
+account of its kind (1170 Material/DL, 1171 Invest./Aufwand) as one tax row
+per account and template, so the tax total is bexio's to the rappen.
+
+An expense with VAT is skipped: its net split is not in the export; the
+bills and the expense step of erp-a2ma take it.
 
 Standard library only, apart from import_master.py.
 """
@@ -40,12 +47,15 @@ from decimal import Decimal, ROUND_HALF_UP
 import import_master as im
 
 ITEM = "bexio Aufwand"
+BASE_CURRENCY = "CHF"
 CENT = Decimal("0.01")
 ZERO = Decimal("0")
-ATTACHMENTS_FIELD = "bexio_attachment_ids"
+ATTACHMENTS_FIELD = "bexio_attachment_ids"  # not a field of ERPNext's Purchase Invoice yet: an insert must drop it
 DETAIL_FILE = "bills-detail.json"
 EXPENSES_FILE = "expenses.json"
 PROBLEMS_FILE = "bexio-purchase-dry-run.txt"
+# the most a line's VAT may differ from its rate worked out on the net
+TAX_TOLERANCE = Decimal("0.05")
 
 # bexio purchase VAT codes: the Vorsteuer account by the kind of cost
 MAT_SV_IDS = (22, 35, 8, 34, 21, 36)  # VM77, VM81, VM25, VM26, VM37, VM38: Material und Dienstleistungen
@@ -83,11 +93,11 @@ class Lookups:
 
 
 def line_vat(tax_id):
-    """(rate, kind, Vorsteuer account) of a purchase position; rate and account are None for a zero-rate position.
+    """(rate, kind, Vorsteuer account) of a purchase line; rate and account are None for a line without VAT.
 
-    The rate is bexio's own for the code, and only sets the amount of the tax; the template is looked up by the code.
+    The rate is bexio's own for the code, and only checks the VAT of the line; the template is looked up by the code.
     """
-    if tax_id in ZERO_RATE_IDS:
+    if tax_id is None or tax_id in ZERO_RATE_IDS:
         return 0.0, None, None
     if tax_id not in VORSTEUER:
         raise MappingError("unknown purchase VAT code {}".format(tax_id))
@@ -112,7 +122,7 @@ def _document(bexio_id, record, supplier, currency, rate_of_exchange, lines, tax
     return {
         "doctype": "Purchase Invoice", "company": im.COMPANY, "supplier": supplier,
         "bill_no": record.get("vendor_ref") or record.get("document_no") or str(bexio_id),
-        "bill_date": record["bill_date"], "posting_date": record["bill_date"],
+        "bill_date": record["bill_date"], "posting_date": record["bill_date"], "set_posting_time": 1,
         "due_date": record.get("due_date") or record["bill_date"],
         "currency": currency, "conversion_rate": rate_of_exchange,
         "bexio_id": str(bexio_id),
@@ -126,38 +136,73 @@ def _document(bexio_id, record, supplier, currency, rate_of_exchange, lines, tax
     }
 
 
+def _lines_of(bill):
+    """The lines of a bill as dicts: text, account_id, tax_id, net, and the VAT bexio gives (None: worked out from the rate).
+
+    The lines are line_items where the bill has them; otherwise the detail positions, with a quantity and a unit price.
+    """
+    if bill.get("line_items"):
+        if bill.get("item_net") and any(line.get("tax_calc") for line in bill["line_items"]):
+            raise MappingError("net amounts with VAT (reverse charge) are not mapped")
+        lines = []
+        for line in bill["line_items"]:
+            if bill.get("item_net"):
+                net, given = _money(line["amount"]), None
+            else:
+                given = _money(line.get("tax_calc") or 0)
+                net = _money(line["amount"]) - given
+            lines.append({"text": line.get("title") or "", "account_id": line["booking_account_id"],
+                          "tax_id": line.get("tax_id"), "net": net, "given": given})
+        return lines
+    lines = []
+    for pos in bill.get("positions") or []:
+        quantity, price = _money(pos["amount"]), _money(pos["unit_price"])
+        lines.append({"text": pos.get("text") or "", "account_id": pos["booking_account_id"],
+                      "tax_id": pos.get("tax_id"), "net": (quantity * price).quantize(CENT, rounding=ROUND_HALF_UP),
+                      "given": None})
+    return lines
+
+
 def map_bill(bill, lookups):
     """The Purchase Invoice dict for one bexio bill; raises MappingError when a part has no home."""
-    positions = bill.get("positions")
-    if not positions:
+    lines_in = _lines_of(bill)
+    if not lines_in:
         raise MappingError("no positions in the export")
-    supplier = lookups.suppliers.get(str(bill.get("contact_id")))
+    contact = bill.get("supplier_id", bill.get("contact_id"))
+    supplier = lookups.suppliers.get(str(contact))
     if not supplier:
-        raise MappingError("no Supplier for contact {}".format(bill.get("contact_id")))
+        raise MappingError("no Supplier for contact {}".format(contact))
+    currency = bill["currency_code"]
+    if currency != BASE_CURRENCY and not bill.get("exchange_rate"):
+        raise MappingError("no exchange rate for {}".format(currency))
     lines, taxes = [], {}
-    for pos in positions:
-        expense = lookups.accounts.get(str(pos["booking_account_id"]))
+    for line in lines_in:
+        expense = lookups.accounts.get(str(line["account_id"]))
         if not expense:
-            raise MappingError("no Account for booking account {}".format(pos["booking_account_id"]))
-        quantity, price = _money(pos["amount"]), _money(pos["unit_price"])
-        net = (quantity * price).quantize(CENT, rounding=ROUND_HALF_UP)
+            raise MappingError("no Account for booking account {}".format(line["account_id"]))
+        net = line["net"]
         lines.append(({
-            "item_code": ITEM, "item_name": ITEM, "description": pos.get("text") or ITEM, "uom": "Nos",
-            "qty": float(quantity), "rate": float(price), "amount": float(net), "expense_account": expense,
+            "item_code": ITEM, "item_name": ITEM, "description": line["text"] or ITEM, "uom": "Nos",
+            "qty": 1.0, "rate": float(net), "amount": float(net), "expense_account": expense,
         }, net))
-        rate, kind, account = line_vat(pos["tax_id"])
+        rate, kind, account = line_vat(line["tax_id"])
         if rate == 0:
+            if line["given"]:
+                raise MappingError("VAT {} on a line without a VAT code".format(line["given"]))
             continue
-        template = lookups.taxes.get(str(pos["tax_id"]))
+        template = lookups.taxes.get(str(line["tax_id"]))
         if not template:
-            raise MappingError("no Item Tax Template with bexio_id {} in ERPNext".format(pos["tax_id"]))
+            raise MappingError("no Item Tax Template with bexio_id {} in ERPNext".format(line["tax_id"]))
         account_name = lookups.account_by_number.get(account)
         if not account_name:
             raise MappingError("no Account {} in ERPNext".format(account))
+        tax = line["given"] if line["given"] is not None else _tax_of(net, rate)
+        if abs(tax - _tax_of(net, rate)) > TAX_TOLERANCE:
+            raise MappingError("VAT {} is not {}% of the net {}".format(tax, rate, net))
         key = (account_name, template)
-        taxes[key] = taxes.get(key, ZERO) + _tax_of(net, rate)
-    return _document(bill["id"], bill, supplier, bill["currency_code"], float(bill.get("exchange_rate") or 1),
-                     lines, taxes)
+        taxes[key] = taxes.get(key, ZERO) + tax
+    rate_of_exchange = 1.0 if currency == BASE_CURRENCY else float(bill["exchange_rate"])
+    return _document(bill["id"], bill, supplier, currency, rate_of_exchange, lines, taxes)
 
 
 def map_expense(expense, lookups):
@@ -166,7 +211,7 @@ def map_expense(expense, lookups):
     if expense.get("status") == "draft" and gross == ZERO:
         raise Skipped("draft with gross 0")
     if expense.get("tax_id") not in ZERO_RATE_IDS:
-        raise MappingError("expense with VAT: the net split is not in the export")
+        raise Skipped("expense with VAT: the net split is not in the export; left to erp-a2ma")
     supplier = lookups.suppliers.get(str(expense.get("contact_id")))
     if not supplier:
         raise MappingError("no Supplier for contact {}".format(expense.get("contact_id")))

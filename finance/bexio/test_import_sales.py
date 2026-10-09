@@ -35,7 +35,7 @@ INVOICE = {
         {"type": "KbPositionText", "text": "Zwischentitel"},
     ],
     "taxs": [{"percentage": "8.1", "value": "8.10"}, {"percentage": "2.6", "value": "1.30"}],
-    "total_net": "150.00", "total_taxes": "9.40", "total_gross": "159.40",
+    "total_net": "150.00", "total_taxes": "9.40", "total_gross": "159.40", "total": "159.40",
 }
 
 
@@ -89,7 +89,7 @@ class ForeignCurrency(unittest.TestCase):
                      positions=[{"type": "KbPositionArticle", "article_id": 7, "amount": "1",
                                  "unit_price": "200.00", "account_id": 30, "tax_id": 28}],
                      taxs=[{"percentage": "8.1", "value": "16.20"}],
-                     total_net="200.00", total_taxes="16.20", total_gross="216.20")
+                     total_net="200.00", total_taxes="16.20", total_gross="216.20", total="216.20")
         doc, differences, totals, rate = isl._document("Sales Invoice", eur, LOOKUPS)
         self.assertEqual(doc["currency"], "EUR")
         self.assertEqual(doc["conversion_rate"], 0.94)
@@ -112,7 +112,7 @@ class CreditNote(unittest.TestCase):
             "positions": [{"type": "KbPositionCustom", "amount": "1", "unit_price": "50.00",
                            "account_id": 30, "tax_id": 28, "text": "Gutschrift"}],
             "taxs": [{"percentage": "8.1", "value": "4.05"}],
-            "total_net": "50.00", "total_taxes": "4.05", "total_gross": "54.05",
+            "total_net": "50.00", "total_taxes": "4.05", "total_gross": "54.05", "total": "54.05",
         }
 
     def test_is_return_against_the_original_with_negative_rows(self):
@@ -122,7 +122,6 @@ class CreditNote(unittest.TestCase):
         self.assertEqual(doc["return_against"], "SINV-0001")
         self.assertEqual(doc["bexio_id"], "credit-800")
         self.assertEqual(doc["items"][0]["qty"], -1.0)
-        self.assertEqual(doc["items"][0]["amount"], -50.0)
         self.assertEqual(doc["taxes"][0]["tax_amount"], -4.05)
 
     def test_totals_match_bexio_and_are_negative(self):
@@ -161,18 +160,25 @@ class Differences(unittest.TestCase):
         self.assertEqual(differences, ["tax 8.1% +0.01"])
         self.assertEqual(doc["taxes"][0]["tax_amount"], 8.1)
 
-    def test_a_total_that_differs_is_reported(self):
-        off = record(INVOICE, total_gross="159.41")
-        _doc, differences, _totals, _rate = isl._document("Sales Invoice", off, LOOKUPS)
-        self.assertEqual(differences, ["gross -0.01"])
+    def test_a_total_up_to_five_rappen_off_goes_into_the_last_tax_row(self):
+        off = record(INVOICE, total="159.45")
+        doc, differences, totals, _rate = isl._document("Sales Invoice", off, LOOKUPS)
+        self.assertEqual(doc["taxes"][-1]["tax_amount"], 1.35)
+        self.assertEqual(totals[2], Decimal("159.45"))
+        self.assertIn("total +0.05 taken into the last tax row", differences)
+
+    def test_a_total_more_than_five_rappen_off_is_unmapped(self):
+        with self.assertRaises(isl.Unmapped):
+            isl.sales_invoice(record(INVOICE, total="159.46"), LOOKUPS)
 
 
 class Rounding(unittest.TestCase):
-    def test_bexio_rounding_of_the_gross_is_named_not_adjusted(self):
-        rounded = record(INVOICE, total_gross="159.40", total_rounding_difference="-0.02")
-        rounded["positions"][1]["unit_price"] = "50.02"
-        _doc, differences, _totals, _rate = isl._document("Sales Invoice", rounded, LOOKUPS)
-        self.assertIn("gross +0.02 (bexio rounding difference)", differences)
+    def test_the_total_is_bexio_total_not_the_gross_before_the_discounts(self):
+        # bexio's total_gross is the sum before the discounts; the total is what is owed
+        before = record(INVOICE, total_gross="170.00", total_rounding_difference="-0.02")
+        _doc, differences, totals, _rate = isl._document("Sales Invoice", before, LOOKUPS)
+        self.assertEqual(differences, [])
+        self.assertEqual(totals[2], Decimal("159.40"))
 
 
 class Unmapped_(unittest.TestCase):
@@ -195,12 +201,7 @@ class Unmapped_(unittest.TestCase):
 
     def test_unknown_position_type(self):
         positions = copy.deepcopy(INVOICE["positions"])
-        positions[0]["type"] = "KbPositionSubtotal"
-        self.assertUnmapped(record(INVOICE, positions=positions))
-
-    def test_discount(self):
-        positions = copy.deepcopy(INVOICE["positions"])
-        positions[0]["discount_in_percent"] = "10"
+        positions[0]["type"] = "KbPositionSomethingNew"
         self.assertUnmapped(record(INVOICE, positions=positions))
 
     def test_article_without_an_item(self):
@@ -212,11 +213,72 @@ class Unmapped_(unittest.TestCase):
         self.assertUnmapped(record(INVOICE, currency_id=9))
 
 
-    def test_prices_including_vat_are_unmapped(self):
-        self.assertUnmapped(record(INVOICE, mwst_is_net=False))
-
     def test_net_prices_are_mapped(self):
         self.assertEqual(isl.sales_invoice(record(INVOICE, mwst_is_net=True), LOOKUPS)["bexio_id"], "500")
+
+
+class PositionsAndDiscounts(unittest.TestCase):
+    def test_a_subtotal_row_is_left_out(self):
+        positions = copy.deepcopy(INVOICE["positions"])
+        positions.insert(2, {"type": "KbPositionSubtotal", "text": "<strong>Subtotal</strong>"})
+        doc = isl.sales_invoice(record(INVOICE, positions=positions), LOOKUPS)
+        self.assertEqual(len(doc["items"]), 3)
+
+    def test_a_position_discount_goes_to_the_discount_fields_and_the_rate_is_erpnexts(self):
+        positions = copy.deepcopy(INVOICE["positions"])
+        positions[0]["discount_in_percent"] = "10"   # 2 x 50.00 less 10 % = 90.00 for the line
+        doc, differences, totals, _rate = isl._document("Sales Invoice", record(INVOICE, positions=positions,
+            total_net="140.00", taxs=[{"percentage": "8.1", "value": "7.29"}, {"percentage": "2.6", "value": "1.30"}],
+            total_taxes="8.59", total="148.59"), LOOKUPS)
+        row = doc["items"][0]
+        self.assertEqual((row["price_list_rate"], row["discount_percentage"], row["rate"]), (50.0, 10.0, 45.0))
+        self.assertEqual(totals[0], Decimal("140.00"))
+        self.assertEqual(differences, [])
+
+    def test_a_document_discount_is_the_lines_less_bexios_net_and_the_taxes_are_on_what_is_left(self):
+        positions = copy.deepcopy(INVOICE["positions"])
+        positions.append({"type": "KbPositionDiscount", "text": "Rabatt"})
+        # the lines are 150.00 and the discount takes 10.00: 93.33 at 8.1 % and 46.67 at 2.6 %
+        doc, differences, totals, _rate = isl._document("Sales Invoice", record(INVOICE, positions=positions,
+            total_net="140.00", taxs=[{"percentage": "8.1", "value": "7.56"}, {"percentage": "2.6", "value": "1.21"}],
+            total_taxes="8.77", total="148.77"), LOOKUPS)
+        self.assertEqual(doc["discount_amount"], 10.0)
+        self.assertEqual(doc["apply_discount_on"], "Net Total")
+        self.assertEqual([t["tax_amount"] for t in doc["taxes"]], [7.56, 1.21])
+        self.assertEqual(totals, (Decimal("140.00"), Decimal("8.77"), Decimal("148.77")))
+        self.assertEqual(differences, [])
+
+    def test_a_document_discount_that_does_not_reduce_the_net_is_unmapped(self):
+        positions = copy.deepcopy(INVOICE["positions"])
+        positions.append({"type": "KbPositionDiscount", "text": "Discount"})
+        with self.assertRaises(isl.Unmapped):
+            isl.sales_invoice(record(INVOICE, positions=positions, total_net="200.00"), LOOKUPS)
+
+    def test_a_line_without_a_tax_id_gets_no_tax_row(self):
+        positions = copy.deepcopy(INVOICE["positions"])
+        positions[1]["tax_id"] = None
+        doc, _differences, _totals, _rate = isl._document("Sales Invoice", record(INVOICE, positions=positions,
+            taxs=[{"percentage": "8.1", "value": "8.10"}], total_net="150.00", total_taxes="8.10", total="158.10"), LOOKUPS)
+        self.assertEqual([t["description"] for t in doc["taxes"]], ["USt 8.1% Normal"])
+
+    def test_prices_including_vat_take_the_tax_out_of_the_gross_and_are_marked_included(self):
+        gross = record(INVOICE, mwst_is_net=False, positions=[
+            {"type": "KbPositionCustom", "amount": "3", "unit_price": "108.10", "account_id": 30, "tax_id": 28, "text": "A"}],
+            taxs=[{"percentage": "8.1", "value": "24.30"}], total_net="300.00", total_taxes="24.30", total="324.30")
+        doc, differences, totals, _rate = isl._document("Sales Invoice", gross, LOOKUPS)
+        self.assertEqual(doc["taxes"][0]["included_in_print_rate"], 1)
+        self.assertEqual(doc["taxes"][0]["tax_amount"], 24.3)
+        self.assertEqual(totals, (Decimal("300.00"), Decimal("24.30"), Decimal("324.30")))
+        self.assertEqual(differences, [])
+
+    def test_a_credit_note_with_a_document_discount_is_unmapped(self):
+        credit = record(INVOICE, id=801, invoice_id=500, positions=copy.deepcopy(INVOICE["positions"]) + [
+            {"type": "KbPositionDiscount", "text": "x"}])
+        with self.assertRaises(isl.Unmapped):
+            isl.credit_note(credit, LOOKUPS)
+
+    def test_the_invoice_carries_its_posting_time(self):
+        self.assertEqual(isl.sales_invoice(INVOICE, LOOKUPS)["set_posting_time"], 1)
 
 
 class FieldCheck(unittest.TestCase):

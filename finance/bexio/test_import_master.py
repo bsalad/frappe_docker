@@ -44,6 +44,8 @@ class FakeErp:
         field, op, value = flt
         if op == "is":
             return bool(doc.get(field))
+        if op == "in":
+            return doc.get(field) in value
         return doc.get(field) == value
 
     def get(self, doctype, name):
@@ -227,6 +229,16 @@ class MasterDataTest(unittest.TestCase):
         self.assertEqual((s["supplier_name"], s["supplier_group"]), ("Lieferant GmbH Zürich", "Lieferanten"))
         self.assertFalse([c for c in self.docs["Customer"].values() if c["bexio_id"] == "2"])
 
+    def test_a_bill_names_its_supplier_by_contact_id_when_the_vendor_name_is_shorter(self):
+        data = export_data()
+        data["contacts"].append(contact(9, 1, "Steueramt Testort", None, nr="009", groups=None))
+        data["bills"].append({"id": "u3", "vendor": "Steueramt", "supplier_id": 9})
+        erp = erp_with_chart()
+        run(erp, data=data)
+        self.assertEqual([s["supplier_name"] for s in erp.docs["Supplier"].values() if s["bexio_id"] == "9"],
+                         ["Steueramt Testort"])
+        self.assertFalse([c for c in erp.docs.get("Customer", {}).values() if c["bexio_id"] == "9"])
+
     def test_contact_without_documents_becomes_a_customer(self):
         n = self.find("Customer", 3)
         self.assertEqual(n["territory"], "Rest Of The World")
@@ -342,7 +354,8 @@ class ProblemsTest(unittest.TestCase):
         erp.insert = refuse_items
         stats = run(erp).stats
         self.assertEqual(stats.rows["Item"]["failed"], 1)
-        self.assertEqual(stats.rows["Item"]["created"], 1)
+        # the article that was not refused, and the two generic items (bexio Position, bexio Aufwand)
+        self.assertEqual(stats.rows["Item"]["created"], 3)
         self.assertEqual(stats.rows["Customer"]["created"], 4)
         self.assertEqual(stats.failed(), 1)
         self.assertTrue(any("Item 2" in p for p in stats.problems))
@@ -353,6 +366,50 @@ class ProblemsTest(unittest.TestCase):
         stats = run(erp).stats
         self.assertEqual(stats.rows["Currency"]["failed"], 1)
         self.assertTrue(any("swiss-setup.sh currencies" in p for p in stats.problems))
+
+
+class GenericItemsTest(unittest.TestCase):
+    def test_the_free_text_items_are_created_once_and_found_by_code(self):
+        erp = erp_with_chart()
+        first = run(erp).stats
+        self.assertEqual(erp.docs["Item"]["bexio Position"]["is_sales_item"], 1)
+        self.assertEqual(erp.docs["Item"]["bexio Aufwand"]["is_purchase_item"], 1)
+        self.assertEqual(first.rows["Item"]["created"], len(erp.docs["Item"]))
+        second = run(erp).stats
+        self.assertEqual(second.rows["Item"]["created"], 0)
+        self.assertEqual(second.rows["Item"]["failed"], 0)
+
+    def test_an_existing_generic_item_is_left_alone(self):
+        erp = erp_with_chart()
+        erp.docs.setdefault("Item", {})["bexio Position"] = {"name": "bexio Position", "item_code": "bexio Position"}
+        writes = erp.writes
+        stats = run(erp).stats
+        self.assertEqual(erp.docs["Item"]["bexio Position"], {"name": "bexio Position", "item_code": "bexio Position"})
+        self.assertEqual(stats.rows["Item"]["created"], len(erp.docs["Item"]) - 1)
+        self.assertEqual(stats.rows["Item"]["unchanged"], 1)
+        self.assertGreater(erp.writes, writes)
+
+
+class UpsertTest(unittest.TestCase):
+    """The keyed upsert the sales and purchase imports share: drafts are updated, submitted documents are not."""
+
+    def test_a_submitted_document_is_skipped_and_counted_not_written(self):
+        erp = FakeErp({"Sales Invoice": [{"name": "SINV-1", "bexio_id": "5", "docstatus": 1, "customer": "A"}]})
+        importer = im.Importer(erp, {})
+        self.assertEqual(importer.upsert("Sales Invoice", 5, {"customer": "B"}, "-"), "SINV-1")
+        self.assertEqual(erp.docs["Sales Invoice"]["SINV-1"]["customer"], "A")
+        self.assertEqual(erp.writes, 0)
+        self.assertEqual(importer.stats.rows["Sales Invoice"]["skipped"], 1)
+
+    def test_a_draft_is_updated_in_place_and_a_rerun_changes_nothing(self):
+        erp = FakeErp({"Sales Invoice": [{"name": "SINV-1", "bexio_id": "5", "docstatus": 0, "customer": "A"}]})
+        importer = im.Importer(erp, {})
+        importer.upsert("Sales Invoice", 5, {"customer": "B"}, "-")
+        self.assertEqual(erp.docs["Sales Invoice"]["SINV-1"]["customer"], "B")
+        again = im.Importer(erp, {})
+        again.upsert("Sales Invoice", 5, {"customer": "B"}, "-")
+        self.assertEqual(again.stats.rows["Sales Invoice"]["unchanged"], 1)
+        self.assertEqual(len(erp.docs["Sales Invoice"]), 1)
 
 
 class ContactDataTest(unittest.TestCase):

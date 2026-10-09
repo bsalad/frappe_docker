@@ -114,6 +114,69 @@ class MapBillErrorTest(unittest.TestCase):
         self.assertUnmapped(bill(positions=[]), "no positions")
 
 
+def line(amount, tax_calc, tax_id, account=5001, title="Testzeile", **extra):
+    """A bexio bill line as the full export carries it: gross amount when the prices include VAT, the VAT in tax_calc."""
+    return dict({"amount": amount, "tax_calc": tax_calc, "tax_id": tax_id, "booking_account_id": account,
+                 "title": title, "id": "l-1", "position": 0, "tax_man": 0.0}, **extra)
+
+
+def full_bill(bid="b-9", lines=None, **extra):
+    """A bill as bills.json has it: no contact_id but supplier_id, and the lines in line_items."""
+    base = {"id": bid, "supplier_id": 901, "currency_code": "CHF", "bill_date": "2026-09-27",
+            "due_date": "2026-10-07", "document_no": "R-2", "vendor_ref": "LF-2", "item_net": False,
+            "attachment_ids": [], "exchange_rate": None,
+            "line_items": lines if lines is not None else [line(129.7, 9.72, 38)],
+            "net": 119.98, "gross": 129.7}
+    base.update(extra)
+    return base
+
+
+class MapBillFromLineItemsTest(unittest.TestCase):
+    def test_gross_lines_give_net_and_the_bexio_vat(self):
+        doc = ip.map_bill(full_bill(), lookups())
+        self.assertEqual(doc["supplier"], "Lieferant Test AG")
+        self.assertEqual([r["amount"] for r in doc["items"]], [119.98])
+        self.assertEqual(taxes(doc), {("1171 - Vorsteuer Invest. - bic", "Test MWST bexio 38"): 9.72})
+        self.assertEqual(ip.document_totals(doc), (Decimal("119.98"), Decimal("9.72"), Decimal("129.70")))
+
+    def test_the_document_number_of_bexio_is_kept_and_the_vendor_ref_is_the_bill_number(self):
+        doc = ip.map_bill(full_bill(), lookups())
+        self.assertEqual(doc["bill_no"], "LF-2")
+        self.assertEqual(doc["set_posting_time"], 1)
+
+    def test_a_line_without_tax_id_has_no_tax_row(self):
+        doc = ip.map_bill(full_bill(lines=[line(4720, 0, None)], net=4720, gross=4720), lookups())
+        self.assertEqual(doc["taxes"], [])
+        self.assertEqual(ip.document_totals(doc), (Decimal("4720.00"), Decimal("0"), Decimal("4720.00")))
+
+    def test_a_zero_rate_import_line_has_no_tax_row(self):
+        doc = ip.map_bill(full_bill(lines=[line(1867.5, 0, 10)]), lookups(taxes={}))
+        self.assertEqual(doc["taxes"], [])
+
+    def test_vat_that_does_not_match_the_rate_is_reported(self):
+        with self.assertRaisesRegex(ip.MappingError, "is not 8.1%"):
+            ip.map_bill(full_bill(lines=[line(129.7, 12.0, 38)]), lookups())
+
+    def test_net_amounts_with_vat_are_not_mapped(self):
+        with self.assertRaisesRegex(ip.MappingError, "reverse charge"):
+            ip.map_bill(full_bill(lines=[line(18000, 1458.0, 32)], item_net=True), lookups())
+
+    def test_net_amounts_without_vat_are_mapped_as_they_are(self):
+        doc = ip.map_bill(full_bill(lines=[line(18000, 0, None)], item_net=True), lookups())
+        self.assertEqual(ip.document_totals(doc)[0], Decimal("18000"))
+
+    def test_foreign_bill_needs_its_exchange_rate(self):
+        with self.assertRaisesRegex(ip.MappingError, "no exchange rate for EUR"):
+            ip.map_bill(full_bill(currency_code="EUR"), lookups())
+        doc = ip.map_bill(full_bill(currency_code="EUR", exchange_rate=0.997002), lookups())
+        self.assertEqual(doc["conversion_rate"], 0.997002)
+
+    def test_detail_positions_are_the_fallback_for_a_bill_without_line_items(self):
+        record = bill()
+        record.pop("line_items", None)
+        self.assertEqual(len(ip.map_bill(record, lookups())["items"]), 4)
+
+
 class MapExpenseTest(unittest.TestCase):
     def expense(self, **extra):
         return dict({"id": "e-1", "contact_id": 901, "currency_code": "CHF", "paid_on": "2025-05-02",
@@ -128,8 +191,8 @@ class MapExpenseTest(unittest.TestCase):
         self.assertEqual(doc["bill_date"], "2025-05-02")
         self.assertEqual(ip.document_totals(doc), (Decimal("45.5"), Decimal("0"), Decimal("45.5")))
 
-    def test_expense_with_vat_needs_a_net_split_and_is_reported(self):
-        with self.assertRaisesRegex(ip.MappingError, "net split"):
+    def test_expense_with_vat_is_skipped_for_the_expense_step(self):
+        with self.assertRaisesRegex(ip.Skipped, "left to erp-a2ma"):
             ip.map_expense(self.expense(gross=108.1, status="paid", tax_id=35), lookups())
 
 
