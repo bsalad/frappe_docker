@@ -68,10 +68,21 @@ stays under `~/ws_yardr_finance/private/`, never in the repository.
 to Sales Invoice, `credit_vouchers.json` to Sales Invoice with `is_return`
 against the original, `orders.json` to Sales Order, `offers.json` to Quotation.
 Each record is read with its positions (the single-document call). The
-functions return the ERPNext document as a dict; nothing is inserted or
-submitted yet. The live run is erp-a2ma's, after the posting plan (finance-3qsp).
+functions return the ERPNext document as a dict. Nothing is submitted, and no
+GL posts: the documents are drafts (docstatus 0). The posting plan
+(finance-3qsp) decides how they post; the submit is erp-a2ma's.
 
     python3 finance/bexio/import_sales.py --dry-run [--export DIR]
+    python3 finance/bexio/import_sales.py --apply [--export DIR]
+
+`--apply` writes the invoices and credit notes as drafts. The plan goes to
+`<private>/bexio-sales-drafts.json`, and the loader
+(`finance/scripts/bexio-drafts.sh`, `bexio-drafts.py`) inserts it inside the
+backend container as Administrator. Each draft is named by bexio's
+`document_nr` (set on insert, so the ACC-SINV series does not move) and keyed by
+`bexio_id`: a rerun updates a draft in place, skips a submitted one, and changes
+nothing that is already right. The ECB's USD-CHF rate is used where bexio gives
+no rate, and saved as a Currency Exchange record on the invoice date.
 
 The dry run reads ERPNext and prints totals only: counts per export file, the
 CHF net, tax and gross per year, and the invoice status counts (8 open, 9
@@ -96,8 +107,21 @@ paid). The differences and unmapped records, by bexio id, go to
 - Credit notes get `bexio_id` `credit-<id>`, since a credit note and an invoice
   can share an id. Their link to the invoice is the field `invoice_id`, not yet
   confirmed against a real export.
-- Document number: kept in `remarks` ("bexio Nr. ..."); the dry run lists any
-  field the ERPNext doctype does not have.
+- Document number: the name of the draft, and kept in `remarks` ("bexio Nr. ...").
+  The dry run lists any field the ERPNext doctype does not have.
+- Rounding: ERPNext cannot carry cents in its rounding adjustment (it recomputes
+  it from the grand total), so a difference of up to 5 rappen goes into the last
+  tax row, as above.
+- Quantities: the free-text item (`bexio Position`) takes whole quantities, and
+  ERPNext keeps a quantity to three places. A line of a fraction, of more than
+  three places, or with a discount on the free-text item is one unit at its
+  amount, and its quantity and discount stay in its text ("1.58 x 1000.00 less
+  10%: ..."). A zero-rate row keeps a zero price list rate, so ERPNext does not
+  fill the free-text item's selling price into it.
+- Not written by `--apply`: a foreign-currency invoice (its receivable account is
+  CHF, and ERPNext refuses a document in another currency), and an invoice whose
+  total is a rappen off bexio's and cannot take the difference. Both are listed by
+  bexio id in `<private>/bexio-sales-differences.txt` and in the loader's output.
 
 ## Attachments (bexio files to Purchase Invoices)
 
@@ -114,3 +138,13 @@ It prints totals per doctype only. The bexio ids of the files it cannot place go
 (no file under `files/`), `size differs`, `no document` (the Purchase Invoice is not in ERPNext
 yet), `unlinked` (no record lists it), `shared` (two records list it). A file already attached
 is recognised by the description `bexio file <id>` or by name and size, so a second run skips it.
+
+## Purchase bills
+
+`import_purchase.py --dry-run` maps the bills (`bills.json`, with the lines of
+`line_items`) to Purchase Invoices. `--apply` writes them as drafts, named by
+bexio's `document_no`, through the same loader. A reverse-charge bill (Bezugsteuer
+codes 19, 20, 32, 33) is mapped with its net as the amount; its VAT is booked to
+the Vorsteuer account and taken back on 2203, so the total is the net, as bexio
+books it. Expenses are not written. A foreign-currency bill is refused by the
+loader for the same reason as a foreign-currency invoice.

@@ -2,14 +2,14 @@
 
 Step three of the bexio pipeline, after import_master.py has put the master
 data into ERPNext. This module maps one record at a time: map_bill() and
-map_expense() return the ERPNext document dict, and upsert_purchase_invoice()
-writes it keyed by bexio_id, as import_master.py does. The live run belongs
-to erp-a2ma; the command line here only runs the dry run, which reads ERPNext
-and writes nothing.
+map_expense() return the ERPNext document dict. The write is the loader's
+(bexio-drafts.py): drafts() hands it the mapped bills, and the upsert by
+bexio_id happens there, inside the backend container.
 
 Run it as:
 
     python3 finance/bexio/import_purchase.py --dry-run [--export DIR]
+    python3 finance/bexio/import_purchase.py --apply [--export DIR]
 
 --export defaults to the newest directory under <private>/bexio-export/. The
 export holds bills.json (the list, with totals) and bills-detail.json (one
@@ -34,6 +34,15 @@ per account and template, so the tax total is bexio's to the rappen.
 An expense with VAT is skipped: its net split is not in the export; the
 bills and the expense step of erp-a2ma take it.
 
+A reverse-charge bill (item_net true, Bezugsteuer codes) is mapped with its
+net as the amount. Its VAT is booked twice, as input tax on the Vorsteuer
+account of its kind and taken back on 2203 (the templates BZM77, BZM81, BZB77
+and BZB81 carry both rows), so the bill's total is its net, as bexio books it.
+
+--dry-run (the default) reads ERPNext and writes nothing. --apply hands the
+mapped bills to the loader (finance/scripts/bexio-drafts.sh), which inserts
+them as drafts named by bexio's document number. Expenses are not written.
+
 Standard library only, apart from import_master.py.
 """
 
@@ -41,6 +50,7 @@ import argparse
 import datetime
 import json
 import os
+import subprocess
 import sys
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -54,6 +64,8 @@ ATTACHMENTS_FIELD = "bexio_attachment_ids"  # not a field of ERPNext's Purchase 
 DETAIL_FILE = "bills-detail.json"
 EXPENSES_FILE = "expenses.json"
 PROBLEMS_FILE = "bexio-purchase-dry-run.txt"
+DRAFTS_FILE = "bexio-purchase-drafts.json"
+LOADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "bexio-drafts.sh")
 # the most a line's VAT may differ from its rate worked out on the net
 TAX_TOLERANCE = Decimal("0.05")
 
@@ -61,6 +73,9 @@ TAX_TOLERANCE = Decimal("0.05")
 MAT_SV_IDS = (22, 35, 8, 34, 21, 36)  # VM77, VM81, VM25, VM26, VM37, VM38: Material und Dienstleistungen
 INV_BA_IDS = (24, 38, 12, 37, 23, 39)  # VB77, VB81, VB25, VB26, VB37, VB38: Investitionen und Aufwand
 VORSTEUER = dict([(i, "1170") for i in MAT_SV_IDS] + [(i, "1171") for i in INV_BA_IDS])
+# reverse charge (Bezugsteuer): the Vorsteuer account of the kind, and the rate; the deduction is on BEZUGSTEUER
+BEZUG = {19: ("1170", 7.7), 33: ("1170", 8.1), 20: ("1171", 7.7), 32: ("1171", 8.1)}  # BZM77, BZM81, BZB77, BZB81
+BEZUGSTEUER = "2203"
 # 0 % purchase code and the import taxes that carry no VAT on the bill: no tax row
 ZERO_RATE_IDS = (47, 7, 10)
 
@@ -99,6 +114,9 @@ def line_vat(tax_id):
     """
     if tax_id is None or tax_id in ZERO_RATE_IDS:
         return 0.0, None, None
+    if tax_id in BEZUG:
+        account, rate = BEZUG[tax_id]
+        return rate, None, account
     if tax_id not in VORSTEUER:
         raise MappingError("unknown purchase VAT code {}".format(tax_id))
     rate, kind = im.VAT_OF_TAX_ID[tax_id]
@@ -117,8 +135,13 @@ def _tax_of(net, rate):
     return (net * Decimal(str(rate)) / 100).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
+def _sign(row):
+    """1 for input tax, -1 for a deduction (the reverse charge's take-back)."""
+    return -1 if row.get("add_deduct_tax") == "Deduct" else 1
+
+
 def _document(bexio_id, record, supplier, currency, rate_of_exchange, lines, taxes):
-    """The Purchase Invoice dict; lines are (item row, Decimal net), taxes are {(account, title): Decimal}."""
+    """The Purchase Invoice dict; lines are (item row, Decimal net), taxes are {(account, title, Add or Deduct): Decimal}."""
     return {
         "doctype": "Purchase Invoice", "company": im.COMPANY, "supplier": supplier,
         "bill_no": record.get("vendor_ref") or record.get("document_no") or str(bexio_id),
@@ -130,8 +153,8 @@ def _document(bexio_id, record, supplier, currency, rate_of_exchange, lines, tax
         "items": [row for row, _ in lines],
         "taxes": [
             {"charge_type": "Actual", "account_head": account, "description": title,
-             "tax_amount": float(amount)}
-            for (account, title), amount in taxes.items()
+             "tax_amount": float(amount), "add_deduct_tax": kind}
+            for (account, title, kind), amount in taxes.items()
         ],
     }
 
@@ -142,12 +165,14 @@ def _lines_of(bill):
     The lines are line_items where the bill has them; otherwise the detail positions, with a quantity and a unit price.
     """
     if bill.get("line_items"):
-        if bill.get("item_net") and any(line.get("tax_calc") for line in bill["line_items"]):
-            raise MappingError("net amounts with VAT (reverse charge) are not mapped")
+        if bill.get("item_net") and any(line.get("tax_calc") and line.get("tax_id") not in BEZUG for line in bill["line_items"]):
+            raise MappingError("net amounts with VAT other than reverse charge are not mapped")
         lines = []
         for line in bill["line_items"]:
             if bill.get("item_net"):
-                net, given = _money(line["amount"]), None
+                # a reverse-charge line carries bexio's VAT on the net, which the deduction takes back
+                net = _money(line["amount"])
+                given = _money(line["tax_calc"]) if line.get("tax_calc") else None
             else:
                 given = _money(line.get("tax_calc") or 0)
                 net = _money(line["amount"]) - given
@@ -199,7 +224,14 @@ def map_bill(bill, lookups):
         tax = line["given"] if line["given"] is not None else _tax_of(net, rate)
         if abs(tax - _tax_of(net, rate)) > TAX_TOLERANCE:
             raise MappingError("VAT {} is not {}% of the net {}".format(tax, rate, net))
-        key = (account_name, template)
+        if line["tax_id"] in BEZUG:
+            deduction = lookups.account_by_number.get(BEZUGSTEUER)
+            if not deduction:
+                raise MappingError("no Account {} in ERPNext".format(BEZUGSTEUER))
+            for key in ((account_name, template, "Add"), (deduction, template, "Deduct")):
+                taxes[key] = taxes.get(key, ZERO) + tax
+            continue
+        key = (account_name, template, "Add")
         taxes[key] = taxes.get(key, ZERO) + tax
     rate_of_exchange = 1.0 if currency == BASE_CURRENCY else float(bill["exchange_rate"])
     return _document(bill["id"], bill, supplier, currency, rate_of_exchange, lines, taxes)
@@ -226,17 +258,30 @@ def map_expense(expense, lookups):
 
 
 def document_totals(doc):
-    """(net, tax, grand total) of a mapped document, from its rows."""
+    """(net, tax, grand total) of a mapped document, from its rows: a deduction takes its tax back off."""
     net = sum((_money(row["amount"]) for row in doc["items"]), ZERO)
-    tax = sum((_money(row["tax_amount"]) for row in doc["taxes"]), ZERO)
+    tax = sum((_money(row["tax_amount"]) * _sign(row) for row in doc["taxes"]), ZERO)
     return net, tax, net + tax
 
 
-def upsert_purchase_invoice(erp, doc, dry_run=False):
-    """Create or update the Purchase Invoice keyed by its bexio_id, as import_master does; returns its name."""
-    importer = im.Importer(erp, {}, dry_run=dry_run)
-    body = {k: v for k, v in doc.items() if k != "doctype"}
-    return importer.upsert("Purchase Invoice", doc["bexio_id"], body, "-")
+def drafts(bills, lookups):
+    """The bills that map and whose total is bexio's, as the loader takes them: each named by bexio's document
+    number, its ERPNext name. A bill whose total differs is left out; the dry run lists it."""
+    out, names = [], set()
+    for bill in bills:
+        try:
+            doc = map_bill(bill, lookups)
+        except MappingError:
+            continue
+        if document_totals(doc)[2] != _money(bill["gross"]):
+            continue
+        name = str(bill["document_no"])
+        if name in names:
+            raise MappingError("two bills with the document number {}".format(name))
+        names.add(name)
+        out.append({"doctype": "Purchase Invoice", "name": name, "bexio_id": doc["bexio_id"],
+                    "values": {k: v for k, v in doc.items() if k != "doctype"}})
+    return out
 
 
 class Totals:
@@ -326,14 +371,14 @@ def load_records(export_dir):
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(description="Map the bexio purchase bills to ERPNext Purchase Invoices (dry run).")
+    parser = argparse.ArgumentParser(description="Map the bexio purchase bills to ERPNext Purchase Invoices (a dry run by default).")
     parser.add_argument("--export", default=None, help="export directory (default: the newest under <private>/bexio-export/)")
-    parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals")
+    parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals (the default)")
+    parser.add_argument("--apply", action="store_true", help="write the bills as drafts into ERPNext, through the loader")
     parser.add_argument("--token-file", default=im.TOKEN_FILE)
     args = parser.parse_args(argv)
-    if not args.dry_run:
-        print("the live run is erp-a2ma's; this command takes --dry-run only", file=sys.stderr)
-        return 2
+    if args.apply and args.dry_run:
+        parser.error("--apply and --dry-run are one or the other")
     export_dir = args.export or im.newest_export()
     bills, expenses = load_records(export_dir)
     try:
@@ -346,6 +391,12 @@ def main(argv):
     if totals.problems:
         write_private(os.path.join(im.PRIVATE, PROBLEMS_FILE), totals.problems)
         print("{} record(s) listed by bexio id in {}".format(len(totals.problems), os.path.join(im.PRIVATE, PROBLEMS_FILE)), file=sys.stderr)
+    if args.apply:
+        path = os.path.join(im.PRIVATE, DRAFTS_FILE)
+        documents = drafts(bills, lookups)
+        write_private(path, [json.dumps({"documents": documents, "exchange_rates": []}, indent=1)])
+        print("{} bills handed to the loader, in {}".format(len(documents), path))
+        subprocess.run(["sh", LOADER, path], check=True)
     bad = sum(r["unmapped"] + r["differ"] for r in totals.rows.values())
     return 1 if bad else 0
 

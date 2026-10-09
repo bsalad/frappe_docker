@@ -4,6 +4,9 @@ Run with: python3 -m unittest discover -s finance/bexio -p 'test_*.py'
 """
 
 import copy
+import json
+import os
+import tempfile
 import unittest
 from decimal import Decimal
 
@@ -266,10 +269,71 @@ class PositionsAndDiscounts(unittest.TestCase):
             {"type": "KbPositionCustom", "amount": "3", "unit_price": "108.10", "account_id": 30, "tax_id": 28, "text": "A"}],
             taxs=[{"percentage": "8.1", "value": "24.30"}], total_net="300.00", total_taxes="24.30", total="324.30")
         doc, differences, totals, _rate = isl._document("Sales Invoice", gross, LOOKUPS)
-        self.assertEqual(doc["taxes"][0]["included_in_print_rate"], 1)
-        self.assertEqual(doc["taxes"][0]["tax_amount"], 24.3)
+        # ERPNext takes the VAT out of the included prices itself: a rate row, not an amount
+        self.assertEqual([(t["charge_type"], t["rate"], t["included_in_print_rate"]) for t in doc["taxes"]],
+                         [("On Net Total", 8.1, 1)])
+        self.assertNotIn("tax_amount", doc["taxes"][0])
         self.assertEqual(totals, (Decimal("300.00"), Decimal("24.30"), Decimal("324.30")))
         self.assertEqual(differences, [])
+
+    def test_a_total_that_differs_with_included_prices_is_unmapped(self):
+        gross = record(INVOICE, mwst_is_net=False, positions=[
+            {"type": "KbPositionCustom", "amount": "3", "unit_price": "108.10", "account_id": 30, "tax_id": 28, "text": "A"}],
+            taxs=[{"percentage": "8.1", "value": "24.30"}], total_net="300.00", total_taxes="24.30", total="324.35")
+        with self.assertRaisesRegex(isl.Unmapped, "prices including the VAT"):
+            isl.sales_invoice(gross, LOOKUPS)
+
+    def test_a_credit_note_with_included_prices_is_unmapped(self):
+        credit = record(INVOICE, id=801, invoice_id=500, mwst_is_net=False, positions=[
+            {"type": "KbPositionCustom", "amount": "1", "unit_price": "108.10", "account_id": 30, "tax_id": 28, "text": "A"}],
+            taxs=[], total="108.10")
+        with self.assertRaisesRegex(isl.Unmapped, "credit note with prices including the VAT"):
+            isl.credit_note(credit, LOOKUPS)
+
+    def test_a_zero_rate_row_keeps_its_zero_price_list_rate_so_ERPNext_does_not_fill_it(self):
+        doc = isl.sales_invoice(INVOICE, LOOKUPS)
+        self.assertEqual(doc["items"][2]["price_list_rate"], 0.0)
+        self.assertNotIn("price_list_rate", doc["items"][0])
+
+    def test_a_fraction_on_the_free_text_item_is_one_unit_at_its_amount_with_the_quantity_in_the_text(self):
+        frac = record(INVOICE, positions=[
+            {"type": "KbPositionCustom", "amount": "1.58", "unit_price": "1000.00", "account_id": 30, "tax_id": 28,
+             "discount_in_percent": "10", "text": "Beratung"}],
+            taxs=[{"percentage": "8.1", "value": "115.18"}], total_net="1422.00", total_taxes="115.18", total="1537.18")
+        doc, differences, totals, _rate = isl._document("Sales Invoice", frac, LOOKUPS)
+        self.assertEqual((doc["items"][0]["qty"], doc["items"][0]["rate"]), (1.0, 1422.0))
+        self.assertEqual(doc["items"][0]["description"], "1.58 x 1000.00 less 10%: Beratung")
+        self.assertNotIn("discount_percentage", doc["items"][0])
+        self.assertEqual(totals, (Decimal("1422.00"), Decimal("115.18"), Decimal("1537.18")))
+        self.assertEqual(differences, [])
+
+    def test_a_discount_on_the_free_text_item_is_kept_in_the_text_not_in_the_discount_fields(self):
+        # ERPNext would refill the free-text item's price on save and drop the discount: the rate is the net
+        doc, differences, totals, _rate = isl._document("Sales Invoice", record(INVOICE, positions=[
+            {"type": "KbPositionCustom", "amount": "2", "unit_price": "100.00", "discount_in_percent": "10",
+             "account_id": 30, "tax_id": 28, "text": "Material"}],
+            taxs=[{"percentage": "8.1", "value": "16.20"}], total_net="180.00", total_taxes="14.58", total="194.58"),
+            LOOKUPS)
+        self.assertEqual((doc["items"][0]["qty"], doc["items"][0]["rate"]), (1.0, 180.0))
+        self.assertEqual(doc["items"][0]["description"], "2 x 100.00 less 10%: Material")
+        self.assertNotIn("discount_percentage", doc["items"][0])
+        self.assertIn("tax 8.1% +1.62", differences)
+
+    def test_a_quantity_of_more_than_three_places_is_one_unit_at_its_amount(self):
+        doc = isl.sales_invoice(record(INVOICE, positions=[
+            {"type": "KbPositionArticle", "article_id": 7, "amount": "4.625346", "unit_price": "100.00",
+             "account_id": 30, "tax_id": 28, "text": "Beratung"}],
+            taxs=[{"percentage": "8.1", "value": "37.50"}], total_net="462.53", total_taxes="37.50", total="500.03"),
+            LOOKUPS)
+        self.assertEqual((doc["items"][0]["qty"], doc["items"][0]["rate"]), (1.0, 462.53))
+        self.assertEqual(doc["items"][0]["description"], "4.625346 x 100.00: Beratung")
+
+    def test_a_fraction_on_an_article_keeps_its_quantity(self):
+        doc = isl.sales_invoice(record(INVOICE, positions=[
+            {"type": "KbPositionArticle", "article_id": 7, "amount": "1.5", "unit_price": "50.00",
+             "account_id": 30, "tax_id": 28, "text": "Beratung"}],
+            taxs=[{"percentage": "8.1", "value": "6.08"}], total_net="75.00", total_taxes="6.08", total="81.08"), LOOKUPS)
+        self.assertEqual(doc["items"][0]["qty"], 1.5)
 
     def test_a_credit_note_with_a_document_discount_is_unmapped(self):
         credit = record(INVOICE, id=801, invoice_id=500, positions=copy.deepcopy(INVOICE["positions"]) + [
@@ -286,7 +350,7 @@ class FieldCheck(unittest.TestCase):
         doc = isl.sales_invoice(INVOICE, LOOKUPS)
         metas = {
             "Sales Invoice": set(doc) - {"remarks", "doctype"} | {"items", "taxes"},
-            "Sales Invoice Item": {"item_code", "description", "qty", "rate", "amount", "income_account"},
+            "Sales Invoice Item": {"item_code", "description", "qty", "rate", "amount", "income_account", "price_list_rate"},
             "Sales Taxes and Charges": {"charge_type", "account_head", "description", "tax_amount"},
         }
         self.assertEqual(isl.unknown_fields(doc, metas), ["Sales Invoice.remarks"])
@@ -346,6 +410,96 @@ class DoctypeFields(unittest.TestCase):
         erp = FakeMeta(["customer"])
         isl.doctype_fields(erp, "Sales Invoice")
         self.assertEqual(erp.reads, [("meta", "Sales Invoice")])
+
+
+class EcbRate(unittest.TestCase):
+    """A foreign invoice without bexio's rate takes the ECB's rate of its date, and says so."""
+
+    def eur(self, **changes):
+        return record(INVOICE, currency_id=2, **changes)
+
+    def test_the_ecb_rate_of_the_document_date_is_used_and_listed(self):
+        seen = []
+
+        def rate_at(code, day):
+            seen.append((code, day))
+            return Decimal("0.90"), day
+
+        doc, differences, _totals, rate = isl._document("Sales Invoice", self.eur(), lookups(rate_at=rate_at))
+        self.assertEqual(seen, [("EUR", "2024-03-01")])
+        self.assertEqual((doc["conversion_rate"], rate), (0.9, Decimal("0.90")))
+        self.assertIn("exchange rate 0.90 for EUR: bexio gives none, the ECB's of 2024-03-01 is used", differences)
+
+    def test_no_ecb_rate_is_unmapped(self):
+        def rate_at(code, day):
+            raise isl.Unmapped("no ECB rate for {} on {}".format(code, day))
+
+        with self.assertRaisesRegex(isl.Unmapped, "no ECB rate"):
+            isl.sales_invoice(self.eur(), lookups(rate_at=rate_at))
+
+    def test_bexio_rate_is_kept_and_the_ecb_is_not_asked(self):
+        def rate_at(code, day):
+            raise AssertionError("bexio gave a rate: no ECB lookup")
+
+        doc = isl.sales_invoice(self.eur(exchange_rate="0.94"), lookups(rate_at=rate_at))
+        self.assertEqual(doc["conversion_rate"], 0.94)
+
+
+class UnchargedInvoice(unittest.TestCase):
+    """bexio charged no VAT on the document, though its positions carry codes: imported untaxed, as bexio charged it."""
+
+    def setUp(self):
+        self.uncharged = record(INVOICE, taxs=[], total_taxes="0.0000", total_gross="150.00", total="150.00")
+
+    def test_untaxed_with_the_codes_listed_and_a_remark(self):
+        doc, differences, totals, _rate = isl._document("Sales Invoice", self.uncharged, LOOKUPS)
+        self.assertEqual(doc["taxes"], [])
+        self.assertEqual(totals, (Decimal("150.00"), Decimal("0"), Decimal("150.00")))
+        self.assertIn("tax 8.1% -8.10", differences)
+        self.assertIn("bexio charged no VAT: imported untaxed, as bexio charged it", differences)
+        self.assertTrue(doc["remarks"].endswith("; bexio: no VAT charged although positions carry a VAT code"))
+
+    def test_a_document_bexio_charged_tax_on_is_not_touched(self):
+        doc = isl.sales_invoice(INVOICE, LOOKUPS)
+        self.assertNotIn("VAT charged", doc["remarks"])
+        self.assertEqual(len(doc["taxes"]), 2)
+
+
+class Drafts(unittest.TestCase):
+    """What --apply hands the loader: invoices named by bexio's number, the ECB rates they use, nothing else."""
+
+    def results(self, invoices, **kinds):
+        data = {"invoices": invoices, "credit_vouchers": [], "orders": [], "offers": []}
+        data.update(kinds)
+        return isl.plan(data, lookups(rate_at=lambda code, day: (Decimal("0.90"), day)))
+
+    def write(self, results):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "drafts.json")
+            counts = isl.write_drafts(results, path)
+            with open(path, encoding="utf-8") as f:
+                return counts, json.load(f)
+
+    def test_each_invoice_is_a_draft_named_by_bexios_number(self):
+        counts, out = self.write(self.results([INVOICE]))
+        self.assertEqual(counts, (1, 0))
+        (draft,) = out["documents"]
+        self.assertEqual((draft["doctype"], draft["name"], draft["bexio_id"]), ("Sales Invoice", "RE-1001", "500"))
+        self.assertNotIn("doctype", draft["values"])
+        self.assertEqual(out["exchange_rates"], [])
+
+    def test_an_ecb_rate_becomes_an_exchange_rate_record_on_the_invoice_date(self):
+        counts, out = self.write(self.results([record(INVOICE, id=501, document_nr="RE-1002", currency_id=2)]))
+        self.assertEqual(counts, (1, 1))
+        self.assertEqual(out["exchange_rates"], [{"date": "2024-03-01", "from": "EUR", "to": "CHF", "rate": 0.9}])
+
+    def test_orders_and_offers_and_unmapped_invoices_are_left_out(self):
+        bad = record(INVOICE, id=502, document_nr="RE-1003", contact_id=999)
+        order = {"id": 900, "document_nr": "AB-1", "contact_id": 100, "currency_id": 1, "is_valid_from": "2024-03-01",
+                 "positions": [], "total": "0"}
+        counts, out = self.write(self.results([INVOICE, bad], orders=[order]))
+        self.assertEqual(counts, (1, 0))
+        self.assertEqual([d["name"] for d in out["documents"]], ["RE-1001"])
 
 
 if __name__ == "__main__":

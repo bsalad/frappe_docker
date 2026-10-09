@@ -4,9 +4,10 @@ Step three of the bexio pipeline, after import_master.py: the customers, items
 and accounts it imported are looked up here by their bexio_id. Each function
 takes one export record and the lookups and returns the ERPNext document as a
 dict, not yet inserted or submitted. Whether these documents post GL, and how
-payments reach them, is the posting plan of finance-3qsp; the live run is
-erp-a2ma's. So nothing is written here: --dry-run reads ERPNext and reports
-what a run would map.
+payments reach them, is the posting plan of finance-3qsp. What this step
+writes is drafts only (docstatus 0, no GL): --dry-run, the default, reads
+ERPNext and reports what a run would map; --apply writes the invoices as
+drafts named by bexio's document number (see write_drafts).
 
 A record that cannot be mapped (an unknown VAT code, account, contact, item or
 position type, a credit note whose invoice is missing, a total that differs
@@ -26,6 +27,8 @@ Run it as:
 
     python3 finance/bexio/import_sales.py --dry-run [--export DIR]
 
+    python3 finance/bexio/import_sales.py --apply [--export DIR]
+
 --export defaults to the newest directory under <private>/bexio-export/. The
 output is totals only; the differences and unmapped records go to a file under
 <private>, never to the repository. Standard library only, plus import_master.
@@ -35,13 +38,22 @@ import argparse
 import collections
 import json
 import os
+import subprocess
 import sys
+import urllib.request
 from decimal import ROUND_HALF_UP, Decimal
 
 import import_master as im
 
 COMPANY = im.COMPANY
 BASE_CURRENCY = "CHF"
+# the ECB's rate of a currency on a day, from the service ERPNext's own exchange-rate fetch uses; a day
+# without a rate (a weekend, a holiday) gets the last one before it, and the response names that day
+RATE_URL = "https://api.frankfurter.app/{day}?from={code}&to=CHF"
+# the documents --apply writes, by export file: the invoices and credit notes; orders and offers are later beads
+APPLY_FILES = ("invoices", "credit_vouchers")
+DRAFTS_FILE = "bexio-sales-drafts.json"
+LOADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "bexio-drafts.sh")
 # free-text positions and text lines: one service item, the description keeps the bexio text
 GENERIC_ITEM = "bexio Position"
 # the lookup value of an invoice that is in the export but not yet in ERPNext (dry run only)
@@ -70,6 +82,9 @@ POSITION_TYPES = {
 
 CENT = Decimal("0.01")
 ZERO = Decimal("0")
+ONE = Decimal("1")
+# ERPNext keeps a quantity to three places
+QUANTITY = Decimal("0.001")
 # the most a document's total may differ from bexio's; the difference goes into the last tax row
 TOTAL_TOLERANCE = Decimal("0.05")
 
@@ -86,16 +101,33 @@ def _cents(value):
     return value.quantize(CENT, rounding=ROUND_HALF_UP)
 
 
+def ecb_rate(code, day):
+    """(rate to CHF, the day it is for) of a currency on a day, from the ECB's published rates."""
+    # the service refuses urllib's default User-Agent with 403
+    request = urllib.request.Request(RATE_URL.format(day=day, code=code), headers={"User-Agent": "bexio-import/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as f:
+            body = json.load(f)
+    except OSError as err:
+        raise Unmapped("no ECB rate for {} on {}: {}".format(code, day, err))
+    return _dec(body["rates"][BASE_CURRENCY]), body["date"]
+
+
 def _currency(record, lookups):
-    """(currency code, rate to CHF) of a document. A foreign currency needs the rate bexio gives."""
+    """(currency code, rate to CHF, the day of the ECB rate or None). A foreign currency takes the rate bexio gives;
+    where bexio gives none, the ECB's rate of the document date (lookups["rate_at"]), listed as a difference."""
     code = lookups["currency"].get(str(record.get("currency_id")))
     if code is None:
         raise Unmapped("currency {} is not in the export".format(record.get("currency_id")))
     if code == BASE_CURRENCY:
-        return code, Decimal("1")
-    if not record.get("exchange_rate"):
+        return code, Decimal("1"), None
+    if record.get("exchange_rate"):
+        return code, _dec(record["exchange_rate"]), None
+    rate_at = lookups.get("rate_at")
+    if rate_at is None:
         raise Unmapped("no exchange rate for {}".format(code))
-    return code, _dec(record["exchange_rate"])
+    rate, day = rate_at(code, record["is_valid_from"])
+    return code, rate, day
 
 
 def _tax(tax_id, lookups):
@@ -115,6 +147,12 @@ def _rows(record, lookups):
     (price list rate and discount percentage), with the rate worked out in cents the way ERPNext does it,
     so that the row amount is the one ERPNext computes. A line without a tax id has no tax: its amount is
     kept under the key None and gets no tax row.
+
+    A row at rate 0 gets price list rate 0 too: the free-text item has a selling price in ERPNext, and
+    a zero rate would otherwise be filled from it on save. A line ERPNext cannot hold as it is (a quantity of
+    more than three places, a fraction on the free-text item, which takes whole quantities, or a discount on
+    the free-text item, whose price ERPNext would refill) is one unit at its amount, with its quantity and
+    discount kept in its text.
     """
     rows, amounts, discount_row = [], {}, False
     for pos in record.get("positions") or []:
@@ -128,7 +166,8 @@ def _rows(record, lookups):
             continue
         text = pos.get("text") or ""
         if kind == "text":
-            rows.append({"item_code": GENERIC_ITEM, "description": text, "qty": 1.0, "rate": 0.0, "amount": 0.0})
+            rows.append({"item_code": GENERIC_ITEM, "description": text, "qty": 1.0, "rate": 0.0, "amount": 0.0,
+                         "price_list_rate": 0.0})
             continue
         qty, price = _dec(pos["amount"]), _dec(pos["unit_price"])
         percent = _dec(pos.get("discount_in_percent") or 0)
@@ -143,10 +182,20 @@ def _rows(record, lookups):
             raise Unmapped("account {} has no Account".format(pos.get("account_id")))
         unit_discount = _cents(price * percent / 100)
         rate = price - unit_discount
+        whole = qty == qty.to_integral_value()
+        precise = qty == qty.quantize(QUANTITY)
+        if (item == GENERIC_ITEM and (not whole or percent)) or not precise:
+            details = "{:f} x {:f}".format(qty.normalize(), price)
+            if percent:
+                details += " less {:f}%".format(percent.normalize())
+            text = "{}: {}".format(details, text)
+            qty, rate, percent = ONE, _cents(qty * rate), ZERO
         row = {"item_code": item, "description": text, "qty": float(qty), "rate": float(rate),
                "income_account": account}
         if percent:
             row.update(price_list_rate=float(price), discount_percentage=float(percent))
+        if not rate:
+            row["price_list_rate"] = 0.0
         rows.append(row)
         key = None
         if pos.get("tax_id") is not None:
@@ -170,10 +219,12 @@ def _document(doctype, record, lookups, credit=False):
     if customer is None:
         raise Unmapped("contact {} has no Customer".format(record.get("contact_id")))
     included = record.get("mwst_is_net") is False
-    currency, rate = _currency(record, lookups)
+    currency, rate, rate_day = _currency(record, lookups)
     rows, amounts, discount_row = _rows(record, lookups)
     if discount_row and (included or credit):
         raise Unmapped("a document discount with prices including the VAT or on a credit note")
+    if included and credit:
+        raise Unmapped("a credit note with prices including the VAT")
     lines = sum(amounts.values(), ZERO)
 
     # a document discount: bexio gives none as an amount, so it is the lines less bexio's net; the
@@ -195,13 +246,14 @@ def _document(doctype, record, lookups, credit=False):
         template = _tax(key, lookups)
         base = amount * taxable / lines if discount else amount
         if included:
+            # ERPNext takes the VAT out of an included price itself; an actual amount cannot be included
             tax_amount = _cents(base * template["rate"] / (100 + template["rate"]))
+            row = {"charge_type": "On Net Total", "account_head": template["account"],
+                   "description": template["name"], "rate": float(template["rate"]), "included_in_print_rate": 1}
         else:
             tax_amount = _cents(base * template["rate"] / 100)
-        row = {"charge_type": "Actual", "account_head": template["account"],
-               "description": template["name"], "tax_amount": float(tax_amount)}
-        if included:
-            row["included_in_print_rate"] = 1
+            row = {"charge_type": "Actual", "account_head": template["account"],
+                   "description": template["name"], "tax_amount": float(tax_amount)}
         taxes.append(row)
         computed[template["rate"]] = computed.get(template["rate"], ZERO) + tax_amount
         last_rate = template["rate"]
@@ -214,6 +266,15 @@ def _document(doctype, record, lookups, credit=False):
         diff = given.get(percentage, ZERO) - computed.get(percentage, ZERO)
         if diff:
             differences.append("tax {:f}% {:+}".format(percentage.normalize(), diff))
+    if rate_day:
+        differences.append("exchange rate {} for {}: bexio gives none, the ECB's of {} is used".format(rate, currency, rate_day))
+
+    # bexio charged no VAT on the document at all, though its positions carry codes: it is imported as bexio
+    # charged it, untaxed, and the remark says so; the per-rate differences above list the codes
+    uncharged = not included and bool(tax) and record.get("total_taxes") is not None and _dec(record["total_taxes"]) == ZERO
+    if uncharged:
+        differences.append("bexio charged no VAT: imported untaxed, as bexio charged it")
+        taxes, computed, tax, last_rate = [], {}, ZERO, None
 
     if record.get("total") is None:
         raise Unmapped("record has no total")
@@ -223,6 +284,8 @@ def _document(doctype, record, lookups, credit=False):
     if abs(absorb) > TOTAL_TOLERANCE:
         raise Unmapped("total differs from bexio's by {:+}".format(absorb))
     if absorb:
+        if included:
+            raise Unmapped("total differs from bexio's by {:+} with prices including the VAT".format(absorb))
         if last_rate is None:
             raise Unmapped("nothing to take a total difference of {:+} in".format(absorb))
         taxes[-1]["tax_amount"] = float(_dec(taxes[-1]["tax_amount"]) + absorb)
@@ -251,7 +314,10 @@ def _document(doctype, record, lookups, credit=False):
     else:
         doc["customer"] = customer
     if doctype == "Sales Invoice":
-        doc.update(remarks="bexio Nr. {}".format(record.get("document_nr") or ""),
+        remarks = "bexio Nr. {}".format(record.get("document_nr") or "")
+        if uncharged:
+            remarks += "; bexio: no VAT charged although positions carry a VAT code"
+        doc.update(remarks=remarks,
                    posting_date=record["is_valid_from"], due_date=record.get("is_valid_to"),
                    set_posting_time=1)
     else:
@@ -371,6 +437,7 @@ def lookups_from_erp(erp, data):
         "tax": tax,
         "invoice": invoices,
         "existing": {dt: set(bexio_names(dt)) for dt in ("Sales Invoice", "Sales Order", "Quotation")},
+        "rate_at": ecb_rate,
     }
 
 
@@ -411,6 +478,34 @@ def summary(results, lookups):
     return "\n".join(lines)
 
 
+def write_drafts(results, path):
+    """The mapped invoices and credit notes as the loader takes them, with the ECB rates they use, into the private file.
+
+    Each draft is named by bexio's document number, which is its ERPNext name; the loader inserts it as a draft
+    (docstatus 0), so nothing posts. The rates go in as Currency Exchange records, so the source is visible.
+    """
+    documents, rates = [], {}
+    for r in results:
+        if r["doc"] is None or r["key"] not in APPLY_FILES:
+            continue
+        doc = dict(r["doc"])
+        doctype = doc.pop("doctype")
+        documents.append({"doctype": doctype, "name": str(r["record"]["document_nr"]), "bexio_id": r["bexio_id"],
+                          "values": doc})
+        if doc["currency"] != BASE_CURRENCY and not r["record"].get("exchange_rate"):
+            rates[(r["record"]["is_valid_from"], doc["currency"])] = doc["conversion_rate"]
+    exchange = [{"date": day, "from": code, "to": BASE_CURRENCY, "rate": rate}
+                for (day, code), rate in sorted(rates.items())]
+    write_private(path, json.dumps({"documents": documents, "exchange_rates": exchange}, indent=1))
+    return len(documents), len(exchange)
+
+
+def write_private(path, text):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text + "\n")
+
+
 def detail_lines(results):
     """The differences and unmapped records, by bexio id, for the private report file."""
     lines = []
@@ -425,15 +520,16 @@ def detail_lines(results):
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(description="Map the exported bexio sales documents to ERPNext (dry run only for now).")
+    parser = argparse.ArgumentParser(description="Map the exported bexio sales documents to ERPNext (a dry run by default).")
     parser.add_argument("--export", default=None, help="export directory (default: the newest under <private>/bexio-export/)")
-    parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals")
+    parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals (the default)")
+    parser.add_argument("--apply", action="store_true", help="write the invoices as drafts into ERPNext, through the loader")
     parser.add_argument("--report", default=os.path.join(im.PRIVATE, "bexio-sales-differences.txt"),
                         help="private file for the unmapped and differing records, by bexio id")
     parser.add_argument("--token-file", default=im.TOKEN_FILE)
     args = parser.parse_args(argv)
-    if not args.dry_run:
-        parser.error("dry run only for now: the live run is erp-a2ma's, after the posting plan (finance-3qsp)")
+    if args.apply and args.dry_run:
+        parser.error("--apply and --dry-run are one or the other")
 
     export_dir = args.export or im.newest_export()
     data = load_documents(export_dir)
@@ -451,10 +547,17 @@ def main(argv):
     print("sales documents from {}".format(export_dir))
     print(summary(results, lookups))
     lines = detail_lines(results)
-    print("dry run: nothing was written; {} lines of differences or unmapped records in {}".format(len(lines), args.report))
     fd = os.open(args.report, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + ("\n" if lines else ""))
+    if args.apply:
+        path = os.path.join(im.PRIVATE, DRAFTS_FILE)
+        documents, rates = write_drafts(results, path)
+        print("{} drafts and {} exchange rates handed to the loader; {} lines of differences or unmapped records in {}".format(
+            documents, rates, len(lines), args.report))
+        subprocess.run(["sh", LOADER, path], check=True)
+    else:
+        print("dry run: nothing was written; {} lines of differences or unmapped records in {}".format(len(lines), args.report))
     unmapped = sum(1 for r in results if r["error"])
     return 1 if unmapped or lines else 0
 

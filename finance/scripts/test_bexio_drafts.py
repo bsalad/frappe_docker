@@ -1,0 +1,173 @@
+"""Offline tests for bexio-drafts.py: the upsert core, against a fake store. No site, no network.
+
+Run with: python3 -m unittest discover -s finance/scripts -p 'test_*.py'
+"""
+
+import importlib.util
+import os
+import unittest
+
+_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bexio-drafts.py")
+_spec = importlib.util.spec_from_file_location("bexio_drafts", _path)
+loader = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(loader)
+
+
+class FakeStore:
+    """Documents by (doctype, name), each with its bexio_id and docstatus; the calls the loader makes, recorded."""
+
+    def __init__(self, docs=None, fail=None):
+        self.docs = {}              # (doctype, name) -> {"bexio_id", "docstatus", ...fields}
+        self.rates = []
+        self.fail = fail or set()   # bexio ids whose insert raises
+        self.calls = []
+        self.commits = 0
+        self.rollbacks = 0
+        for doctype, name, fields in docs or []:
+            self.docs[(doctype, name)] = dict(fields)
+
+    def find(self, doctype, bexio_id):
+        for (dt, name), fields in self.docs.items():
+            if dt == doctype and fields.get("bexio_id") == bexio_id:
+                return name, fields["docstatus"]
+        return None
+
+    def exists(self, doctype, name):
+        return (doctype, name) in self.docs
+
+    def values(self, doctype, name):
+        return dict(self.docs[(doctype, name)])
+
+    def insert(self, doctype, name, values):
+        self.calls.append(("insert", doctype, name))
+        if values.get("bexio_id") in self.fail:
+            raise RuntimeError("the database said no")
+        self.docs[(doctype, name)] = dict(values, docstatus=0)
+
+    def update(self, doctype, name, values):
+        self.calls.append(("update", doctype, name))
+        self.docs[(doctype, name)].update(values)
+
+    def rate_exists(self, rate):
+        return any(r == rate for r in self.rates)
+
+    def insert_rate(self, rate):
+        self.rates.append(rate)
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+def invoice(bexio_id="500", name="RE-1001", **changes):
+    values = {"customer": "Beispiel AG", "posting_date": "2024-03-01", "currency": "CHF", "conversion_rate": 1.0,
+              "bexio_id": bexio_id, "remarks": "bexio Nr. RE-1001", "set_posting_time": 1,
+              "items": [{"item_code": "BEISPIEL-DIENST", "qty": 2.0, "rate": 50.0, "amount": 100.0}],
+              "taxes": [{"account_head": "2200 - USt - bic", "tax_amount": 8.1, "description": "USt 8.1%"}]}
+    values.update(changes)
+    return {"doctype": "Sales Invoice", "name": name, "bexio_id": bexio_id, "values": values}
+
+
+def plan(*documents, rates=()):
+    return {"documents": list(documents), "exchange_rates": list(rates)}
+
+
+class Naming(unittest.TestCase):
+    def test_a_new_draft_is_inserted_under_bexios_number(self):
+        store = FakeStore()
+        counts, failures = loader.apply_plan(plan(invoice()), store)
+        self.assertEqual(store.calls, [("insert", "Sales Invoice", "RE-1001")])
+        self.assertEqual(counts[("Sales Invoice", "created")], 1)
+        self.assertEqual(failures, [])
+
+    def test_a_name_another_document_holds_is_a_conflict_and_left_alone(self):
+        store = FakeStore([("Sales Invoice", "RE-1001", {"bexio_id": "999", "docstatus": 0, "customer": "Anderer"})])
+        counts, _ = loader.apply_plan(plan(invoice()), store)
+        self.assertEqual(counts[("Sales Invoice", "conflict")], 1)
+        self.assertEqual(store.docs[("Sales Invoice", "RE-1001")]["customer"], "Anderer")
+        self.assertEqual(store.calls, [])
+
+    def test_bexio_attachment_ids_are_dropped_before_the_insert(self):
+        store = FakeStore()
+        loader.apply_plan({"documents": [{"doctype": "Purchase Invoice", "name": "R-1", "bexio_id": "b-1",
+                                          "values": {"supplier": "Lieferant", "bexio_attachment_ids": "a-1"}}],
+                           "exchange_rates": []}, store)
+        self.assertNotIn("bexio_attachment_ids", store.docs[("Purchase Invoice", "R-1")])
+
+
+class Upsert(unittest.TestCase):
+    def test_a_rerun_changes_nothing(self):
+        store = FakeStore()
+        loader.apply_plan(plan(invoice()), store)
+        counts, _ = loader.apply_plan(plan(invoice()), store)
+        self.assertEqual(counts[("Sales Invoice", "unchanged")], 1)
+        self.assertEqual(store.calls, [("insert", "Sales Invoice", "RE-1001")])
+
+    def test_a_changed_draft_is_updated_in_place_and_never_duplicated(self):
+        store = FakeStore()
+        loader.apply_plan(plan(invoice()), store)
+        counts, _ = loader.apply_plan(plan(invoice(items=[{"item_code": "BEISPIEL-DIENST", "qty": 3.0, "rate": 50.0,
+                                                           "amount": 150.0}])), store)
+        self.assertEqual(counts[("Sales Invoice", "updated")], 1)
+        self.assertEqual(store.calls[-1], ("update", "Sales Invoice", "RE-1001"))
+        self.assertEqual([d for (dt, _), d in store.docs.items() if dt == "Sales Invoice"][0]["items"][0]["qty"], 3.0)
+        self.assertEqual(len(store.docs), 1)
+
+    def test_a_submitted_document_is_skipped_and_counted(self):
+        store = FakeStore([("Sales Invoice", "RE-1001", {"bexio_id": "500", "docstatus": 1, "customer": "Beispiel AG"})])
+        counts, _ = loader.apply_plan(plan(invoice(customer="Neu")), store)
+        self.assertEqual(counts[("Sales Invoice", "skipped")], 1)
+        self.assertEqual(store.docs[("Sales Invoice", "RE-1001")]["customer"], "Beispiel AG")
+        self.assertEqual(store.calls, [])
+
+    def test_a_number_difference_within_float_noise_is_no_change(self):
+        store = FakeStore()
+        loader.apply_plan(plan(invoice(conversion_rate=0.8774700000001)), store)
+        counts, _ = loader.apply_plan(plan(invoice(conversion_rate=0.87747)), store)
+        self.assertEqual(counts[("Sales Invoice", "unchanged")], 1)
+
+
+class Failures(unittest.TestCase):
+    def test_one_failing_document_is_rolled_back_and_the_rest_still_load(self):
+        store = FakeStore(fail={"501"})
+        counts, failures = loader.apply_plan(plan(invoice("500", "RE-1001"), invoice("501", "RE-1002"),
+                                                  invoice("502", "RE-1003")), store)
+        self.assertEqual(counts[("Sales Invoice", "created")], 2)
+        self.assertEqual(counts[("Sales Invoice", "failed")], 1)
+        self.assertEqual(store.rollbacks, 1)
+        self.assertEqual([(dt, bid) for dt, bid, _ in failures], [("Sales Invoice", "501")])
+        self.assertEqual(store.commits, 2)
+
+
+class Rates(unittest.TestCase):
+    def test_an_exchange_rate_is_inserted_once(self):
+        store = FakeStore()
+        rate = {"date": "2024-08-01", "from": "USD", "to": "CHF", "rate": 0.87747}
+        counts, _ = loader.apply_plan(plan(rates=[rate]), store)
+        self.assertEqual(counts["exchange rate created"], 1)
+        counts, _ = loader.apply_plan(plan(rates=[rate]), store)
+        self.assertEqual(counts["exchange rate unchanged"], 1)
+        self.assertEqual(len(store.rates), 1)
+
+
+class Differs(unittest.TestCase):
+    def test_numbers_text_and_empty_compare_as_the_database_writes_them(self):
+        self.assertFalse(loader.differs({"a": 1, "b": "x", "c": None}, {"a": 1.0, "b": "x", "c": ""}))
+        self.assertTrue(loader.differs({"a": 1}, {"a": 2}))
+
+    def test_erpnext_line_breaks_and_line_endings_are_the_same_text(self):
+        self.assertFalse(loader.differs({"terms": "Hallo<br />Welt\r\nDank"}, {"terms": "Hallo<br>Welt\nDank"}))
+
+    def test_an_entity_for_a_letter_is_the_same_letter(self):
+        self.assertFalse(loader.differs({"terms": "Grüsse &uuml;"}, {"terms": "Gr&uuml;sse ü"}))
+
+    def test_a_table_compares_row_by_row_in_order(self):
+        have = {"items": [{"qty": 1.0, "name": "row-1"}]}
+        self.assertFalse(loader.differs(have, {"items": [{"qty": 1}]}))
+        self.assertTrue(loader.differs(have, {"items": [{"qty": 1}, {"qty": 2}]}))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -10,12 +10,11 @@ from decimal import Decimal
 
 import import_master as im
 import import_purchase as ip
-from test_import_master import FakeErp
 
 # Item Tax Templates by bexio tax id (invented names; one template per bexio code, keyed by its bexio_id)
 TAXES = {
     "35": "Test MWST bexio 35", "38": "Test MWST bexio 38", "37": "Test MWST bexio 37",
-    "22": "Test MWST bexio 22",
+    "22": "Test MWST bexio 22", "32": "Test BZB81 bexio 32",
 }
 
 
@@ -23,7 +22,8 @@ def lookups(taxes=TAXES):
     return ip.Lookups(
         suppliers={"901": "Lieferant Test AG"},
         accounts={"5001": "5001 - Testaufwand - bic", "5002": "5002 - Testmaterial - bic"},
-        account_by_number={"1170": "1170 - Vorsteuer Material/DL - bic", "1171": "1171 - Vorsteuer Invest. - bic"},
+        account_by_number={"1170": "1170 - Vorsteuer Material/DL - bic", "1171": "1171 - Vorsteuer Invest. - bic",
+                           "2203": "2203 - Bezugsteuer - bic"},
         taxes=dict(taxes),
     )
 
@@ -157,9 +157,21 @@ class MapBillFromLineItemsTest(unittest.TestCase):
         with self.assertRaisesRegex(ip.MappingError, "is not 8.1%"):
             ip.map_bill(full_bill(lines=[line(129.7, 12.0, 38)]), lookups())
 
-    def test_net_amounts_with_vat_are_not_mapped(self):
-        with self.assertRaisesRegex(ip.MappingError, "reverse charge"):
-            ip.map_bill(full_bill(lines=[line(18000, 1458.0, 32)], item_net=True), lookups())
+    def test_net_amounts_with_vat_other_than_reverse_charge_are_not_mapped(self):
+        with self.assertRaisesRegex(ip.MappingError, "other than reverse charge"):
+            ip.map_bill(full_bill(lines=[line(18000, 1458.0, 35)], item_net=True), lookups())
+
+    def test_reverse_charge_is_the_vat_booked_twice_so_the_total_is_the_net(self):
+        doc = ip.map_bill(full_bill(lines=[line(18000, 1458.0, 32)], item_net=True, net=18000, gross=18000), lookups())
+        self.assertEqual([r["amount"] for r in doc["items"]], [18000.0])
+        self.assertEqual(
+            [(r["account_head"], r["add_deduct_tax"], r["tax_amount"]) for r in doc["taxes"]],
+            [("1171 - Vorsteuer Invest. - bic", "Add", 1458.0), ("2203 - Bezugsteuer - bic", "Deduct", 1458.0)])
+        self.assertEqual(ip.document_totals(doc), (Decimal("18000"), Decimal("0"), Decimal("18000")))
+
+    def test_reverse_charge_without_the_template_is_reported(self):
+        with self.assertRaisesRegex(ip.MappingError, "no Item Tax Template with bexio_id 33"):
+            ip.map_bill(full_bill(lines=[line(1000, 81.0, 33)], item_net=True), lookups())
 
     def test_net_amounts_without_vat_are_mapped_as_they_are(self):
         doc = ip.map_bill(full_bill(lines=[line(18000, 0, None)], item_net=True), lookups())
@@ -217,28 +229,27 @@ class DryRunTest(unittest.TestCase):
         return {"id": "e-1", "contact_id": 901, "currency_code": "CHF", "paid_on": "2025-05-02",
                 "gross": 0, "status": "draft", "booking_account_id": 5001, "tax_id": 47}
 
-    def test_main_takes_the_dry_run_only(self):
-        with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(ip.main([]), 2)
+    def test_apply_and_dry_run_together_are_refused(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            ip.main(["--apply", "--dry-run"])
 
 
-class UpsertTest(unittest.TestCase):
-    def setUp(self):
-        self.erp = FakeErp({"Purchase Invoice": []})
+class DraftsTest(unittest.TestCase):
+    def test_each_bill_that_maps_is_a_draft_named_by_bexios_document_number(self):
+        (draft,) = ip.drafts([bill(bid="b-1", document_no="R-77")], lookups())
+        self.assertEqual((draft["doctype"], draft["name"], draft["bexio_id"]), ("Purchase Invoice", "R-77", "b-1"))
+        self.assertEqual(draft["values"]["bill_no"], "LF-1")
+        self.assertNotIn("doctype", draft["values"])
 
-    def test_first_run_creates_and_second_run_changes_nothing(self):
-        doc = ip.map_bill(bill(), lookups())
-        name = ip.upsert_purchase_invoice(self.erp, doc)
-        self.assertIsNotNone(name)
-        self.assertEqual(self.erp.writes, 1)
-        self.assertEqual(ip.upsert_purchase_invoice(self.erp, ip.map_bill(bill(), lookups())), name)
-        self.assertEqual(self.erp.writes, 1)
+    def test_a_bill_that_does_not_map_or_whose_total_differs_is_left_out(self):
+        good = bill(bid="b-1", document_no="R-1")
+        off = bill(bid="b-2", document_no="R-2", net=380, gross=402.86)  # one rappen above what its lines give
+        broken = bill(bid="b-3", document_no="R-3", positions=[pos(1, 10, 16)])
+        self.assertEqual([d["name"] for d in ip.drafts([good, off, broken], lookups())], ["R-1"])
 
-    def test_a_changed_bill_updates_the_same_document(self):
-        name = ip.upsert_purchase_invoice(self.erp, ip.map_bill(bill(), lookups()))
-        changed = ip.map_bill(bill(positions=[pos(1, 10, 35)]), lookups())
-        self.assertEqual(ip.upsert_purchase_invoice(self.erp, changed), name)
-        self.assertEqual(self.erp.docs["Purchase Invoice"][name]["items"][0]["amount"], 10.0)
+    def test_two_bills_with_one_document_number_are_refused(self):
+        with self.assertRaisesRegex(ip.MappingError, "document number R-1"):
+            ip.drafts([bill(bid="b-1", document_no="R-1"), bill(bid="b-2", document_no="R-1")], lookups())
 
 
 if __name__ == "__main__":
