@@ -90,3 +90,19 @@ paid). The differences and unmapped records, by bexio id, go to
   confirmed against a real export.
 - Document number: kept in `remarks` ("bexio Nr. ..."); the dry run lists any
   field the ERPNext doctype does not have.
+
+## Attachments (bexio files to Purchase Invoices)
+
+`import_files.py` plans the attachment of the bexio files (receipts, PDFs) to the
+Purchase Invoices they belong to, so the books keep their vouchers (GeBüV, see
+`finance/docs/archiving.md`). A bill or an expense lists its files by bexio id
+(`attachment_ids`); the file becomes a private ERPNext File on the Purchase Invoice with
+the same `bexio_id`. The live run is erp-a2ma's. The dry run reads ERPNext and writes nothing:
+
+    python3 finance/bexio/import_files.py --dry-run [--export DIR]
+
+It prints totals per doctype only. The bexio ids of the files it cannot place go to
+`<private>/bexio-files-dry-run.txt`. Rows: `no metadata` (no `files.json` entry), `no content`
+(no file under `files/`), `size differs`, `no document` (the Purchase Invoice is not in ERPNext
+yet), `unlinked` (no record lists it), `shared` (two records list it). A file already attached
+is recognised by the description `bexio file <id>` or by name and size, so a second run skips it.
