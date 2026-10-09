@@ -4,10 +4,8 @@ Step two of the master-data pipeline; export.py wrote the files. Every record
 is keyed by the bexio id in the custom field `bexio_id`: it is looked up
 there, updated when a field differs, created when it is missing, and never
 matched by name. A second run on the same export therefore changes nothing.
-Two exceptions need a first-run bridge, both stated where they happen: the
-accounts of the KMU chart carry no bexio_id yet and are adopted by account
-number, and lookup lists without the field (Bank, Designation, Currency) are
-keyed by their name, which is their key.
+One exception needs a first-run bridge: the accounts of the KMU chart carry
+no bexio_id yet and are adopted by account number.
 
 Runs as api-agent@finance.local through the REST API; the key and secret are
 read from the token file and never printed. Run it as:
@@ -18,7 +16,9 @@ read from the token file and never printed. Run it as:
 --dry-run reads ERPNext and writes nothing; it prints the totals a real run
 would produce. The output is totals per doctype only, no company data.
 
-Order: groups, accounts, items, parties (Customer, Supplier), contacts,
+Left out because the API user may not write them: Bank (made by
+`swiss-setup.sh banks`, which takes the names from --print-banks) and Designation (the role text of a contact relation
+stays in the export). Order: groups, accounts, items, parties (Customer, Supplier), contacts,
 addresses, bank accounts. Currencies are set by `swiss-setup.sh currencies`
 (the API user may not write Currency); this script only checks them.
 Standard library only.
@@ -67,7 +67,7 @@ VAT_OF_TAX_ID = {
 
 DOCTYPES = [
     "Currency", "Customer Group", "Supplier Group", "Account", "Item", "Item Price",
-    "Customer", "Supplier", "Contact", "Address", "Bank", "Designation", "Bank Account",
+    "Customer", "Supplier", "Contact", "Address", "Bank Account",
 ]
 
 
@@ -163,7 +163,8 @@ def norm(value):
         return ""
     if isinstance(value, (bool, int, float)):
         return repr(float(value))
-    return str(value)
+    # ERPNext stores line breaks of text fields as \n
+    return str(value).replace("\r\n", "\n").strip()
 
 
 def differs(have, want):
@@ -256,23 +257,6 @@ class Importer:
             self.stats.problem(doctype, bexio_id, err)
             return None
         self.names[(doctype, bexio_id)] = name
-        return name
-
-    def lookup(self, doctype, name, field):
-        """Make sure a plain lookup record exists (Bank, Designation); these have no bexio_id, their name is their key."""
-        if not name or (doctype, name) in self.names:
-            return name
-        try:
-            if not self.erp.list(doctype, [["name", "=", name]]):
-                if not self.dry_run:
-                    self.erp.insert(doctype, {field: name})
-                self.stats.count(doctype, "created")
-            else:
-                self.stats.count(doctype, "unchanged")
-        except ErpError as err:
-            self.stats.problem(doctype, "-", err)
-            return None
-        self.names[(doctype, name)] = name
         return name
 
     # ---- currencies ----
@@ -486,25 +470,19 @@ class Importer:
         return links
 
     def import_contacts(self):
-        roles = {}
-        for r in self.data["contact_relations"]:
-            roles.setdefault(r["contact_sub_id"], r.get("description") or "")
         salutations = {s["id"]: SALUTATIONS.get(s["name"]) for s in self.data["salutations"]}
         for c in self.data["contacts"]:
             person = c["contact_type_id"] == 2
             first, last = (c["name_2"], c["name_1"]) if person else (c["name_1"], c["name_2"] or "")
             want = {
-                "first_name": first or last, "last_name": last if first else "",
+                # the document name is first-last-<party name> in a 140 character column; the full name stays in company_name
+                "first_name": (first or last)[:18], "last_name": (last if first else "")[:18],
                 "company_name": "" if person else c["name_1"],
                 "salutation": (salutations.get(c["salutation_id"]) or "") if person else "",
-                "email_ids": [{"email_id": m, "is_primary": 1 if i == 0 else 0} for i, m in enumerate(filter(None, (c["mail"], c["mail_second"])))],
+                "email_ids": [{"email_id": m, "is_primary": 1 if i == 0 else 0} for i, m in enumerate(_mails(c))],
                 "phone_nos": _phones(c),
                 "links": self._links(c["id"]),
             }
-            if person and roles.get(c["id"]):
-                designation = self.lookup("Designation", roles[c["id"]], "designation_name")
-                if designation:
-                    want["designation"] = designation
             self.upsert("Contact", c["id"], want, "-")
 
     def import_addresses(self):
@@ -534,14 +512,18 @@ class Importer:
     def import_bank_accounts(self):
         gl = {a["id"]: a for a in self.data["accounts"]}
         for b in self.data["bank_accounts"]:
-            bank = self.lookup("Bank", b["bank_name"] or b["name"], "bank_name")
             account = gl.get(b["account_id"])
             gl_name = account and self.names.get(("Account", str(account["id"])))
-            if not bank or not gl_name:
+            if not gl_name:
                 self.stats.count("Bank Account", "failed")
-                self.stats.problems.append("Bank Account {}: bank or GL account missing".format(b["id"]))
+                self.stats.problems.append("Bank Account {}: GL account missing".format(b["id"]))
                 continue
             title = b["name"]
+            bank = bank_name(b)
+            if not self.erp.list("Bank", [["name", "=", bank]]) and not self.dry_run:
+                self.stats.count("Bank Account", "failed")
+                self.stats.problems.append("Bank Account {}: Bank record missing; run swiss-setup.sh banks (see README)".format(b["id"]))
+                continue
             self.upsert("Bank Account", b["id"], {
                 "account_name": title, "bank": bank, "account": gl_name, "is_company_account": 1,
                 "company": COMPANY, "iban": b["iban_nr"] or "", "bank_account_no": b["bank_account_nr"] or "",
@@ -560,16 +542,34 @@ class Importer:
         return self.stats
 
 
+def bank_name(bank_account):
+    return bank_account["bank_name"] or bank_account["name"]
+
+
 def display_name(contact):
     if contact["contact_type_id"] == 2:
         return " ".join(filter(None, (contact["name_2"], contact["name_1"]))).strip()
     return " ".join(filter(None, (contact["name_1"], contact["name_2"]))).strip()
 
 
+def _is_phone(value):
+    return bool(value) and all(ch.isdigit() or ch in " +()-./" for ch in value)
+
+
+def _mails(c):
+    """Mail fields, plus a mail address that was typed into a phone field (ERPNext refuses it there)."""
+    found = [m for m in (c["mail"], c["mail_second"]) if m]
+    for field in ("phone_fixed", "phone_fixed_second", "phone_mobile"):
+        value = c.get(field)
+        if value and "@" in value and value not in found:
+            found.append(value)
+    return found
+
+
 def _phones(c):
     rows = []
     for field, flag in (("phone_fixed", "is_primary_phone"), ("phone_fixed_second", None), ("phone_mobile", "is_primary_mobile_no")):
-        if c.get(field):
+        if _is_phone(c.get(field)):
             row = {"phone": c[field]}
             if flag:
                 row[flag] = 1
@@ -581,11 +581,20 @@ def main(argv):
     parser = argparse.ArgumentParser(description="Import the exported bexio master data into ERPNext.")
     parser.add_argument("--export", default=None, help="export directory (default: the newest under <private>/bexio-export/)")
     parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals")
+    parser.add_argument("--print-banks", action="store_true", help="print the bank names to create with swiss-setup.sh banks, then exit")
     parser.add_argument("--token-file", default=TOKEN_FILE)
     args = parser.parse_args(argv)
     export_dir = args.export or newest_export()
+    if args.print_banks:
+        print("\n".join(sorted({bank_name(b) for b in load_export(export_dir)["bank_accounts"]})))
+        return 0
     importer = Importer(Erp.from_file(args.token_file), load_export(export_dir), dry_run=args.dry_run)
-    stats = importer.run()
+    try:
+        stats = importer.run()
+    except ErpError as err:
+        # a lookup that every record depends on failed (permission, field missing): stop, do not count it per record
+        print("aborted: {}".format(err), file=sys.stderr)
+        return 2
     print("import from {}".format(export_dir))
     print(stats.report(args.dry_run))
     for line in stats.problems:

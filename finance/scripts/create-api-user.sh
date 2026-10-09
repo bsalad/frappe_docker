@@ -36,7 +36,11 @@ import frappe
 from frappe.core.doctype.user.user import generate_keys
 
 EMAIL = "api-agent@finance.local"
-ROLES = ["Accounts User", "Sales User", "Purchase User", "Stock User"]
+# The master managers and Item Manager are what the bexio master-data import
+# needs to create Supplier, Customer/Supplier Group, Item and Item Price. No
+# System Manager: Bank, Currency and Designation stay out of its reach.
+ROLES = ["Accounts User", "Sales User", "Purchase User", "Stock User",
+         "Sales Master Manager", "Purchase Master Manager", "Item Manager"]
 force = sys.argv[1] == "1"
 
 frappe.init(site="frontend", sites_path=".")

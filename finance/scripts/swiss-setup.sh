@@ -5,7 +5,7 @@
 # installed (finance/docs/erpnext-setup.md).
 #
 #   finance/scripts/swiss-setup.sh                # all steps
-#   finance/scripts/swiss-setup.sh vat fiscal     # some of: coa vat fiscal fields currencies
+#   finance/scripts/swiss-setup.sh vat fiscal     # some of: coa vat fiscal fields currencies banks
 set -eu
 
 # Compose files live at the repo root, two levels up from this script.
@@ -13,6 +13,6 @@ cd "$(dirname "$0")/../.."
 
 # bench's own Python loads the site; the script goes in on stdin so the
 # container needs no copy of it.
-docker compose -p frappe-finance -f pwd.yml -f finance-local.yml exec -T backend \
+docker compose -p frappe-finance -f pwd.yml -f finance-local.yml exec -T -e BANKS="${BANKS:-}" backend \
   sh -c 'cd /home/frappe/frappe-bench/sites && exec ../env/bin/python - "$@"' sh "$@" \
   < finance/scripts/swiss-setup.py

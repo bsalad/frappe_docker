@@ -40,3 +40,24 @@ command above again. A new login replaces the stored token.
 
 Revoking the old personal access token (`BEXIO_TOKEN`) is a separate step, done in
 bexio once the scripts run on this login.
+
+## Master-data pipeline (export, then import)
+
+1. Export, read-only, to private JSON files (needs the bexio login, so under varlock):
+
+       varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio/export.py
+
+2. One-off per site, as Administrator in the backend container (the API user may not
+   write these): `finance/scripts/swiss-setup.sh fields currencies`, and the banks
+   that the Bank Accounts need:
+
+       BANKS="$(python3 finance/bexio/import_master.py --print-banks)" finance/scripts/swiss-setup.sh banks
+
+3. Import into ERPNext as `api-agent@finance.local` (token file `~/ws_yardr_finance/.erpnext-api`):
+
+       python3 finance/bexio/import_master.py --dry-run   # totals only
+       python3 finance/bexio/import_master.py
+
+Each record is keyed by `bexio_id`; a second run changes nothing. Take a backup
+first (`bench --site frontend backup`). The export directory is company data and
+stays under `~/ws_yardr_finance/private/`, never in the repository.

@@ -1,7 +1,8 @@
 """Swiss setup of company BI Concepts, run inside the backend container by
 swiss-setup.sh. Steps are named on the command line (coa, vat, fiscal,
-fields, currencies); each one is re-runnable and skips what already exists."""
+fields, currencies, banks); each one is re-runnable and skips what already exists."""
 import csv
+import os
 import sys
 
 import frappe
@@ -247,7 +248,18 @@ def currencies():
     say(f"currencies: {frappe.db.count('Currency', {'enabled': 1})} enabled")
 
 
-STEPS = {"coa": coa, "vat": vat, "fiscal": fiscal, "fields": fields, "currencies": currencies}
+def banks():
+    # Bank needs System Manager, which the API user lacks. The names are company
+    # data, so they come from the BANKS environment variable (one per line),
+    # never from this file: import_master.py --print-banks lists them.
+    for name in filter(None, (n.strip() for n in os.environ.get("BANKS", "").split("\n"))):
+        if not frappe.db.exists("Bank", name):
+            frappe.get_doc({"doctype": "Bank", "bank_name": name}).insert()
+    frappe.db.commit()
+    say(f"banks: {frappe.db.count('Bank')} banks")
+
+
+STEPS = {"coa": coa, "vat": vat, "fiscal": fiscal, "fields": fields, "currencies": currencies, "banks": banks}
 
 if __name__ == "__main__":
     steps = sys.argv[1:] or list(STEPS)

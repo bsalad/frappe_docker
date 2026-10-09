@@ -147,6 +147,7 @@ def contact(cid, ctype, name1, name2, nr, groups, salutation=None, country=1, st
 def erp_with_chart():
     erp = FakeErp(chart())
     erp.docs["Currency"] = {"CHF": {"name": "CHF", "enabled": 1}, "EUR": {"name": "EUR", "enabled": 1}}
+    erp.docs["Bank"] = {"Testbank AG": {"name": "Testbank AG"}}
     erp.docs["Country"] = {"Switzerland": {"name": "Switzerland", "code": "ch"}, "Germany": {"name": "Germany", "code": "de"}}
     erp.docs["Item Tax Template"] = {"MWST 8.1% Normal (ab 2024) - bic": {
         "name": "MWST 8.1% Normal (ab 2024) - bic", "title": "MWST 8.1% Normal (ab 2024)", "company": im.COMPANY}}
@@ -234,8 +235,7 @@ class MasterDataTest(unittest.TestCase):
     def test_person_with_a_company_is_only_a_contact_linked_to_it(self):
         self.assertFalse([c for c in self.docs["Customer"].values() if c["bexio_id"] == "4"])
         contact = self.find("Contact", 4)
-        self.assertEqual((contact["first_name"], contact["last_name"], contact["salutation"], contact["designation"]),
-                         ("Anna", "Meier", "Ms", "Einkauf"))
+        self.assertEqual((contact["first_name"], contact["last_name"], contact["salutation"]), ("Anna", "Meier", "Ms"))
         self.assertEqual(contact["links"], [{"link_doctype": "Customer", "link_name": "Muster AG"}])
 
     def test_person_without_a_company_is_an_individual_customer_and_a_contact(self):
@@ -265,7 +265,6 @@ class MasterDataTest(unittest.TestCase):
     def test_bank_account_links_bank_and_gl_account(self):
         b = self.find("Bank Account", 1)
         self.assertEqual((b["bank"], b["account"], b["is_company_account"]), ("Testbank AG", "1020 - Testbank - bic", 1))
-        self.assertIn("Testbank AG", self.docs["Bank"])
 
     def test_same_name_gets_the_bexio_number(self):
         data = export_data()
@@ -356,10 +355,40 @@ class ProblemsTest(unittest.TestCase):
         self.assertTrue(any("swiss-setup.sh currencies" in p for p in stats.problems))
 
 
+class ContactDataTest(unittest.TestCase):
+    def test_long_company_name_fits_the_contact_name_and_a_mail_in_a_phone_field_moves(self):
+        data = export_data()
+        data["contacts"][2]["name_1"] = "Sehr " * 40 + "lang AG"
+        data["contacts"][2]["phone_fixed"] = "kontakt@example.invalid"
+        data["contacts"][2]["phone_mobile"] = "+41 79 000 00 00"
+        erp = erp_with_chart()
+        stats = run(erp, data=data).stats
+        self.assertEqual(stats.failed(), 0)
+        c = next(d for d in erp.docs["Contact"].values() if d["bexio_id"] == "3")
+        self.assertLessEqual(len(c["first_name"]), 18)
+        self.assertIn("kontakt@example.invalid", [m["email_id"] for m in c["email_ids"]])
+        self.assertEqual([p["phone"] for p in c["phone_nos"]], ["+41 79 000 00 00"])
+
+
+class BankTest(unittest.TestCase):
+    def test_missing_bank_record_is_a_clear_problem_not_a_crash(self):
+        erp = erp_with_chart()
+        erp.docs["Bank"] = {}
+        stats = run(erp).stats
+        self.assertEqual(stats.rows["Bank Account"]["failed"], 1)
+        self.assertTrue(any("swiss-setup.sh banks" in p for p in stats.problems))
+
+    def test_print_banks_lists_the_names_to_create(self):
+        self.assertEqual(sorted({im.bank_name(b) for b in export_data()["bank_accounts"]}), ["Testbank AG"])
+
+
 class HelpersTest(unittest.TestCase):
     def test_differs_ignores_empty_and_number_forms(self):
         self.assertFalse(im.differs({"a": None, "b": 1000.0, "c": 0}, {"a": "", "b": "1000.0", "c": False}))
         self.assertTrue(im.differs({"a": "x"}, {"a": "y"}))
+
+    def test_differs_ignores_windows_line_breaks(self):
+        self.assertFalse(im.differs({"d": "<li>a</li>\n<li>b</li>"}, {"d": "<li>a</li>\r\n<li>b</li>"}))
 
     def test_differs_compares_child_rows_on_the_keys_sent(self):
         have = {"links": [{"link_doctype": "Customer", "link_name": "A", "idx": 1}]}
