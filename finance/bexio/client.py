@@ -80,20 +80,21 @@ class Client:
         self._base_url = base_url.rstrip("/")
         self.requests = 0
 
-    def get(self, path, params=None):
-        """GET one resource; returns the decoded JSON body."""
+    def get(self, path, params=None, raw=False):
+        """GET one resource; returns the decoded JSON body, or the bytes when raw (a file's content)."""
         url = self._base_url + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
         for attempt in range(MAX_RETRIES + 1):
             self.requests += 1
             req = urllib.request.Request(url, method="GET")
-            req.add_header("Accept", "application/json")
+            req.add_header("Accept", "*/*" if raw else "application/json")
             req.add_header("Authorization", "Bearer " + self._token)
             req.add_header("User-Agent", "yardr-finance-bexio-inventory/1.0")
             try:
                 with urllib.request.urlopen(req, timeout=60) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
+                    body = resp.read()
+                return body if raw else json.loads(body.decode("utf-8"))
             except urllib.error.HTTPError as err:
                 retryable = err.code == 429 or 500 <= err.code < 600
                 if not retryable or attempt == MAX_RETRIES:

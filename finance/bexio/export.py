@@ -1,13 +1,13 @@
-"""Export the bexio master data to private JSON files, one per entity.
+"""Export the bexio data to private JSON files: master data, accounting history, documents.
 
-Step one of the master-data pipeline; import_master.py reads the files and
-puts them into ERPNext. GET only (client.py has no way to write). Nothing is
-masked: the files are the private copy of the account's data, so they go to
-/Users/bsaladin/ws_yardr_finance/private/ (directory mode 700, files 600) and
-never into the repository.
+Step one of the pipelines: import_master.py reads the master-data files and puts
+them into ERPNext; the posting plan reads the journal and the documents. GET only
+(client.py has no way to write). Nothing is masked: the files are the private copy
+of the account's data, so they go to /Users/bsaladin/ws_yardr_finance/private/
+(directory mode 700, files 600) and never into the repository.
 
 Run it as:
-    varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio/export.py [--out DIR]
+    varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio/export.py [--out DIR] [--only ENTITY ...]
 
 --out defaults to <private>/bexio-export/<YYYY-MM-DD>/. Besides the entity
 files the directory gets manifest.json: per entity the file, the record count
@@ -15,15 +15,20 @@ and the status. An entity the token has no scope for (403) or the API does not
 know (404) is recorded in the manifest and skipped, so one gap does not stop
 the run; the exit status is 2 when a required entity is missing.
 
-Invoices and bills are exported for their parties only: they decide whether a
-contact becomes a Customer, a Supplier or both. The documents themselves are
-imported by a later bead.
+--only reruns the named entities (repeatable) and keeps the manifest entries of
+the others; without it every entity is exported.
+
+Documents come with their positions: invoices, orders, offers and purchase bills
+are read as a list, then one call per record adds the positions to it. The
+payments of each invoice go to invoice_payments.json. The content of each file
+goes to files/<id>.<extension>; files.json holds the metadata of all of them.
 """
 
 import argparse
 import datetime
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +37,12 @@ from client import BexioError, Client  # noqa: E402
 
 PRIVATE = "/Users/bsaladin/ws_yardr_finance/private"
 
+FILES = "files"
+
+# A file's content, tried in order: the first path that answers wins. Not yet
+# checked against the live API; a 404 on both is recorded per file in the manifest.
+FILE_CONTENT_PATHS = ("/3.0/files/{id}/download", "/3.0/files/{id}/content")
+
 
 def offset(path):
     return ("offset", path, None)
@@ -39,6 +50,16 @@ def offset(path):
 
 def pages(path, size_param, rows_key):
     return ("pages", path, (size_param, rows_key))
+
+
+def detailed(listing, template):
+    """The records of `listing`, each merged with the answer of GET `template` (positions)."""
+    return ("detailed", listing, template)
+
+
+def attached(listing, template):
+    """One item per record of `listing`: {"parent_id", "rows"} with the answer of GET `template`."""
+    return ("attached", listing, template)
 
 
 # file name -> (how to read it, required). Required entities are what the
@@ -52,8 +73,19 @@ ENTITIES = {
     "account_groups": (offset("/2.0/account_groups"), False),
     "currencies": (offset("/3.0/currencies"), True),
     "bank_accounts": (offset("/3.0/banking/accounts"), True),
-    "invoices": (offset("/2.0/kb_invoice"), True),
-    "bills": (pages("/4.0/purchase/bills", "page_size", "data"), True),
+    "business_years": (offset("/3.0/accounting/business_years"), True),
+    "manual_entries": (offset("/3.0/accounting/manual_entries"), True),
+    "journal": (offset("/3.0/accounting/journal"), True),
+    "invoices": (detailed(offset("/2.0/kb_invoice"), "/2.0/kb_invoice/{id}"), True),
+    "invoice_payments": (attached(offset("/2.0/kb_invoice"), "/2.0/kb_invoice/{id}/payment"), True),
+    "credit_vouchers": (offset("/2.0/kb_credit_voucher"), False),
+    "orders": (detailed(offset("/2.0/kb_order"), "/2.0/kb_order/{id}"), False),
+    "offers": (detailed(offset("/2.0/kb_offer"), "/2.0/kb_offer/{id}"), False),
+    "bills": (detailed(pages("/4.0/purchase/bills", "page_size", "data"), "/4.0/purchase/bills/{id}"), True),
+    "expenses": (pages("/4.0/expenses", "page_size", "data"), False),
+    "payments": (pages("/4.0/banking/payments", "per-page", "results"), False),
+    "bank_transactions": (offset("/3.0/banking/transactions"), True),
+    FILES: (offset("/3.0/files"), False),
     "countries": (offset("/2.0/country"), False),
     "units": (offset("/2.0/unit"), False),
     "salutations": (offset("/2.0/salutation"), False),
@@ -66,29 +98,98 @@ def default_out(today=None):
     return os.path.join(PRIVATE, "bexio-export", today.isoformat())
 
 
+def get_record(client, template, record_id):
+    """GET one record by its id. Some answers come wrapped in {"data": {...}}; unwrapped here."""
+    body = client.get(template.format(id=record_id))
+    if isinstance(body, dict) and set(body) == {"data"} and isinstance(body["data"], dict):
+        return body["data"]
+    return body
+
+
 def read_entity(client, spec):
-    kind, path, extra = spec
+    kind = spec[0]
     if kind == "offset":
-        return list(client.paginate(path))
-    size_param, rows_key = extra
-    return list(client.paginate_pages(path, size_param, rows_key))
+        return list(client.paginate(spec[1]))
+    if kind == "pages":
+        size_param, rows_key = spec[2]
+        return list(client.paginate_pages(spec[1], size_param, rows_key))
+    if kind == "detailed":
+        rows = []
+        for row in read_entity(client, spec[1]):
+            merged = dict(row)
+            merged.update(get_record(client, spec[2], row["id"]))
+            rows.append(merged)
+        return rows
+    if kind == "attached":
+        return [{"parent_id": row["id"], "rows": get_record(client, spec[2], row["id"])}
+                for row in read_entity(client, spec[1])]
+    raise ValueError("unknown entity kind {!r}".format(kind))
+
+
+def _open_private(path):
+    """Open for writing with mode 600, whatever the umask."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    return os.fdopen(fd, "w", encoding="utf-8")
 
 
 def write_private(path, data):
-    """Write JSON with mode 600, whatever the umask."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
+    with _open_private(path) as f:
         json.dump(data, f, ensure_ascii=False, indent=1, sort_keys=True)
         f.write("\n")
 
 
-def export(client, out, entities=None):
-    """Write every entity to `out` and return the manifest (also written there)."""
+def write_private_bytes(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+
+def file_name(row):
+    """<id>.<extension> for a file's metadata row; the extension only when it is a plain word."""
+    extension = re.sub(r"[^A-Za-z0-9]", "", str(row.get("extension") or ""))[:10]
+    return "{}.{}".format(row["id"], extension) if extension else str(row["id"])
+
+
+def download_files(client, rows, out):
+    """Write each file's content to out/files/; returns the manifest summary of the downloads."""
+    folder = os.path.join(out, "files")
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    os.chmod(folder, 0o700)
+    summary = {"downloaded": 0, "bytes": 0, "failed": []}
+    for row in rows:
+        content = None
+        for template in FILE_CONTENT_PATHS:
+            try:
+                content = client.get(template.format(id=row["id"]), raw=True)
+                break
+            except BexioError:
+                continue
+        if content is None:
+            summary["failed"].append(row["id"])
+            continue
+        write_private_bytes(os.path.join(folder, file_name(row)), content)
+        summary["downloaded"] += 1
+        summary["bytes"] += len(content)
+    return summary
+
+
+def read_manifest(out):
+    path = os.path.join(out, "manifest.json")
+    if not os.path.exists(path):
+        return {"entities": {}}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def export(client, out, entities=None, only=None):
+    """Write the entities (all, or just `only`) to `out` and return the manifest (also written there)."""
     entities = entities or ENTITIES
     os.makedirs(out, mode=0o700, exist_ok=True)
     os.chmod(out, 0o700)
-    manifest = {"exported_on": datetime.date.today().isoformat(), "entities": {}}
-    for name, (spec, required) in entities.items():
+    manifest = read_manifest(out) if only else {"entities": {}}
+    manifest["exported_on"] = datetime.date.today().isoformat()
+    for name in (only or entities):
+        spec, required = entities[name]
         entry = {"file": name + ".json", "required": required}
         try:
             rows = read_entity(client, spec)
@@ -101,6 +202,8 @@ def export(client, out, entities=None):
         else:
             write_private(os.path.join(out, entry["file"]), rows)
             entry.update(status="ok", count=len(rows))
+            if name == FILES:
+                entry.update(download_files(client, rows, out))
         manifest["entities"][name] = entry
     write_private(os.path.join(out, "manifest.json"), manifest)
     return manifest
@@ -111,14 +214,23 @@ def failed_required(manifest):
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(description="Export bexio master data to private JSON files (read-only).")
+    parser = argparse.ArgumentParser(description="Export bexio data to private JSON files (read-only).")
     parser.add_argument("--out", default=None, help="target directory (default: <private>/bexio-export/<today>/)")
+    parser.add_argument("--only", action="append", choices=sorted(ENTITIES), metavar="ENTITY",
+                        help="export only this entity (repeatable); the manifest keeps the others")
     args = parser.parse_args(argv)
     out = args.out or default_out()
-    manifest = export(Client(), out)
+    manifest = export(Client(), out, only=args.only)
     print("exported to {}".format(out))
     for name, entry in manifest["entities"].items():
-        print("  {:<18} {}".format(name, entry["count"] if entry["status"] == "ok" else entry["error"]))
+        if entry["status"] != "ok":
+            print("  {:<18} {}".format(name, entry["error"]))
+            continue
+        line = "  {:<18} {}".format(name, entry["count"])
+        if name == FILES:
+            line += " (downloaded {}, {} bytes, failed {})".format(
+                entry["downloaded"], entry["bytes"], len(entry["failed"]))
+        print(line)
     missing = failed_required(manifest)
     if missing:
         print("missing required entities: {}".format(", ".join(missing)), file=sys.stderr)
