@@ -126,12 +126,20 @@ class Sales(unittest.TestCase):
         self.assertEqual(mr.form_totals(t)[0]["200"][0], D("500.00"))
         self.assertEqual(t.unchecked_tax, D("0"))
 
-    def test_tax_on_an_unchecked_umsatz_row_is_named_not_put_in_a_ziffer(self):
+    def test_optiert_sale_is_owed_at_the_normal_rate(self):
         t = mr.plan([doc(datetime.date(2026, 8, 3), D("100.00"), [
             tax("UO81 8.1% optiert", "8.10"),
         ])], [], TEMPLATE_NAMES)
+        self.assertEqual(mr.form_totals(t)[0]["303"], [D("100.00"), D("8.10")])
+        self.assertEqual(mr.form_totals(t)[0]["399"][1], D("8.10"))
+        self.assertEqual(t.unchecked_tax, D("0"))
+
+    def test_tax_on_a_template_without_a_ziffer_is_named_not_put_in_a_ziffer(self):
+        t = mr.plan([], [doc(datetime.date(2026, 8, 3), D("100.00"), [
+            tax("Vorsteuer Import", "8.10", "Add"),
+        ])], {"Vorsteuer Import": "7"})
         self.assertEqual(t.unchecked_tax, D("8.10"))
-        self.assertEqual(mr.form_totals(t)[0]["399"][1], D("0"))
+        self.assertEqual(mr.form_totals(t)[0]["420"][1], D("0"))
 
     def test_credit_note_is_negative_and_reduces_the_row(self):
         t = mr.plan([

@@ -43,6 +43,7 @@ ZERO = Decimal("0")
 # Date of the change as the form gives it (the bexio validity column is not used for this).
 BEZUG_NEW_ROW_FROM = datetime.date(2024, 1, 1)
 
+# Optiert (UO77, UO81) is taxed at the normal rate, so its tax is owed in 302/303 like UN77/UN81.
 # bexio VAT id -> (code, rate %, kind, form row). Kind S = sales, P = purchase, BZ = Bezugsteuer.
 # The form row is where the tax of the template's Add row goes; for BZ the Deduct row
 # (the reverse charge on 2203) is the owed tax, see owed_row(). None = not in a checked Ziffer.
@@ -60,8 +61,8 @@ TEMPLATES = {
     6: ("UNO", 0, "S", None),
     13: ("SUB", 0, "S", None),
     14: ("SPE", 0, "S", None),
-    15: ("UO77", 7.7, "S", None),
-    31: ("UO81", 8.1, "S", None),
+    15: ("UO77", 7.7, "S", "302"),
+    31: ("UO81", 8.1, "S", "303"),
     48: ("U00", 0, "S", None),
     22: ("VM77", 7.7, "P", "400"),
     35: ("VM81", 8.1, "P", "400"),
