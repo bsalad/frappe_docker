@@ -8,7 +8,10 @@ still describes the generic setup; this file covers only what this yard runs.
 - Compose project `frappe-finance`, built from two files:
   `pwd.yml` (the ERPNext stack) and `finance-local.yml` (the loopback-only
   port override).
-- ERPNext / frappe `v16.50.0`, site `frontend` (the default site).
+- ERPNext / frappe `v16.50.0` with erpnextswiss, site `frontend` (the default
+  site). The image is `frappe-finance-custom:v16.50.0-swiss`, set in
+  `finance-local.yml`; build it with `finance/scripts/build-image.sh`. Swiss
+  setup of the company: `finance/docs/erpnext-setup.md`.
 - Services: `backend`, `frontend`, `websocket`, `scheduler`, `queue-short`,
   `queue-long`, `configurator`, `create-site`, `db` (MariaDB 11.8),
   `redis-cache` and `redis-queue`.
@@ -90,4 +93,4 @@ roles Accounts User, Sales User, Purchase User and Stock User.
 files must parse together. Upstream's pre-commit lint runs only if `pre-commit`
 is installed.
 
-Not covered here: backups, upgrades and custom apps. Those come in later beads.
+Not covered here: backups and upgrades. Those come in later beads.
