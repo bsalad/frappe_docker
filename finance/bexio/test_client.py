@@ -1,0 +1,156 @@
+"""Offline tests for client.py: paging, retries and error handling, no network.
+
+Run with: python3 -m unittest discover -s finance/bexio -p 'test_*.py'
+"""
+
+import io
+import os
+import unittest
+import urllib.error
+from unittest import mock
+
+import client
+from client import BexioError, Client
+
+
+def _client():
+    return Client(token="test-token-not-real")
+
+
+class OffsetPagingTest(unittest.TestCase):
+    def test_walks_all_rows_when_server_caps_the_page(self):
+        # The server returns at most 100 rows whatever limit it is asked for
+        # (bills did this: 500 asked, 100 back). Every row must still come out.
+        rows = list(range(250))
+        c = _client()
+
+        def fake_get(path, params=None):
+            offset = params["offset"]
+            return rows[offset:offset + 100]
+
+        with mock.patch.object(c, "get", side_effect=fake_get):
+            self.assertEqual(list(c.paginate("/x", page_size=500)), rows)
+
+    def test_stops_on_empty_page_not_on_short_page(self):
+        c = _client()
+        pages = [[1, 2], [3], []]
+        with mock.patch.object(c, "get", side_effect=pages) as get:
+            self.assertEqual(list(c.paginate("/x", page_size=500)), [1, 2, 3])
+            self.assertEqual(get.call_count, 3)
+
+    def test_empty_list_yields_nothing(self):
+        c = _client()
+        with mock.patch.object(c, "get", return_value=[]):
+            self.assertEqual(list(c.paginate("/x")), [])
+
+    def test_non_list_body_is_an_error(self):
+        c = _client()
+        with mock.patch.object(c, "get", return_value={"unexpected": True}):
+            with self.assertRaises(BexioError):
+                list(c.paginate("/x"))
+
+
+class IgnoredOffsetTest(unittest.TestCase):
+    # /3.0/taxes and /3.0/accounting/business_years ignore limit and offset
+    # and return the same rows on every page; the live run looped to its cap.
+    ROWS = [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}, {"id": 3, "v": "c"}]
+
+    def test_offset_stops_when_a_page_brings_no_new_id(self):
+        c = _client()
+        with mock.patch.object(c, "get", return_value=list(self.ROWS)) as get:
+            self.assertEqual(list(c.paginate("/3.0/taxes")), self.ROWS)
+            self.assertEqual(get.call_count, 2)
+
+    def test_offset_yields_each_id_once_across_overlapping_pages(self):
+        c = _client()
+        pages = [self.ROWS[:2], self.ROWS[1:], self.ROWS[1:]]
+        with mock.patch.object(c, "get", side_effect=pages):
+            self.assertEqual(list(c.paginate("/x")), self.ROWS)
+
+    def test_page_numbered_stops_when_a_page_brings_no_new_id(self):
+        c = _client()
+        body = {"data": list(self.ROWS)}
+        with mock.patch.object(c, "get", return_value=body) as get:
+            got = list(c.paginate_pages("/p", "page_size", rows_key="data"))
+            self.assertEqual(got, self.ROWS)
+            self.assertEqual(get.call_count, 2)
+
+    def test_rows_without_id_are_never_dropped(self):
+        c = _client()
+        rows = [{"a": 1}, {"a": 1}]
+        with mock.patch.object(c, "get", side_effect=[rows, []]):
+            self.assertEqual(list(c.paginate("/x")), rows)
+
+
+class PagePagingTest(unittest.TestCase):
+    def test_walks_pages_and_reads_rows_under_key(self):
+        c = _client()
+        bodies = [
+            {"data": [1, 2, 3], "paging": {}},
+            {"data": [4, 5], "paging": {}},
+            {"data": [], "paging": {}},
+        ]
+        with mock.patch.object(c, "get", side_effect=bodies) as get:
+            got = list(c.paginate_pages("/p", "page_size", rows_key="data", page_size=3))
+            self.assertEqual(got, [1, 2, 3, 4, 5])
+            self.assertEqual([call.args[1]["page"] for call in get.call_args_list], [1, 2, 3])
+            self.assertEqual(get.call_args_list[0].args[1]["page_size"], 3)
+
+    def test_uses_the_size_parameter_the_endpoint_names(self):
+        c = _client()
+        with mock.patch.object(c, "get", side_effect=[{"results": []}]) as get:
+            list(c.paginate_pages("/banking", "per-page", rows_key="results"))
+            self.assertIn("per-page", get.call_args.args[1])
+            self.assertNotIn("page_size", get.call_args.args[1])
+
+    def test_bare_list_body_without_rows_key(self):
+        c = _client()
+        with mock.patch.object(c, "get", side_effect=[[7], []]):
+            self.assertEqual(list(c.paginate_pages("/p", "page_size", page_size=1)), [7])
+
+
+class ErrorTest(unittest.TestCase):
+    def _http_error(self, code, headers=None):
+        return urllib.error.HTTPError("https://api.bexio.com/x", code, "err", headers or {}, io.BytesIO(b""))
+
+    def test_404_raises_without_retry(self):
+        c = _client()
+        with mock.patch("urllib.request.urlopen", side_effect=self._http_error(404)) as opened:
+            with self.assertRaises(BexioError) as ctx:
+                c.get("/x")
+            self.assertEqual(ctx.exception.status, 404)
+            self.assertEqual(opened.call_count, 1)
+
+    def test_error_message_never_contains_the_token(self):
+        c = Client(token="SECRET-TOKEN-VALUE")
+        with mock.patch("urllib.request.urlopen", side_effect=self._http_error(403)):
+            with self.assertRaises(BexioError) as ctx:
+                c.get("/x")
+        self.assertNotIn("SECRET-TOKEN-VALUE", str(ctx.exception))
+
+    def test_429_is_retried_after_retry_after(self):
+        c = _client()
+        ok = mock.MagicMock()
+        ok.__enter__.return_value.read.return_value = b"[]"
+        errors = [self._http_error(429, {"Retry-After": "0"}), ok]
+        with mock.patch("urllib.request.urlopen", side_effect=errors), \
+                mock.patch.object(client.time, "sleep") as sleep:
+            self.assertEqual(c.get("/x"), [])
+            sleep.assert_called_once()
+
+    def test_missing_token_refuses_to_start(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(SystemExit):
+                Client()
+
+    def test_only_get_requests_are_issued(self):
+        c = _client()
+        ok = mock.MagicMock()
+        ok.__enter__.return_value.read.return_value = b"[]"
+        with mock.patch("urllib.request.urlopen", return_value=ok) as opened:
+            c.get("/x")
+            self.assertEqual(opened.call_args.args[0].get_method(), "GET")
+
+
+if __name__ == "__main__":
+    unittest.main()

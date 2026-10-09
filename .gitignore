@@ -32,3 +32,4 @@ node_modules
 # VitePress
 **/.vitepress/dist
 **/.vitepress/cache
+/finance/docs/bexio-mapping.md
