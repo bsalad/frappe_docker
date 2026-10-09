@@ -20,6 +20,7 @@ class FakeStore:
         self.docs = {}              # (doctype, name) -> {"bexio_id", "docstatus", ...fields}
         self.rates = []
         self.fail = fail or set()   # bexio ids whose insert raises
+        self.submit_fail = set()    # bexio ids whose submit raises
         self.calls = []
         self.commits = 0
         self.rollbacks = 0
@@ -47,6 +48,12 @@ class FakeStore:
     def update(self, doctype, name, values):
         self.calls.append(("update", doctype, name))
         self.docs[(doctype, name)].update(values)
+
+    def submit(self, doctype, name):
+        self.calls.append(("submit", doctype, name))
+        if self.docs[(doctype, name)].get("bexio_id") in self.submit_fail:
+            raise RuntimeError("validation failed on submit")
+        self.docs[(doctype, name)]["docstatus"] = 1
 
     def rate_exists(self, rate):
         return any(r == rate for r in self.rates)
@@ -139,6 +146,68 @@ class Failures(unittest.TestCase):
         self.assertEqual(store.rollbacks, 1)
         self.assertEqual([(dt, bid) for dt, bid, _ in failures], [("Sales Invoice", "501")])
         self.assertEqual(store.commits, 2)
+
+
+class Submit(unittest.TestCase):
+    def test_each_new_draft_is_submitted_after_it_is_loaded(self):
+        store = FakeStore()
+        counts, failures = loader.apply_plan(plan(invoice("500", "RE-1001")), store, submit=True)
+        self.assertEqual(store.calls, [("insert", "Sales Invoice", "RE-1001"), ("submit", "Sales Invoice", "RE-1001")])
+        self.assertEqual(store.docs[("Sales Invoice", "RE-1001")]["docstatus"], 1)
+        self.assertEqual(counts[("Sales Invoice", "created")], 1)
+        self.assertEqual(counts[("Sales Invoice", "submitted")], 1)
+        self.assertEqual(failures, [])
+
+    def test_a_draft_loaded_earlier_is_submitted_in_place(self):
+        store = FakeStore()
+        loader.apply_plan(plan(invoice()), store)
+        counts, _ = loader.apply_plan(plan(invoice()), store, submit=True)
+        self.assertEqual(counts[("Sales Invoice", "unchanged")], 1)
+        self.assertEqual(counts[("Sales Invoice", "submitted")], 1)
+        self.assertEqual(store.calls[-1], ("submit", "Sales Invoice", "RE-1001"))
+        self.assertEqual(len(store.docs), 1)
+
+    def test_a_second_run_submits_nothing(self):
+        store = FakeStore()
+        loader.apply_plan(plan(invoice()), store, submit=True)
+        store.calls = []
+        counts, _ = loader.apply_plan(plan(invoice()), store, submit=True)
+        self.assertEqual(counts[("Sales Invoice", "skipped")], 1)
+        self.assertEqual(counts.get(("Sales Invoice", "submitted"), 0), 0)
+        self.assertEqual(store.calls, [])
+
+    def test_drafts_are_submitted_in_posting_date_order(self):
+        store = FakeStore()
+        late = invoice("501", "RE-1002", posting_date="2024-05-01")
+        early = invoice("500", "RE-1001", posting_date="2024-03-01")
+        loader.apply_plan(plan(late, early), store, submit=True)
+        submits = [name for call, _, name in store.calls if call == "submit"]
+        self.assertEqual(submits, ["RE-1001", "RE-1002"])
+
+    def test_a_document_the_plan_keeps_stays_a_draft_and_is_counted(self):
+        store = FakeStore()
+        counts, _ = loader.apply_plan(dict(plan(invoice("500", "RE-1001"), invoice("501", "RE-1002")),
+                                           keep_draft=["501"]), store, submit=True)
+        self.assertEqual(store.docs[("Sales Invoice", "RE-1002")]["docstatus"], 0)
+        self.assertEqual(store.docs[("Sales Invoice", "RE-1001")]["docstatus"], 1)
+        self.assertEqual(counts[("Sales Invoice", "kept draft")], 1)
+        self.assertEqual(counts[("Sales Invoice", "submitted")], 1)
+
+    def test_a_draft_that_fails_on_submit_is_rolled_back_and_listed(self):
+        store = FakeStore()
+        store.submit_fail = {"500"}
+        counts, failures = loader.apply_plan(plan(invoice("500", "RE-1001"), invoice("501", "RE-1002")),
+                                             store, submit=True)
+        self.assertEqual(counts[("Sales Invoice", "failed")], 1)
+        self.assertEqual(counts[("Sales Invoice", "submitted")], 1)
+        self.assertEqual(store.rollbacks, 1)
+        self.assertEqual([(dt, bid) for dt, bid, _ in failures], [("Sales Invoice", "500")])
+        self.assertEqual(store.docs[("Sales Invoice", "RE-1002")]["docstatus"], 1)
+
+    def test_without_submit_nothing_is_submitted(self):
+        store = FakeStore()
+        loader.apply_plan(plan(invoice()), store)
+        self.assertNotIn("submit", [call for call, _, _ in store.calls])
 
 
 class Rates(unittest.TestCase):

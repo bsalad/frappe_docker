@@ -125,6 +125,12 @@ backend container as Administrator. Each draft is named by bexio's
 nothing that is already right. A foreign-currency invoice is booked in CHF, as
 bexio books it (see Currencies below).
 
+`finance/scripts/bexio-drafts.sh <plan.json> submit` also submits each draft
+after it is loaded, in posting date order: that is the step that writes the GL.
+A plan's `keep_draft` lists the bexio ids that stay drafts. A document already
+submitted is skipped, so a second run submits nothing; a draft that fails
+validation on submit is rolled back and listed by bexio id.
+
 The dry run reads ERPNext and prints totals only: counts per export file, the
 CHF net, tax and gross per year, and the invoice status counts (8 open, 9
 paid). The differences and unmapped records, by bexio id, go to

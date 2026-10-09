@@ -3,8 +3,10 @@
 Its input, on stdin, is the plan that import_sales.py and import_purchase.py write (with --apply) under
 <private>: {"documents": [{"doctype", "name", "bexio_id", "values"}], "exchange_rates": [{"date", "from", "to", "rate"}]}.
 
-Each document is a draft, docstatus 0, so nothing posts. It is named by bexio's number (the name is set on
-insert, which bypasses the naming series, so the ACC-SINV and ACC-PINV counters do not move). A document is
+Each document is a draft, docstatus 0, so nothing posts, unless MODE is submit: then each draft is submitted after it
+is loaded, in posting date order, so its GL entries exist (the plan's keep_draft lists the bexio ids that stay
+drafts). It is named by bexio's number (the name is set on insert, which bypasses the naming series, so the ACC-SINV
+and ACC-PINV counters do not move). A document is
 keyed by bexio_id: one that exists as a draft is updated in place, one that is submitted is skipped, and a
 name that another document holds is a conflict and is left alone. A rerun changes nothing that is already
 right. Each document is committed on its own, so a run that stops half way resumes where it stopped.
@@ -18,6 +20,7 @@ Standard library only; frappe is imported where the store is made, inside the co
 
 import html
 import json
+import os
 import sys
 from collections import Counter
 
@@ -64,26 +67,31 @@ def differs(have, want):
 
 
 def load_document(item, store):
-    """'created', 'updated', 'unchanged', 'skipped' (submitted), or 'conflict' (the name is another document's)."""
+    """(status, name). Status: 'created', 'updated', 'unchanged', 'skipped' (submitted), or 'conflict' (the name is another document's)."""
     doctype, name, bexio_id = item["doctype"], str(item["name"]), str(item["bexio_id"])
     values = {key: value for key, value in item["values"].items() if key not in DROP}
     found = store.find(doctype, bexio_id)
     if found:
         current, docstatus = found
         if docstatus != DRAFT:
-            return "skipped"
+            return "skipped", current
         if not differs(store.values(doctype, current), values):
-            return "unchanged"
+            return "unchanged", current
         store.update(doctype, current, values)
-        return "updated"
+        return "updated", current
     if store.exists(doctype, name):
-        return "conflict"
+        return "conflict", name
     store.insert(doctype, name, values)
-    return "created"
+    return "created", name
 
 
-def apply_plan(plan, store):
-    """Load the exchange rates, then the documents, committing each one; returns the counts and the failures."""
+def apply_plan(plan, store, submit=False):
+    """Load the exchange rates, then the documents, committing each one; returns the counts and the failures.
+
+    With submit, each draft the plan does not keep is submitted after it is loaded, in posting date order, so its GL
+    entries exist. A document already submitted is skipped and counted. The plan's keep_draft lists the bexio ids
+    that stay drafts; they are counted as kept.
+    """
     counts, failures = Counter(), []
     for rate in plan.get("exchange_rates", []):
         if store.rate_exists(rate):
@@ -92,15 +100,25 @@ def apply_plan(plan, store):
             store.insert_rate(rate)
             counts["exchange rate created"] += 1
         store.commit()
-    for item in plan["documents"]:
+    keep_draft = {str(bexio_id) for bexio_id in plan.get("keep_draft", [])}
+    documents = plan["documents"]
+    if submit:
+        documents = sorted(documents, key=lambda item: (item["values"].get("posting_date") or "", str(item["name"])))
+    for item in documents:
         try:
-            status = load_document(item, store)
+            status, name = load_document(item, store)
+            counts[(item["doctype"], status)] += 1
+            if submit and status != "skipped":
+                if str(item["bexio_id"]) in keep_draft:
+                    counts[(item["doctype"], "kept draft")] += 1
+                else:
+                    store.submit(item["doctype"], name)
+                    counts[(item["doctype"], "submitted")] += 1
             store.commit()
         except Exception as err:  # one document's failure must not stop the others; it is listed by bexio id
             store.rollback()
-            status = "failed"
+            counts[(item["doctype"], "failed")] += 1
             failures.append((item["doctype"], str(item["bexio_id"]), "{}: {}".format(type(err).__name__, err)))
-        counts[(item["doctype"], status)] += 1
     return counts, failures
 
 
@@ -130,6 +148,10 @@ class FrappeStore:
         doc.update(values)
         doc.save()
 
+    def submit(self, doctype, name):
+        # the GL entries are written here; a validation error raises and the document stays a draft
+        self.frappe.get_doc(doctype, name).submit()
+
     def rate_exists(self, rate):
         return bool(self.frappe.db.exists("Currency Exchange", {
             "date": rate["date"], "from_currency": rate["from"], "to_currency": rate["to"], "for_selling": 1}))
@@ -154,7 +176,8 @@ def main(stdin):
     frappe.init(site=SITE)
     frappe.connect()
     frappe.set_user("Administrator")
-    counts, failures = apply_plan(plan, FrappeStore(frappe))
+    submit = os.environ.get("MODE") == "submit"
+    counts, failures = apply_plan(plan, FrappeStore(frappe), submit=submit)
     for key in sorted(counts, key=str):
         if isinstance(key, tuple):
             print("{:<18}{:<12}{:>6}".format(key[0], key[1], counts[key]))
