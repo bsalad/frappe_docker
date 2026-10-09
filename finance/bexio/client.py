@@ -1,9 +1,11 @@
 """Read-only client for the bexio REST API.
 
-GET only: this module has no way to write to bexio, so the inventory cannot
-change the account. The token is read from the BEXIO_TOKEN environment
-variable (injected by varlock) and is never stored, printed or put in an
-error message.
+GET only: this module has no way to write to bexio, so the scripts cannot
+change the account. The access token comes from the OAuth refresh token in the
+keychain (oauth.refresh_access_token()); only where no refresh token exists
+does the BEXIO_TOKEN environment variable (a personal access token, injected
+by varlock) stand in. Which of the two was used is printed to stderr; the
+token itself is never stored, printed or put in an error message.
 
 Run the scripts that use it as:
     varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio/inventory.py
@@ -13,6 +15,7 @@ Standard library only, so it runs on the system Python.
 
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -36,11 +39,43 @@ class BexioError(Exception):
         self.path = path
 
 
+def resolve_token():
+    """(token, kind) for the API: the OAuth login first, the PAT only without one.
+
+    kind is "oauth" or "pat". A refresh token that exists but is refused is an
+    error, not a reason to fall back: a stale PAT would hide a login that needs
+    renewing. A keychain that cannot be opened at all (no macOS Security
+    framework) counts as no refresh token.
+    """
+    import oauth  # lazy: the Security framework is only loaded when a token is needed
+
+    try:
+        has_login = oauth.read_refresh_token() is not None
+    except OSError:
+        has_login = False
+    except oauth.KeychainError as err:
+        raise SystemExit("keychain: {}".format(err))
+    if has_login:
+        try:
+            return oauth.refresh_access_token(), "oauth"
+        except (oauth.OAuthError, oauth.KeychainError) as err:
+            raise SystemExit("bexio login: {}".format(err))
+    pat = os.environ.get("BEXIO_TOKEN")
+    if pat:
+        return pat, "pat"
+    raise SystemExit(
+        "no bexio refresh token in the keychain and BEXIO_TOKEN is not set; "
+        "log in with `{}` (see finance/bexio/README.md)".format(oauth.LOGIN_COMMAND)
+    )
+
+
 class Client:
     def __init__(self, token=None, base_url=BASE_URL):
-        token = token if token is not None else os.environ.get("BEXIO_TOKEN")
-        if not token:
-            raise SystemExit("BEXIO_TOKEN is not set; run this under varlock (see the module docstring)")
+        if token is None:
+            token, self.token_kind = resolve_token()
+            print("bexio token: {}".format("OAuth refresh token" if self.token_kind == "oauth" else "personal access token (BEXIO_TOKEN)"), file=sys.stderr)
+        else:
+            self.token_kind = "given"
         self._token = token
         self._base_url = base_url.rstrip("/")
         self.requests = 0

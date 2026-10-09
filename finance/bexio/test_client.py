@@ -139,7 +139,10 @@ class ErrorTest(unittest.TestCase):
             sleep.assert_called_once()
 
     def test_missing_token_refuses_to_start(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
+        import oauth
+
+        with mock.patch.object(oauth, "read_refresh_token", return_value=None), \
+                mock.patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(SystemExit):
                 Client()
 
@@ -150,6 +153,65 @@ class ErrorTest(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", return_value=ok) as opened:
             c.get("/x")
             self.assertEqual(opened.call_args.args[0].get_method(), "GET")
+
+
+
+class TokenSourceTest(unittest.TestCase):
+    # The access token comes from the OAuth login; the PAT only stands in
+    # where no refresh token exists. The kind is printed, the value never.
+
+    def _resolve(self, refresh_token=None, refresh_result="access-from-oauth", pat=None, read_error=None):
+        import oauth
+
+        env = {"BEXIO_TOKEN": pat} if pat else {}
+        read = mock.patch.object(oauth, "read_refresh_token", return_value=refresh_token, side_effect=read_error)
+        refresh = mock.patch.object(oauth, "refresh_access_token", return_value=refresh_result)
+        with read, refresh as refreshed, mock.patch.dict(os.environ, env, clear=True):
+            try:
+                return client.resolve_token(), refreshed
+            except SystemExit as exit_:
+                return exit_, refreshed
+
+    def test_oauth_login_wins_over_the_pat(self):
+        (token, kind), refreshed = self._resolve(refresh_token="r", pat="pat-value")
+        self.assertEqual((token, kind), ("access-from-oauth", "oauth"))
+        refreshed.assert_called_once()
+
+    def test_pat_is_the_fallback_without_a_refresh_token(self):
+        (token, kind), refreshed = self._resolve(refresh_token=None, pat="pat-value")
+        self.assertEqual((token, kind), ("pat-value", "pat"))
+        refreshed.assert_not_called()
+
+    def test_unopenable_keychain_counts_as_no_login(self):
+        (token, kind), _ = self._resolve(pat="pat-value", read_error=OSError("no Security framework"))
+        self.assertEqual(kind, "pat")
+
+    def test_refused_refresh_token_does_not_fall_back_to_the_pat(self):
+        import oauth
+
+        with mock.patch.object(oauth, "read_refresh_token", return_value="r"), \
+                mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.OAuthError("invalid_grant")), \
+                mock.patch.dict(os.environ, {"BEXIO_TOKEN": "pat-value"}, clear=True):
+            with self.assertRaises(SystemExit) as caught:
+                client.resolve_token()
+        self.assertIn("invalid_grant", str(caught.exception))
+        self.assertNotIn("pat-value", str(caught.exception))
+
+    def test_neither_token_names_the_login_command(self):
+        result, _ = self._resolve()
+        self.assertIsInstance(result, SystemExit)
+        self.assertIn("oauth.py login", str(result))
+
+    def test_client_prints_the_kind_not_the_value(self):
+        import io
+        from contextlib import redirect_stderr
+
+        err = io.StringIO()
+        with mock.patch.object(client, "resolve_token", return_value=("secret-access-token", "oauth")), redirect_stderr(err):
+            c = Client()
+        self.assertEqual(c.token_kind, "oauth")
+        self.assertIn("OAuth", err.getvalue())
+        self.assertNotIn("secret-access-token", err.getvalue())
 
 
 if __name__ == "__main__":
