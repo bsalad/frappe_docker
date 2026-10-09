@@ -19,8 +19,8 @@ Two cases build no entry, and the dry run says which one applies:
 - the journal has no opening lines in the first year (the company started in
   bexio), so no opening entry is needed.
 
-Nothing is written here. --dry-run reads ERPNext (the Temporary Opening account
-and the Opening Entries already there) and prints what the export gives. The
+Nothing is written here. --dry-run reads ERPNext (whether 9100 and 9900 are in the chart, and the
+Opening Entries already there) and prints what the export gives. The
 live run is erp-a2ma's, after the posting plan (finance-3qsp).
 
 Run it as:
@@ -28,8 +28,10 @@ Run it as:
     python3 finance/bexio/import_opening.py --dry-run [--export DIR]
 
 --export defaults to the newest directory under <private>/bexio-export/. The
-output is counts and dates only, no company data. Standard library only, plus
-import_master.
+output is counts and dates only, no company data. Receivable and Payable
+accounts need a party on each opening line in ERPNext; the lines here carry none, so
+the live run (erp-a2ma) must split those accounts per contact first. Standard library
+only, plus import_master.
 """
 
 import argparse
