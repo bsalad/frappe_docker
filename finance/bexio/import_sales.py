@@ -181,7 +181,7 @@ def _document(doctype, record, lookups, credit=False):
 
     doc = {
         "doctype": doctype, "company": COMPANY, "currency": currency, "conversion_rate": float(rate),
-        "bexio_id": bexio_id, "remarks": "bexio Nr. {}".format(record.get("document_nr") or ""),
+        "bexio_id": bexio_id,
         "terms": "\n".join(part for part in (record.get("header"), record.get("footer")) if part),
         "items": rows, "taxes": taxes,
     }
@@ -191,8 +191,13 @@ def _document(doctype, record, lookups, credit=False):
     else:
         doc["customer"] = customer
     if doctype == "Sales Invoice":
-        doc.update(posting_date=record["is_valid_from"], due_date=record.get("is_valid_to"))
-    elif doctype == "Sales Order":
+        doc.update(remarks="bexio Nr. {}".format(record.get("document_nr") or ""),
+                   posting_date=record["is_valid_from"], due_date=record.get("is_valid_to"))
+    else:
+        # ERPNext's Sales Order and Quotation have neither a remarks field nor an income_account on their items
+        for row in rows:
+            row.pop("income_account", None)
+    if doctype == "Sales Order":
         doc["transaction_date"] = record["is_valid_from"]
         for row in rows:
             row["delivery_date"] = record["is_valid_from"]
@@ -309,10 +314,8 @@ def lookups_from_erp(erp, data):
 
 
 def doctype_fields(erp, doctype):
-    """The field names of a doctype, custom fields included."""
-    fields = {f["fieldname"] for f in erp.get("DocType", doctype)["fields"]}
-    fields |= {r["fieldname"] for r in erp.list("Custom Field", [["dt", "=", doctype]], ["fieldname"])}
-    return fields
+    """The field names of a doctype, custom fields included: the meta ERPNext builds, which the agent API user may read."""
+    return {f["fieldname"] for f in erp.meta(doctype)["fields"]}
 
 
 def summary(results, lookups):

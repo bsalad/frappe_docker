@@ -121,6 +121,11 @@ class Erp:
     def get(self, doctype, name):
         return self._request("GET", "/resource/{}/{}".format(urllib.parse.quote(doctype), urllib.parse.quote(name, safe="")))["data"]
 
+    def meta(self, doctype):
+        """The meta ERPNext builds for a doctype, custom fields included (getdoctype). The DocType resource needs System Manager; this needs only read on the doctype."""
+        docs = self._request("GET", "/method/frappe.desk.form.load.getdoctype?" + urllib.parse.urlencode({"doctype": doctype}))["docs"]
+        return next(d for d in docs if d["name"] == doctype)
+
     def insert(self, doctype, doc):
         return self._request("POST", "/resource/" + urllib.parse.quote(doctype), dict(doc, doctype=doctype))["data"]
 

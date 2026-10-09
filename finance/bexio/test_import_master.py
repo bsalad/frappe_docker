@@ -415,6 +415,19 @@ class HelpersTest(unittest.TestCase):
                     open(os.path.join(tmp, day, "manifest.json"), "w").close()
             self.assertEqual(os.path.basename(im.newest_export(tmp)), "2026-02-01")
 
+    def test_meta_reads_getdoctype_not_the_doctype_resource(self):
+        erp = im.Erp("http://127.0.0.1:1/api", "k", "s")
+        seen = []
+
+        def request(method, path, body=None):
+            seen.append((method, path))
+            return {"docs": [{"name": "Sales Order Item", "fields": []}, {"name": "Sales Order", "fields": [{"fieldname": "bexio_id"}]}]}
+
+        erp._request = request
+        meta = erp.meta("Sales Order")
+        self.assertEqual(meta["name"], "Sales Order")
+        self.assertEqual(seen, [("GET", "/method/frappe.desk.form.load.getdoctype?doctype=Sales+Order")])
+
 
 if __name__ == "__main__":
     unittest.main()

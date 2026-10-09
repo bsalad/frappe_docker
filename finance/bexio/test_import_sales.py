@@ -229,6 +229,14 @@ class FieldCheck(unittest.TestCase):
         }
         self.assertEqual(isl.unknown_fields(doc, metas), ["Sales Invoice.remarks"])
 
+    def test_sales_order_and_quotation_carry_no_remarks_and_no_row_income_account(self):
+        # ERPNext's Sales Order and Quotation have neither field; the bexio id keeps the link
+        for doc in (isl.sales_order(INVOICE, LOOKUPS), isl.quotation(INVOICE, LOOKUPS)):
+            self.assertNotIn("remarks", doc)
+            self.assertTrue(all("income_account" not in row for row in doc["items"]))
+        self.assertEqual(isl.sales_invoice(INVOICE, LOOKUPS)["remarks"], "bexio Nr. RE-1001")
+        self.assertIn("income_account", isl.sales_invoice(INVOICE, LOOKUPS)["items"][0])
+
 
 class Plan(unittest.TestCase):
     def test_one_unmapped_record_is_counted_and_listed_by_id_only(self):
@@ -245,6 +253,37 @@ class Plan(unittest.TestCase):
         self.assertIn("invoices", text)
         self.assertIn("2024", text)
         self.assertNotIn("Beispiel", text)
+
+
+class FakeMeta:
+    """Stands in for import_master.Erp: records the reads and answers the meta with invented fields."""
+
+    def __init__(self, fields):
+        self.fields = fields
+        self.reads = []
+
+    def meta(self, doctype):
+        self.reads.append(("meta", doctype))
+        return {"name": doctype, "fields": [{"fieldname": f} for f in self.fields]}
+
+    def get(self, doctype, name):
+        self.reads.append(("get", doctype))
+        raise AssertionError("the DocType resource needs System Manager; the meta is read instead")
+
+    def list(self, doctype, filters=None, fields=("name",)):
+        self.reads.append(("list", doctype))
+        raise AssertionError("the Custom Field list needs System Manager; the meta holds the custom fields")
+
+
+class DoctypeFields(unittest.TestCase):
+    def test_fields_come_from_the_meta_custom_fields_included(self):
+        erp = FakeMeta(["customer", "remarks", "bexio_id"])
+        self.assertEqual(isl.doctype_fields(erp, "Sales Invoice"), {"customer", "remarks", "bexio_id"})
+
+    def test_no_read_of_the_doctype_resource_or_the_custom_field_list(self):
+        erp = FakeMeta(["customer"])
+        isl.doctype_fields(erp, "Sales Invoice")
+        self.assertEqual(erp.reads, [("meta", "Sales Invoice")])
 
 
 if __name__ == "__main__":
