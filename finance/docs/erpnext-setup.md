@@ -97,6 +97,33 @@ one. Read only blocks the form, not API or Data Import writes. Unique means two
 documents with an empty id are fine; a second document with the same id is
 rejected (checked, `UniqueValidationError`).
 
+**gebuev.** The GeBüV safeguards (OR 958f): posted records cannot change or
+disappear silently. Each item checks the current value, sets it if needed, and
+prints what changed. A second run changes nothing.
+
+- Accounts Settings "Enable Immutable Ledger" on. Cancelling a document then
+  posts reversal entries and leaves the original GL rows unchanged. Without it,
+  cancelling sets `is_cancelled` on the original rows in place.
+- Accounts Settings "Delete Accounting and Stock Ledger entries on deletion of
+  transaction" off (already off). Deleting a document keeps its ledger entries.
+- Delete right: on Account, Customer, Supplier, Item, Bank Account, Company,
+  Sales Invoice, Purchase Invoice, Journal Entry, Payment Entry and Bank
+  Transaction only Accounts Manager keeps it. Other roles lose it, so
+  api-agent loses delete on all of them. Frappe already refuses to delete a
+  submitted document, for everyone, so this covers drafts and cancelled ones.
+- Track Changes (Version) on the same doctypes (a Property Setter, so a
+  migrate keeps it). They were already on.
+
+Not in the step: v16 has no separate audit-trail setting; Track Changes is the
+version history. Freezing is a separate command, below.
+
+**freeze.** `swiss-setup.sh freeze <YYYY-MM-DD> [--apply]` sets the company's
+"Accounts Frozen Till Date": no posting dated on or before the date. It is a dry
+run unless `--apply` is given. It shows the current freeze, the GL entries that
+the date would cover, and the role allowed to post into frozen periods (set by
+hand; the command does not set it). It refuses to move a freeze back. Not run
+yet: the history import comes first.
+
 ## Redo on a fresh site
 
 With the swiss image built (`finance/scripts/build-image.sh`), the stack

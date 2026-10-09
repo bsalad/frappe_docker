@@ -5,7 +5,9 @@
 # installed (finance/docs/erpnext-setup.md).
 #
 #   finance/scripts/swiss-setup.sh                # all steps
-#   finance/scripts/swiss-setup.sh vat fiscal     # some of: coa vat fiscal fields currencies banks
+#   finance/scripts/swiss-setup.sh vat fiscal     # some of: coa vat fiscal fields currencies banks gebuev
+#   finance/scripts/swiss-setup.sh freeze 2025-12-31          # dry run: what a freeze would set
+#   finance/scripts/swiss-setup.sh freeze 2025-12-31 --apply  # sets accounts frozen till that date
 set -eu
 
 # Compose files live at the repo root, two levels up from this script.

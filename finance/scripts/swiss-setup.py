@@ -1,7 +1,10 @@
 """Swiss setup of company BI Concepts, run inside the backend container by
 swiss-setup.sh. Steps are named on the command line (coa, vat, fiscal,
-fields, currencies, banks); each one is re-runnable and skips what already exists."""
+fields, currencies, banks, gebuev); each one is re-runnable and skips what
+already exists. `freeze <date> [--apply]` is a separate command: it closes the
+books up to a date and is a dry run unless --apply is given."""
 import csv
+import datetime
 import os
 import sys
 
@@ -63,8 +66,37 @@ CURRENCIES = {"CHF": 0.05, "EUR": 0.01, "USD": 0.01, "GBP": 0.01,
               "BRL": 0.01, "JPY": 0.01, "CNY": 0.01, "PLN": 0.01}
 
 
+# GeBüV (OR 958f, GeBüV art. 9-10): a posted record may not change or vanish
+# without a trace. ERPNext v16 already refuses to delete a submitted document
+# and versions changes to tracked doctypes; the gebuev step sets what is left.
+GEBUEV_TRACKED = ["Account", "Customer", "Supplier", "Item", "Bank Account", "Company",
+                  "Sales Invoice", "Purchase Invoice", "Journal Entry", "Payment Entry",
+                  "Bank Transaction"]
+# The one role that may delete on these doctypes; Administrator is not listed
+# because it bypasses the role check.
+GEBUEV_DELETE_ROLE = "Accounts Manager"
+
+
 def say(msg):
     print(msg, flush=True)
+
+
+def delete_revokes(perms, keep):
+    """perms: (role, permlevel, delete) rows, as the effective permissions of a
+    doctype. Returns the (role, permlevel) pairs that may delete but are not in keep."""
+    return [(role, level) for role, level, delete in perms if delete and role not in keep]
+
+
+def parse_freeze(args):
+    """args after `freeze`: a date and optionally --apply. Returns (date, apply)."""
+    apply = "--apply" in args
+    dates = [a for a in args if a != "--apply"]
+    if len(dates) != 1 or len(args) != len(dates) + apply:
+        sys.exit("usage: swiss-setup.sh freeze <YYYY-MM-DD> [--apply]")
+    try:
+        return datetime.date.fromisoformat(dates[0]).isoformat(), apply
+    except ValueError:
+        sys.exit(f"freeze: not a date: {dates[0]}")
 
 
 def account(number):
@@ -259,15 +291,77 @@ def banks():
     say(f"banks: {frappe.db.count('Bank')} banks")
 
 
-STEPS = {"coa": coa, "vat": vat, "fiscal": fiscal, "fields": fields, "currencies": currencies, "banks": banks}
+def gebuev():
+    # 1. Accounts Settings. Cancelling with the immutable ledger posts reversal
+    # entries and leaves the original GL rows as they were; without it, the
+    # original rows get is_cancelled=1 in place.
+    s = frappe.get_single("Accounts Settings")
+    want = {"enable_immutable_ledger": 1, "delete_linked_ledger_entries": 0}
+    changed = [f for f, v in want.items() if s.get(f) != v]
+    for f in changed:
+        say(f"gebuev: Accounts Settings {f} {s.get(f)} -> {want[f]}")
+        s.set(f, want[f])
+    if changed:
+        s.save()
+    else:
+        say("gebuev: Accounts Settings already set")
+
+    # 2. Delete right: only GEBUEV_DELETE_ROLE keeps it on these doctypes.
+    # frappe refuses to delete a submitted document for everyone, so this
+    # covers drafts and cancelled documents.
+    for dt in GEBUEV_TRACKED:
+        perms = [(p.role, p.permlevel, p.delete) for p in frappe.get_meta(dt).permissions]
+        for role, level in delete_revokes(perms, keep=[GEBUEV_DELETE_ROLE]):
+            frappe.permissions.update_permission_property(dt, role, level, "delete", 0)
+            say(f"gebuev: {dt}: delete revoked from {role} (permlevel {level})")
+        frappe.clear_cache(doctype=dt)
+    say("gebuev: delete rights checked on " + str(len(GEBUEV_TRACKED)) + " doctypes")
+
+    # 3. Track Changes (Version) on the same doctypes. A Property Setter, so a
+    # migrate does not reset it to the doctype's JSON.
+    for dt in GEBUEV_TRACKED:
+        if frappe.db.get_value("DocType", dt, "track_changes"):
+            continue
+        frappe.make_property_setter(dt, None, "track_changes", 1, "Check", for_doctype=True)
+        say(f"gebuev: {dt}: track changes on")
+    frappe.clear_cache()
+    say("gebuev: track changes checked on " + str(len(GEBUEV_TRACKED)) + " doctypes")
+    frappe.db.commit()
+
+
+def freeze(date, apply):
+    # Accounts frozen till a date: no posting dated on or before it. The role
+    # that may still post there is set by hand, not here. Dry run unless
+    # --apply. The history import comes first, so this is not run before it.
+    company = frappe.get_doc("Company", COMPANY)
+    current = company.accounts_frozen_till_date
+    if current and str(current) > date:
+        sys.exit(f"STOP: accounts are frozen till {current}; a freeze is not moved back to {date}")
+    gl = frappe.db.count("GL Entry", {"company": COMPANY, "posting_date": ["<=", date], "is_cancelled": 0})
+    say(f"freeze: accounts frozen till {current or '(none)'} -> {date}")
+    say(f"freeze: {gl} GL entries dated on or before {date}")
+    say(f"freeze: role allowed to post into frozen periods: {company.role_allowed_for_frozen_entries or '(none)'}")
+    if not apply:
+        say("freeze: dry run, nothing changed; add --apply to set it")
+        return
+    frappe.db.set_value("Company", COMPANY, "accounts_frozen_till_date", date)
+    frappe.db.commit()
+    say(f"freeze: set, accounts frozen till {date}")
+
+
+STEPS = {"coa": coa, "vat": vat, "fiscal": fiscal, "fields": fields, "currencies": currencies, "banks": banks,
+         "gebuev": gebuev}
 
 if __name__ == "__main__":
-    steps = sys.argv[1:] or list(STEPS)
+    args = sys.argv[1:]
     frappe.init(site="frontend")
     frappe.connect()
     frappe.set_user("Administrator")
     try:
-        for s in steps:
-            STEPS[s]()
+        if args[:1] == ["freeze"]:
+            freeze(*parse_freeze(args[1:]))
+        else:
+            for s in args or list(STEPS):
+                STEPS[s]()
     finally:
         frappe.destroy()
