@@ -165,6 +165,11 @@ def _bytes(rows, has_files):
     return sum(r["size"] or 0 for r in rows) if has_files else "-"
 
 
+def _header_safe(name):
+    # a quote, CR or LF in a name would end the filename parameter or the header line
+    return "".join("_" if c in '"\r\n' else c for c in name)
+
+
 def upload_request(erp, document, file_name, content):
     """The multipart request for Frappe's upload_file: one private File on the Purchase Invoice. Built here, sent by upload() in the live run only."""
     boundary = uuid.uuid4().hex
@@ -173,7 +178,7 @@ def upload_request(erp, document, file_name, content):
     for key, value in (("doctype", DOCTYPE), ("docname", document), ("is_private", "1")):
         body += (sep + 'Content-Disposition: form-data; name="{}"\r\n\r\n{}\r\n'.format(key, value)).encode("utf-8")
     body += (sep + 'Content-Disposition: form-data; name="file"; filename="{}"\r\n'
-             'Content-Type: application/octet-stream\r\n\r\n'.format(file_name.replace('"', "_"))).encode("utf-8")
+             'Content-Type: application/octet-stream\r\n\r\n'.format(_header_safe(file_name))).encode("utf-8")
     body += content + ("\r\n--{}--\r\n".format(boundary)).encode("ascii")
     req = urllib.request.Request(erp._url + "/api/method/upload_file", data=body, method="POST")
     req.add_header("Authorization", erp._auth)  # the Erp object keeps its secret; it is only read here

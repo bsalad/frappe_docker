@@ -216,6 +216,11 @@ class UploadRequestTest(unittest.TestCase):
         self.assertIn(b'filename="Beleg _1_.pdf"', body)
         self.assertIn(b"%PDF-invented", body)
 
+    def test_line_breaks_in_the_file_name_cannot_end_the_header(self):
+        erp = im.Erp("https://erp.test/", "key", "secret")
+        req = imf.upload_request(erp, "PINV-1", "a\r\nX-Evil: 1.pdf", b"x")
+        self.assertIn(b'filename="a__X-Evil: 1.pdf"', req.data)
+
 
 if __name__ == "__main__":
     unittest.main()
