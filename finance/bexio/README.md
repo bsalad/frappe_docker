@@ -21,7 +21,7 @@ The token itself is never printed.
 
 Every scope is read-only: `openid offline_access` for the login and the refresh,
 and `*_show` for contacts, notes, articles, invoices, offers, orders, deliveries,
-bills, expenses, bank accounts, bank payments, projects and monitoring. There is no
+bills, expenses, bank accounts and bank payments. There is no
 `accounting` scope and no `*_edit` scope. The list is the `SCOPE` constant in
 `oauth.py`; a later import adds `accounting` there, behind its own consent.
 
