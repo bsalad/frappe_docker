@@ -14,7 +14,8 @@
 {% set caddr = frappe.get_doc("Address", doc.company_address) if doc.company_address else none %}
 {% set daddr = frappe.get_doc("Address", doc.customer_address) if doc.customer_address else none %}
 {% set iban = sales_invoice_iban(doc) %}
-{% set amount = doc.get_formatted("rounded_total") if doc.rounded_total else doc.get_formatted("grand_total") %}
+{# SIX: currency and amount in two parts, thousands separated by a space, no currency symbol #}
+{% set amount = "{:,.2f}".format(doc.rounded_total or doc.grand_total).replace(",", " ") %}
 
 <style>
   .bi-inv { font-size: 10pt; }
@@ -36,7 +37,7 @@
   #bi-qr .payment { position: absolute; top: 5mm; left: 67mm; width: 138mm; height: 95mm; }
   #bi-qr .vline { position: absolute; top: 0; left: 62mm; height: 100mm; border-left: 1px dashed #000; }
   #bi-qr h2 { font-size: 11pt; margin: 0 0 4mm 0; }
-  #bi-qr .label { font-size: 6pt; font-weight: bold; margin-top: 3mm; }
+  #bi-qr .bi-label { font-size: 6pt; font-weight: bold; margin-top: 3mm; }
   #bi-qr .qr { position: absolute; top: 12mm; left: 0; width: 46mm; height: 46mm; }
   #bi-qr .qr img { width: 46mm; height: 46mm; }
   #bi-qr .amount { font-size: 10pt; }
@@ -119,28 +120,28 @@
 
   <div class="receipt">
     <h2>Empfangsschein</h2>
-    <div class="label">Konto / Zahlbar an</div>
+    <div class="bi-label">Konto / Zahlbar an</div>
     <div>{{ iban }}<br>{{ cname }}<br>{{ caddr and caddr.address_line1 or "" }}<br>{{ caddr and ((caddr.pincode or "") ~ " " ~ (caddr.city or "")) or "" }}</div>
-    <div class="label">Zahlbar durch</div>
+    <div class="bi-label">Zahlbar durch</div>
     <div>{{ doc.customer_name or "" }}<br>{{ daddr and daddr.address_line1 or "" }}<br>{{ daddr and ((daddr.pincode or "") ~ " " ~ (daddr.city or "")) or "" }}</div>
-    <div class="label">Währung / Betrag</div>
+    <div class="bi-label">Währung / Betrag</div>
     <div class="amount">{{ doc.currency }} {{ amount }}</div>
-    <div class="label" style="position: absolute; top: 84mm;">Annahmestelle</div>
+    <div class="bi-label" style="position: absolute; top: 84mm;">Annahmestelle</div>
   </div>
 
   <div class="payment">
     <h2>Zahlteil</h2>
     <div class="qr"><img src="{{ sales_invoice_qr_uri(doc) }}" alt="QR-Code"></div>
     <div style="position: absolute; top: 0; left: 52mm; width: 86mm;">
-      <div class="label">Konto / Zahlbar an</div>
+      <div class="bi-label">Konto / Zahlbar an</div>
       <div>{{ iban }}<br>{{ cname }}<br>{{ caddr and caddr.address_line1 or "" }}<br>{{ caddr and ((caddr.pincode or "") ~ " " ~ (caddr.city or "")) or "" }}</div>
-      <div class="label">Zahlbar durch</div>
+      <div class="bi-label">Zahlbar durch</div>
       <div>{{ doc.customer_name or "" }}<br>{{ daddr and daddr.address_line1 or "" }}<br>{{ daddr and ((daddr.pincode or "") ~ " " ~ (daddr.city or "")) or "" }}</div>
-      <div class="label">Zusätzliche Informationen</div>
+      <div class="bi-label">Zusätzliche Informationen</div>
       <div>Rechnung {{ doc.name }}</div>
     </div>
     <div style="position: absolute; top: 72mm; left: 52mm; width: 86mm;">
-      <div class="label">Währung / Betrag</div>
+      <div class="bi-label">Währung / Betrag</div>
       <div class="amount">{{ doc.currency }} {{ amount }}</div>
     </div>
   </div>
