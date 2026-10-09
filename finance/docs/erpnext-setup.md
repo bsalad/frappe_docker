@@ -8,8 +8,8 @@ app itself: `swiss.md`.
 
 | Item | Count |
 | --- | --- |
-| Image | `frappe-finance-custom:v16.50.0-swiss` (all eight ERPNext services) |
-| Apps | frappe 16.50.0, erpnext 16.50.0, erpnextswiss 1.34.1 |
+| Image | `frappe-finance-custom:v16.50.0-swiss-bi1` (all eight ERPNext services; previous image `v16.50.0-swiss` kept for rollback) |
+| Apps | frappe 16.50.0, erpnext 16.50.0, erpnextswiss 1.34.1, bi_finance 0.0.1 |
 | Accounts, company BI Concepts | 179 (KMU chart, 9 roots, numbers in the names) |
 | Sales Taxes and Charges Templates | 15 (bexio codes) |
 | Purchase Taxes and Charges Templates | 27 (bexio codes) |
@@ -40,10 +40,16 @@ data to data.libracore.ch; separate decision, see `swiss.md`, Risks).
 
 ## The setup script
 
-`finance/scripts/swiss-setup.sh [coa] [vat] [fiscal] [fields]` pipes
-`swiss-setup.py` into bench's Python in the backend container. No argument
-runs all four steps. Every step skips what exists, so a second run changes
-nothing.
+`finance/scripts/swiss-setup.sh [coa] [vat] [fiscal] [fields] [currencies] [banks] [qrbill]`
+pipes `swiss-setup.py` into bench's Python in the backend container. No argument
+runs all steps. Every step skips what exists, so a second run changes nothing.
+
+**qrbill.** Creates or updates the print format "BI Sales Invoice QR" from
+`finance/apps/bi_finance/bi_finance/bi_sales_invoice_qr.html`, the file the
+image installs. The QR code comes from the app's `qrbill.py`, drawn on the
+server with pyqrcode (Frappe's own package), so no invoice data leaves it.
+The format is enabled but not the default print format: Benchi chooses that
+after seeing a sample.
 
 **coa.** Stops with exit 3 if the company has GL entries. Otherwise it deletes
 the 3+3 templates, clears the company's account links and the Mode of Payment
@@ -146,6 +152,22 @@ the date would cover, and the role allowed to post into frozen periods (set by
 hand; the command does not set it). It refuses to move a freeze back. Not run
 yet: the history import comes first.
 
+## Switching the stack to a new image
+
+Recreating `backend` or the queue containers gives them new IPs. nginx in
+`frontend` keeps the old backend IP, so ERPNext answers 502 until it is
+restarted (down about 10 minutes on 2026-10-09 at 22:51). After every
+recreate, restart `frontend` and `websocket` and check the ping:
+
+```sh
+docker compose -p frappe-finance -f pwd.yml -f finance-local.yml up -d
+docker compose -p frappe-finance restart frontend websocket
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/method/ping   # must print 200
+```
+
+Back up first (`bench --site frontend backup --with-files`), and switch only
+when no other session is writing to ERPNext.
+
 ## Redo on a fresh site
 
 With the swiss image built (`finance/scripts/build-image.sh`), the stack
@@ -153,8 +175,20 @@ running on it and company BI Concepts (CH, CHF) created:
 
 ```sh
 docker compose -p frappe-finance exec -T backend bench --site frontend install-app erpnextswiss
+docker compose -p frappe-finance exec -T backend bench --site frontend install-app bi_finance
 docker compose -p frappe-finance exec -T backend bench --site frontend migrate
 finance/scripts/swiss-setup.sh
+```
+
+`bi_finance` (finance/apps/bi_finance) is this repo's app for the QR-bill. It is
+not in `finance/apps.json` (bench clones apps from a git URL, and this one is
+not pushed): `finance/scripts/build-image.sh` builds it as a layer on top of
+the image. Its offline tests run in the image:
+
+```sh
+docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro" \
+    frappe-finance-custom:v16.50.0-swiss-bi1 \
+    sh -c 'cd /home/frappe/bi_finance_src && ../frappe-bench/env/bin/python -m unittest bi_finance.test_qrbill'
 ```
 
 On a site with transactions the `coa` step refuses; run `vat fiscal fields`

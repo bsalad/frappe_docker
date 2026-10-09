@@ -1,20 +1,15 @@
 <!--
   Print format "BI Sales Invoice QR" (Jinja). Installed by swiss-setup.sh, step qrbill.
   Invoice part, then the Swiss QR-bill payment part (SIX QR-bill v2.3) at the foot of
-  the A4 page. The QR image is the whitelisted method qrbill.sales_invoice_qr_svg
-  (finance/qrbill/qrbill.py, served by this site). The slip text comes from the same
+  the A4 page. The QR image is the jinja method sales_invoice_qr_uri (bi_finance/qrbill.py),
+  embedded as a data URI. The slip text comes from the same
   documents as the payload, so the two cannot drift. Nothing here may link to another host
   (finance/docs/swiss.md, Risks 1).
 -->
 {% set cname = frappe.get_doc("Company", doc.company).company_name %}
 {% set caddr = frappe.get_doc("Address", doc.company_address) if doc.company_address else none %}
 {% set daddr = frappe.get_doc("Address", doc.customer_address) if doc.customer_address else none %}
-{% set ns = namespace(iban="", n=0) %}
-{% for ba in frappe.get_list("Bank Account", filters={"company": doc.company, "is_company_account": 1, "disabled": 0, "iban": ["is", "set"]}, fields=["iban", "account"]) %}
-  {% if frappe.get_doc("Account", ba.account).account_currency == doc.currency %}
-    {% set ns.iban = ba.iban %}{% set ns.n = ns.n + 1 %}
-  {% endif %}
-{% endfor %}
+{% set iban = sales_invoice_iban(doc) %}
 {% set amount = doc.get_formatted("rounded_total") if doc.rounded_total else doc.get_formatted("grand_total") %}
 
 <style>
@@ -25,11 +20,13 @@
   .bi-inv .num { text-align: right; white-space: nowrap; }
   .bi-inv .total td { border-top: 1px solid #000; font-weight: bold; }
 
-  #bi-qr { position: absolute; top: 192mm; left: 0; width: 210mm; height: 105mm; font-size: 8pt; }
+  /* SIX payment part: 105 mm at the foot of the A4 sheet. The format has no bottom margin (swiss-setup.py qrbill),
+     so it ends at the edge; the top margin of 15 mm is part of the offset. */
+  #bi-qr { position: absolute; top: 175mm; left: 0; width: 210mm; height: 105mm; font-size: 8pt; }
   #bi-qr .perf { position: absolute; top: 0; left: 0; width: 210mm; border-top: 1px dashed #000; }
   #bi-qr .receipt { position: absolute; top: 5mm; left: 5mm; width: 52mm; height: 95mm; }
   #bi-qr .payment { position: absolute; top: 5mm; left: 67mm; width: 138mm; height: 95mm; }
-  #bi-qr .vline { position: absolute; top: 0; left: 62mm; height: 105mm; border-left: 1px dashed #000; }
+  #bi-qr .vline { position: absolute; top: 0; left: 62mm; height: 100mm; border-left: 1px dashed #000; }
   #bi-qr h2 { font-size: 11pt; margin: 0 0 4mm 0; }
   #bi-qr .label { font-size: 6pt; font-weight: bold; margin-top: 3mm; }
   #bi-qr .qr { position: absolute; top: 12mm; left: 0; width: 46mm; height: 46mm; }
@@ -113,20 +110,20 @@
   <div class="receipt">
     <h2>Empfangsschein</h2>
     <div class="label">Konto / Zahlbar an</div>
-    <div>{{ ns.iban }}<br>{{ cname }}<br>{{ caddr and caddr.address_line1 or "" }}<br>{{ caddr and ((caddr.pincode or "") ~ " " ~ (caddr.city or "")) or "" }}</div>
+    <div>{{ iban }}<br>{{ cname }}<br>{{ caddr and caddr.address_line1 or "" }}<br>{{ caddr and ((caddr.pincode or "") ~ " " ~ (caddr.city or "")) or "" }}</div>
     <div class="label">Zahlbar durch</div>
     <div>{{ doc.customer_name or "" }}<br>{{ daddr and daddr.address_line1 or "" }}<br>{{ daddr and ((daddr.pincode or "") ~ " " ~ (daddr.city or "")) or "" }}</div>
     <div class="label">Währung / Betrag</div>
     <div class="amount">{{ doc.currency }} {{ amount }}</div>
-    <div class="label" style="position: absolute; bottom: 0;">Annahmestelle</div>
+    <div class="label" style="position: absolute; top: 84mm;">Annahmestelle</div>
   </div>
 
   <div class="payment">
     <h2>Zahlteil</h2>
-    <div class="qr"><img src="/api/method/qrbill.sales_invoice_qr_svg?name={{ doc.name | urlencode }}" alt="QR-Code"></div>
+    <div class="qr"><img src="{{ sales_invoice_qr_uri(doc) }}" alt="QR-Code"></div>
     <div style="position: absolute; top: 0; left: 52mm; width: 86mm;">
       <div class="label">Konto / Zahlbar an</div>
-      <div>{{ ns.iban }}<br>{{ cname }}<br>{{ caddr and caddr.address_line1 or "" }}<br>{{ caddr and ((caddr.pincode or "") ~ " " ~ (caddr.city or "")) or "" }}</div>
+      <div>{{ iban }}<br>{{ cname }}<br>{{ caddr and caddr.address_line1 or "" }}<br>{{ caddr and ((caddr.pincode or "") ~ " " ~ (caddr.city or "")) or "" }}</div>
       <div class="label">Zahlbar durch</div>
       <div>{{ doc.customer_name or "" }}<br>{{ daddr and daddr.address_line1 or "" }}<br>{{ daddr and ((daddr.pincode or "") ~ " " ~ (daddr.city or "")) or "" }}</div>
       <div class="label">Zusätzliche Informationen</div>
@@ -135,7 +132,6 @@
     <div style="position: absolute; top: 72mm; left: 52mm; width: 86mm;">
       <div class="label">Währung / Betrag</div>
       <div class="amount">{{ doc.currency }} {{ amount }}</div>
-      {% if ns.n != 1 %}<div style="color:#b00;">Bankkonto nicht eindeutig ({{ ns.n }} gefunden)</div>{% endif %}
     </div>
   </div>
 </div>

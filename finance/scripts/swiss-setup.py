@@ -419,21 +419,24 @@ def currencies():
     say(f"currencies: {frappe.db.count('Currency', {'enabled': 1})} enabled")
 
 
-# The print format is a Jinja file in finance/qrbill, read from the folder that
-# finance-local.yml mounts into the container. qrbill.py there draws the QR code.
+# The print format is a Jinja file of the bi_finance app (finance/apps/bi_finance),
+# which the image installs. The app's qrbill.py draws the QR code.
 PRINT_FORMAT = "BI Sales Invoice QR"
-QRBILL_HTML = "/home/frappe/finance-qrbill/bi_sales_invoice_qr.html"
+QRBILL_HTML = "/home/frappe/frappe-bench/apps/bi_finance/bi_finance/bi_sales_invoice_qr.html"
 
 
 def qrbill():
+    # Enabled, but not the default format: Benchi picks the default after a sample.
     with open(QRBILL_HTML, encoding="utf-8") as f:
         html = f.read()
     if frappe.db.exists("Print Format", PRINT_FORMAT):
         doc = frappe.get_doc("Print Format", PRINT_FORMAT)
-        if doc.html == html:
+        if doc.html == html and not doc.disabled and doc.margin_bottom != 1:
             say("qrbill: print format in place")
             return
         doc.html = html
+        doc.disabled = 0
+        doc.margin_bottom = 1
         doc.save()
         say(f"qrbill: print format {PRINT_FORMAT} updated")
     else:
@@ -445,6 +448,9 @@ def qrbill():
             "custom_format": 1,
             "print_format_type": "Jinja",
             "standard": "No",
+            "disabled": 0,
+            # the payment part sits at the foot of the sheet: 1 mm bottom margin (0 falls back to the 15 mm default)
+            "margin_bottom": 1,
             "html": html,
         }).insert()
         say(f"qrbill: print format {PRINT_FORMAT} created")

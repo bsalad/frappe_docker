@@ -133,9 +133,26 @@ Build result: see the bead note.
    hard-coded in the print format and template, so this needs a change before
    go-live: either a self-hosted renderer on the tailnet, or local QR generation
    in the app. This is the condition for the fit.
+   **Resolved for our own format:** "BI Sales Invoice QR" (app `bi_finance`,
+   `finance/apps/bi_finance`) draws the QR locally with pyqrcode and embeds it as
+   a data URI; it makes no request to any host. erpnextswiss's QR formats stay
+   off. Not yet checked against the SIX layout (see item 2), and the
+   no-egress check on a rendered page is still to be done.
 2. **Unverified QR-bill layout.** The slip is hand-built HTML, not a checked
    Swiss QR-bill. Compare a generated slip against a bank's validator before
-   use.
+   use. **Open, found on the sample (2026-10-09):** the 105 mm payment part at
+   the foot of A4 does not fit the page with the print format's margins: the
+   `Annahmestelle` label lands on a second page. Frappe reads the margins of the
+   format, but a bottom margin of 0 falls back to the 15 mm default in the
+   render. Options: a print-settings margin for this format, or a payment part
+   placed without the 15 mm bottom margin. Not changed yet; the sample is
+   `private/qr-sample.pdf` (2 pages).
+   Also seen on the sample: every PDF on this site (the stock formats too) fails
+   with `ConnectionRefusedError`, because wkhtmltopdf fetches `/assets` from
+   `frontend` on port 80, and nginx listens on 8080. The sample rendered only
+   with `frappe.conf.host_name` set inside the render process. A site-wide
+   `host_name` is a decision for the owner, since it changes the links the site
+   sends.
 3. **Overlap with `swiss_accounting_software`.** Both claim QR and camt/pain.
    The README warns against running both or uninstalling either without
    validation. Install one.

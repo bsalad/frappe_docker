@@ -1,16 +1,17 @@
 """Offline tests for qrbill.py: payload field by field, and the QR code decodes back to it.
 
 Invented data only (SIX sample IBANs, made-up names and addresses), no network.
-The module imports frappe, so run it in the backend container, where pyqrcode,
-pypng and cv2 are installed:
+The module imports frappe, so run it in the image, where pyqrcode, pypng and cv2
+are installed (finance/scripts/build-image.sh builds it):
 
-    docker compose -p frappe-finance -f pwd.yml -f finance-local.yml exec -T backend \
-        sh -c 'cd /home/frappe/finance-qrbill && ../frappe-bench/env/bin/python -m unittest -v test_qrbill'
+    docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro" \
+        frappe-finance-custom:v16.50.0-swiss \
+        sh -c 'cd /home/frappe/bi_finance_src && ../frappe-bench/env/bin/python -m unittest -v bi_finance.test_qrbill'
 """
 
 import unittest
 
-import qrbill
+from bi_finance import qrbill
 
 IBAN = "CH21 0900 0000 2500 9779 8"  # SIX sample, plain IBAN (IID 09000)
 QR_IBAN = "CH44 3199 9123 0008 8901 2"  # SIX sample, IID 31999: a QR-IBAN
@@ -110,6 +111,55 @@ class QrCode(unittest.TestCase):
         self.assertIn('viewBox="0 0 ', out)
         self.assertIn('width="46mm"', out)
         self.assertEqual(out.count("<path"), 2)
+
+
+class CompanyAccount(unittest.TestCase):
+    # Invented names: two CHF accounts, one EUR account; the company's default is the first CHF one.
+    ROWS = [
+        {"name": "BA-1", "iban": IBAN, "account": "1020 - Bank A", "currency": "CHF"},
+        {"name": "BA-2", "iban": QR_IBAN, "account": "1021 - Bank B", "currency": "CHF"},
+        {"name": "BA-3", "iban": IBAN, "account": "1022 - Bank C", "currency": "EUR"},
+    ]
+
+    def pick(self, currency="CHF", default="1020 - Bank A"):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        rows = [SimpleNamespace(name=r["name"], iban=r["iban"], account=r["account"]) for r in self.ROWS]
+        currencies = {r["account"]: r["currency"] for r in self.ROWS}
+
+        def get_value(doctype, name, field):
+            return currencies[name] if doctype == "Account" else default
+
+        # the translation call needs a site; the message itself is not under test
+        with mock.patch.object(qrbill, "frappe") as fake, mock.patch.object(qrbill, "_", new=lambda s: s):
+            fake.get_all.return_value = rows
+            fake.db.get_value.side_effect = get_value
+            fake.throw.side_effect = ValueError
+            return qrbill._company_account("Test Co", currency).name
+
+    def test_company_default_wins_among_several(self):
+        self.assertEqual(self.pick(), "BA-1")
+
+    def test_currency_filters_accounts(self):
+        self.assertEqual(self.pick(currency="EUR", default="1022 - Bank C"), "BA-3")
+
+    def test_no_default_among_several_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.pick(default="9999 - Other")
+
+
+class DataUri(unittest.TestCase):
+    def test_print_format_gets_the_svg_inline(self):
+        import base64
+        from unittest import mock
+
+        text = qrbill.payload(IBAN, CREDITOR, 1, "CHF")
+        with mock.patch.object(qrbill, "sales_invoice_payload", return_value=text):
+            uri = qrbill.sales_invoice_qr_uri(object())
+        prefix = "data:image/svg+xml;base64,"
+        self.assertTrue(uri.startswith(prefix))
+        self.assertEqual(base64.b64decode(uri[len(prefix):]).decode("utf-8"), qrbill.svg(text))
 
 
 if __name__ == "__main__":

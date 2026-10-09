@@ -1,0 +1,10 @@
+[project]
+name = "bi_finance"
+version = "0.0.1"
+description = "Swiss QR-bill for Sales Invoice, drawn on our own server"
+requires-python = ">=3.14"
+dependencies = []
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"

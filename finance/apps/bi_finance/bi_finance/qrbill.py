@@ -1,7 +1,7 @@
 """Swiss QR-bill for Sales Invoice, rendered on our own server.
 
 The payment part of the BI Sales Invoice QR print format calls
-sales_invoice_qr_svg(). Nothing leaves the server: the payload is built from
+sales_invoice_qr_uri(). Nothing leaves the server: the payload is built from
 the invoice and the QR code is drawn with pyqrcode, which ships with Frappe.
 erpnextswiss's QR format sends the same data to data.libracore.ch, which is
 why it stays off (finance/docs/swiss.md, Risks 1).
@@ -9,11 +9,9 @@ why it stays off (finance/docs/swiss.md, Risks 1).
 Payload per SIX Implementation Guidelines QR-bill v2.3: one data element per
 line, structured addresses (type S), no QR reference (a QR-IBAN is refused
 until a QRR path with bank reconciliation exists).
-
-The folder is mounted into the backend container and put on PYTHONPATH
-(finance-local.yml), so this file is the one the server runs.
 """
 
+import base64
 import re
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -160,16 +158,28 @@ def _address(name_address):
 
 
 def _company_account(company, currency):
-    """The one enabled company bank account with an IBAN in the invoice's currency."""
+    """The company bank account with an IBAN in the invoice's currency.
+
+    When several qualify, the company's default bank account is the one; otherwise
+    the choice is ambiguous and the print fails.
+    """
     rows = frappe.get_all(
         "Bank Account",
         filters={"company": company, "is_company_account": 1, "disabled": 0, "iban": ["is", "set"]},
         fields=["name", "iban", "account"],
     )
     rows = [r for r in rows if frappe.db.get_value("Account", r.account, "account_currency") == currency]
+    if len(rows) > 1:
+        default = frappe.db.get_value("Company", company, "default_bank_account")
+        rows = [r for r in rows if r.account == default] or rows
     if len(rows) != 1:
         frappe.throw(_("Expected one company bank account with an IBAN in {0}, found {1}").format(currency, len(rows)))
     return rows[0]
+
+
+def sales_invoice_iban(inv):
+    """The IBAN the QR-bill pays to, for the print format's text; the same account as the QR code."""
+    return _company_account(inv.company, inv.currency).iban
 
 
 def sales_invoice_payload(inv):
@@ -183,21 +193,14 @@ def sales_invoice_payload(inv):
     return payload(account.iban, creditor, inv.rounded_total or inv.grand_total, inv.currency, debtor, f"Rechnung {inv.name}")
 
 
-@frappe.whitelist()
-def sales_invoice_qr_svg(name):
-    """Swiss cross QR code of a Sales Invoice, as an inline image for the print format.
+def sales_invoice_qr_uri(inv):
+    """Swiss cross QR code of a Sales Invoice as a data URI, for the print format's <img>.
 
-    The print format points an <img> at this method; the PDF converter sends the
-    session cookie, so the user's print permission applies.
+    A jinja method (hooks.py), so the image is embedded in the page: wkhtmltopdf runs
+    in the backend container and cannot fetch the site's own /api URLs.
     """
-    inv = frappe.get_doc("Sales Invoice", name)
-    inv.check_permission("print")
     try:
         text = sales_invoice_payload(inv)
     except ValueError as e:
         frappe.throw(str(e))
-    frappe.local.response.type = "download"
-    frappe.local.response.filename = f"{name}-qr.svg"
-    frappe.local.response.filecontent = svg(text)
-    frappe.local.response.content_type = "image/svg+xml"
-    frappe.local.response.display_content_as = "inline"
+    return "data:image/svg+xml;base64," + base64.b64encode(svg(text).encode("utf-8")).decode("ascii")
