@@ -1,6 +1,6 @@
 """Swiss setup of company BI Concepts, run inside the backend container by
 swiss-setup.sh. Steps are named on the command line (coa, vat, fiscal,
-fields, currencies, banks, gebuev, qrbill); each one is re-runnable and skips what
+fields, currencies, banks, gebuev, qrbill, host); each one is re-runnable and skips what
 already exists. `freeze <date> [--apply]` is a separate command: it closes the
 books up to a date and is a dry run unless --apply is given."""
 import csv
@@ -425,13 +425,33 @@ PRINT_FORMAT = "BI Sales Invoice QR"
 QRBILL_HTML = "/home/frappe/frappe-bench/apps/bi_finance/bi_finance/bi_sales_invoice_qr.html"
 
 
+def host():
+    # wkhtmltopdf runs in the backend container and fetches /assets from the site's host_name.
+    # Unset, that is frontend port 80, which nothing listens on (nginx is on 8080), so every PDF
+    # fails. The URL names this machine, so it comes from HOST_NAME, never from this file.
+    url = os.environ.get("HOST_NAME", "").strip()
+    if not url:
+        say("host: HOST_NAME not set; skipped")
+        return
+    path = frappe.get_site_path("site_config.json")
+    with open(path, encoding="utf-8") as f:
+        conf = json.load(f)
+    if conf.get("host_name") == url:
+        say("host: host_name in place")
+        return
+    conf["host_name"] = url
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(conf, f, indent=1, sort_keys=True)
+    say("host: host_name set")
+
+
 def qrbill():
     # Enabled, but not the default format: Benchi picks the default after a sample.
     with open(QRBILL_HTML, encoding="utf-8") as f:
         html = f.read()
     if frappe.db.exists("Print Format", PRINT_FORMAT):
         doc = frappe.get_doc("Print Format", PRINT_FORMAT)
-        if doc.html == html and not doc.disabled and doc.margin_bottom != 1:
+        if doc.html == html and not doc.disabled and doc.margin_bottom == 1:
             say("qrbill: print format in place")
             return
         doc.html = html
@@ -527,7 +547,7 @@ def freeze(date, apply):
 
 
 STEPS = {"coa": coa, "vat": vat, "fiscal": fiscal, "fields": fields, "currencies": currencies, "banks": banks,
-         "gebuev": gebuev, "qrbill": qrbill}
+         "gebuev": gebuev, "qrbill": qrbill, "host": host}
 
 if __name__ == "__main__":
     args = sys.argv[1:]

@@ -76,6 +76,12 @@ class Payload(unittest.TestCase):
         self.assertEqual(qrbill.split_street("Bahnhofplatz"), ("Bahnhofplatz", ""))
         self.assertEqual(qrbill.split_street("Postfach 12 3"), ("Postfach 12", "3"))
 
+    def test_iban_printed_in_groups_of_four(self):
+        self.assertEqual(qrbill.iban_text("CH2109000000250097798"), "CH21 0900 0000 2500 9779 8")
+        self.assertEqual(qrbill.iban_text(IBAN), "CH21 0900 0000 2500 9779 8")
+        # the QR text keeps the IBAN unspaced
+        self.assertEqual(self.lines()[3], "CH2109000000250097798")
+
 
 class QrCode(unittest.TestCase):
     def test_matrix_decodes_to_payload(self):

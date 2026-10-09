@@ -44,6 +44,12 @@ def split_street(line):
     return m.group("street"), m.group("building")
 
 
+def iban_text(iban):
+    """The IBAN in groups of four, as the slip prints it (SIX); the QR text keeps it unspaced."""
+    compact = iban.replace(" ", "").upper()
+    return " ".join(compact[i:i + 4] for i in range(0, len(compact), 4))
+
+
 def is_qr_iban(iban):
     # IID 30000 to 31999 at positions 5 to 9 marks a QR-IBAN.
     return 30000 <= int(iban[4:9]) <= 31999
@@ -178,8 +184,8 @@ def _company_account(company, currency):
 
 
 def sales_invoice_iban(inv):
-    """The IBAN the QR-bill pays to, for the print format's text; the same account as the QR code."""
-    return _company_account(inv.company, inv.currency).iban
+    """The IBAN the QR-bill pays to, grouped for the print; the same account as the QR code."""
+    return iban_text(_company_account(inv.company, inv.currency).iban)
 
 
 def sales_invoice_payload(inv):

@@ -6,6 +6,10 @@
   documents as the payload, so the two cannot drift. Nothing here may link to another host
   (finance/docs/swiss.md, Risks 1).
 -->
+<style>
+  /* wkhtmltopdf takes its margins from the .print-format rule, not from the format's margin fields */
+  .print-format { margin-top: 15mm; margin-bottom: 1mm; margin-left: 0mm; margin-right: 0mm; }
+</style>
 {% set cname = frappe.get_doc("Company", doc.company).company_name %}
 {% set caddr = frappe.get_doc("Address", doc.company_address) if doc.company_address else none %}
 {% set daddr = frappe.get_doc("Address", doc.customer_address) if doc.customer_address else none %}
@@ -20,9 +24,13 @@
   .bi-inv .num { text-align: right; white-space: nowrap; }
   .bi-inv .total td { border-top: 1px solid #000; font-weight: bold; }
 
-  /* SIX payment part: 105 mm at the foot of the A4 sheet. The format has no bottom margin (swiss-setup.py qrbill),
-     so it ends at the edge; the top margin of 15 mm is part of the offset. */
-  #bi-qr { position: absolute; top: 175mm; left: 0; width: 210mm; height: 105mm; font-size: 8pt; }
+  /* Page content is 281 mm (A4 minus the 15 mm top margin and the 1 mm bottom margin set by
+     swiss-setup.py qrbill). The invoice body is at least 175 mm, so a short invoice leaves
+     106 mm for the 105 mm SIX payment part at the foot of page 1. A longer body moves the
+     payment part to a page of its own when it does not fit (page-break-inside: avoid). */
+  .bi-body { min-height: 175mm; padding: 0 15mm; }
+  /* the slip spans the full width: the page has no side margins (wkhtmltopdf clips at them), the body is padded 15 mm */
+  #bi-qr { position: relative; height: 105mm; width: 210mm; font-size: 8pt; page-break-inside: avoid; }
   #bi-qr .perf { position: absolute; top: 0; left: 0; width: 210mm; border-top: 1px dashed #000; }
   #bi-qr .receipt { position: absolute; top: 5mm; left: 5mm; width: 52mm; height: 95mm; }
   #bi-qr .payment { position: absolute; top: 5mm; left: 67mm; width: 138mm; height: 95mm; }
@@ -34,6 +42,7 @@
   #bi-qr .amount { font-size: 10pt; }
 </style>
 
+<div class="bi-body">
 <div class="bi-inv">
   <table>
     <tr>
@@ -101,6 +110,7 @@
   {% if doc.terms %}
   <div style="margin-top: 6mm;">{{ doc.terms }}</div>
   {% endif %}
+</div>
 </div>
 
 <div id="bi-qr">

@@ -136,23 +136,23 @@ Build result: see the bead note.
    **Resolved for our own format:** "BI Sales Invoice QR" (app `bi_finance`,
    `finance/apps/bi_finance`) draws the QR locally with pyqrcode and embeds it as
    a data URI; it makes no request to any host. erpnextswiss's QR formats stay
-   off. Not yet checked against the SIX layout (see item 2), and the
-   no-egress check on a rendered page is still to be done.
+   off. Checked on a rendered sample (2026-10-10): the HTML has no http(s) URL;
+   the QR is an inline data URI.
 2. **Unverified QR-bill layout.** The slip is hand-built HTML, not a checked
    Swiss QR-bill. Compare a generated slip against a bank's validator before
-   use. **Open, found on the sample (2026-10-09):** the 105 mm payment part at
-   the foot of A4 does not fit the page with the print format's margins: the
-   `Annahmestelle` label lands on a second page. Frappe reads the margins of the
-   format, but a bottom margin of 0 falls back to the 15 mm default in the
-   render. Options: a print-settings margin for this format, or a payment part
-   placed without the 15 mm bottom margin. Not changed yet; the sample is
-   `private/qr-sample.pdf` (2 pages).
-   Also seen on the sample: every PDF on this site (the stock formats too) fails
-   with `ConnectionRefusedError`, because wkhtmltopdf fetches `/assets` from
-   `frontend` on port 80, and nginx listens on 8080. The sample rendered only
-   with `frappe.conf.host_name` set inside the render process. A site-wide
-   `host_name` is a decision for the owner, since it changes the links the site
-   sends.
+   use. **Open for Benchi:** no validator run yet; the IBAN prints in groups of four.
+   **Layout, fixed on the sample (2026-10-10):** the 105 mm payment part did not
+   fit page 1. wkhtmltopdf reads the margins from `.print-format` rules, not from
+   the format's margin fields, so the format sets them itself (top 15 mm, bottom
+   1 mm, sides 0 with the body padded 15 mm). A short invoice now renders on one
+   page with the slip at the foot (`private/qr-sample.pdf`, 1 page).
+   **Open:** a long invoice whose last page leaves less than 105 mm puts the slip
+   on a page of its own, at the top of that page, not at the foot
+   (`private/qr-sample-long.pdf`, 3 pages). SIX wants the foot; placing it there
+   needs the height of the body, which the Jinja template cannot see.
+   **PDF host, fixed (2026-10-10):** `host_name` is the tailnet URL, set by the
+   `host` step. The backend and queue containers reach it; a stock format renders.
+   Mails and prints link to that URL.
 3. **Overlap with `swiss_accounting_software`.** Both claim QR and camt/pain.
    The README warns against running both or uninstalling either without
    validation. Install one.

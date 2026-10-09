@@ -8,7 +8,7 @@ app itself: `swiss.md`.
 
 | Item | Count |
 | --- | --- |
-| Image | `frappe-finance-custom:v16.50.0-swiss-bi1` (all eight ERPNext services; previous image `v16.50.0-swiss` kept for rollback) |
+| Image | `frappe-finance-custom:v16.50.0-swiss-bi3` (all eight ERPNext services; previous images `v16.50.0-swiss-bi1` and `v16.50.0-swiss` kept for rollback) |
 | Apps | frappe 16.50.0, erpnext 16.50.0, erpnextswiss 1.34.1, bi_finance 0.0.1 |
 | Accounts, company BI Concepts | 179 (KMU chart, 9 roots, numbers in the names) |
 | Sales Taxes and Charges Templates | 15 (bexio codes) |
@@ -40,7 +40,7 @@ data to data.libracore.ch; separate decision, see `swiss.md`, Risks).
 
 ## The setup script
 
-`finance/scripts/swiss-setup.sh [coa] [vat] [fiscal] [fields] [currencies] [banks] [qrbill]`
+`finance/scripts/swiss-setup.sh [coa] [vat] [fiscal] [fields] [currencies] [banks] [qrbill] [host]`
 pipes `swiss-setup.py` into bench's Python in the backend container. No argument
 runs all steps. Every step skips what exists, so a second run changes nothing.
 
@@ -49,7 +49,23 @@ runs all steps. Every step skips what exists, so a second run changes nothing.
 image installs. The QR code comes from the app's `qrbill.py`, drawn on the
 server with pyqrcode (Frappe's own package), so no invoice data leaves it.
 The format is enabled but not the default print format: Benchi chooses that
-after seeing a sample.
+after seeing a sample. The slip is 105 mm at the foot of page 1, below an invoice
+body of at least 175 mm; the page's bottom margin is 1 mm (set in the format's CSS:
+wkhtmltopdf reads `.print-format` margins, not the format's margin fields). The IBAN
+prints in groups of four; the QR text does not.
+
+**host.** Sets the site's `host_name` from the `HOST_NAME` environment variable, the
+URL the containers can reach (`https://<machine>.<tailnet>.ts.net:8448`, the tailnet
+name of the host). Without it, `wkhtmltopdf` fetches `/assets` from `frontend` port 80,
+where nothing listens, and every PDF on the site fails with `ConnectionRefusedError`.
+The name stays out of the repo, so it is passed on the command line:
+
+```sh
+HOST_NAME=https://<machine>.<tailnet>.ts.net:8448 finance/scripts/swiss-setup.sh host
+```
+
+The URL is also what mails and prints link to. Check it from the backend and the
+queue containers (`curl .../api/method/ping` gives 200) before relying on it.
 
 **coa.** Stops with exit 3 if the company has GL entries. Otherwise it deletes
 the 3+3 templates, clears the company's account links and the Mode of Payment
@@ -168,6 +184,14 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/method/ping  
 Back up first (`bench --site frontend backup --with-files`), and switch only
 when no other session is writing to ERPNext.
 
+To change only the `bi_finance` layer, build that layer on the current base image
+under a new tag, then point `finance-local.yml` at it (the base is not rebuilt):
+
+```sh
+docker build --build-arg BASE=frappe-finance-custom:v16.50.0-swiss-bi1-base \
+    --tag frappe-finance-custom:v16.50.0-swiss-bi3 --file finance/images/bi_finance.Containerfile .
+```
+
 ## Redo on a fresh site
 
 With the swiss image built (`finance/scripts/build-image.sh`), the stack
@@ -187,7 +211,7 @@ the image. Its offline tests run in the image:
 
 ```sh
 docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro" \
-    frappe-finance-custom:v16.50.0-swiss-bi1 \
+    frappe-finance-custom:v16.50.0-swiss-bi3 \
     sh -c 'cd /home/frappe/bi_finance_src && ../frappe-bench/env/bin/python -m unittest bi_finance.test_qrbill'
 ```
 
