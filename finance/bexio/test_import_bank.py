@@ -6,6 +6,8 @@ Run with: python3 -m unittest discover -s finance/bexio -p 'test_*.py'
 import contextlib
 import copy
 import io
+import json
+import os
 import tempfile
 import unittest
 from unittest import mock
@@ -135,6 +137,27 @@ class MainTest(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(ib.main(["--dry-run", "--export", export]), 0)
         self.assertIn("not exported yet", out.getvalue())
+
+    def test_dry_run_with_the_export_prints_totals_and_writes_only_the_private_report(self):
+        class Erp(FakeErp):
+            def meta(self, doctype):
+                return {"fields": [{"fieldname": f} for f in ("bexio_id", "date", "bank_account", "currency", "deposit",
+                                                             "withdrawal", "description", "reference_number", "company")]}
+
+        files = {"bank_transactions": [CHF_IN, record(CHF_IN, id=9009, bank_account_id=99)],
+                 "bank_accounts": [{"id": 11, "currency_id": 1}], "currencies": [{"id": 1, "name": "CHF"}]}
+        with tempfile.TemporaryDirectory() as export:
+            for name, rows in files.items():
+                with open(os.path.join(export, name + ".json"), "w") as f:
+                    json.dump(rows, f)
+            report = os.path.join(export, "report.txt")
+            with mock.patch.object(im.Erp, "from_file", return_value=Erp()), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                code = ib.main(["--dry-run", "--export", export, "--report", report])
+            with open(report) as f:
+                self.assertEqual(f.read(), "Bank Transaction 9009: unmapped: bank account 99 has no Bank Account with that bexio_id\n")
+        self.assertEqual(code, 1)
+        self.assertIn("records: 2, mapped: 1, unmapped: 1", out.getvalue())
 
     def test_a_live_run_is_refused(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

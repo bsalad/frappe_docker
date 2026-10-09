@@ -110,6 +110,11 @@ def unknown_fields(doc, meta):
     return sorted("Bank Transaction.{}".format(key) for key in doc if key != "doctype" and key not in meta)
 
 
+def doctype_fields(erp, doctype):
+    """The field names of a doctype, custom fields included (import_sales has the same, but is edited in parallel)."""
+    return {f["fieldname"] for f in erp.meta(doctype)["fields"]}
+
+
 def load_export(path):
     """The export files this module reads: the bank accounts and the currencies (the transactions are read by main)."""
     data = {}
@@ -180,7 +185,7 @@ def main(argv):
     erp = im.Erp.from_file(args.token_file)
     try:
         lookups = lookups_from_erp(erp, data)
-        meta = im.doctype_fields(erp, "Bank Transaction")
+        meta = doctype_fields(erp, "Bank Transaction")
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2
