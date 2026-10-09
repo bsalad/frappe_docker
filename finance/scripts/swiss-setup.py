@@ -1,6 +1,6 @@
 """Swiss setup of company BI Concepts, run inside the backend container by
 swiss-setup.sh. Steps are named on the command line (coa, vat, fiscal,
-fields); each one is re-runnable and skips what already exists."""
+fields, currencies); each one is re-runnable and skips what already exists."""
 import csv
 import sys
 
@@ -45,7 +45,21 @@ BEXIO_DOCTYPES = [
     ("Purchase Invoice", "title"),
     ("Journal Entry", "title"),
     ("Payment Entry", "payment_type"),
+    # master data of the bexio import (finance-sg76)
+    ("Customer Group", "customer_group_name"),
+    ("Supplier Group", "supplier_group_name"),
+    ("Item Price", "item_code"),
+    ("Bank Account", "account_name"),
+    # keys for the document import (finance-3qsp)
+    ("Sales Order", "title"),
+    ("Quotation", "title"),
+    ("Bank Transaction", "date"),
 ]
+
+# Currencies bexio books in, enabled by the `currencies` step. CHF is paid in
+# 0.05 steps (Swiss cash rounding); the others keep the cent.
+CURRENCIES = {"CHF": 0.05, "EUR": 0.01, "USD": 0.01, "GBP": 0.01,
+              "BRL": 0.01, "JPY": 0.01, "CNY": 0.01, "PLN": 0.01}
 
 
 def say(msg):
@@ -218,7 +232,22 @@ def fields():
     say(f"fields: bexio_id on {frappe.db.count('Custom Field', {'fieldname': 'bexio_id'})} doctypes")
 
 
-STEPS = {"coa": coa, "vat": vat, "fiscal": fiscal, "fields": fields}
+def currencies():
+    # The API user may not write Currency, so this lives here, not in the importer.
+    for code, step in CURRENCIES.items():
+        doc = frappe.get_doc("Currency", code)
+        want = {"enabled": 1}
+        if code == "CHF":
+            want["smallest_currency_fraction_value"] = step
+        if all(doc.get(k) == v for k, v in want.items()):
+            continue
+        doc.update(want)
+        doc.save()
+    frappe.db.commit()
+    say(f"currencies: {frappe.db.count('Currency', {'enabled': 1})} enabled")
+
+
+STEPS = {"coa": coa, "vat": vat, "fiscal": fiscal, "fields": fields, "currencies": currencies}
 
 if __name__ == "__main__":
     steps = sys.argv[1:] or list(STEPS)

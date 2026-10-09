@@ -5,7 +5,7 @@
 # installed (finance/docs/erpnext-setup.md).
 #
 #   finance/scripts/swiss-setup.sh                # all steps
-#   finance/scripts/swiss-setup.sh vat fiscal     # some of: coa vat fiscal fields
+#   finance/scripts/swiss-setup.sh vat fiscal     # some of: coa vat fiscal fields currencies
 set -eu
 
 # Compose files live at the repo root, two levels up from this script.
