@@ -170,7 +170,7 @@ class Differences(unittest.TestCase):
 class Rounding(unittest.TestCase):
     def test_bexio_rounding_of_the_gross_is_named_not_adjusted(self):
         rounded = record(INVOICE, total_gross="159.40", total_rounding_difference="-0.02")
-        rounded["positions"][0]["unit_price"] = "50.02"
+        rounded["positions"][1]["unit_price"] = "50.02"
         _doc, differences, _totals, _rate = isl._document("Sales Invoice", rounded, LOOKUPS)
         self.assertIn("gross +0.02 (bexio rounding difference)", differences)
 
