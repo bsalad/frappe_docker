@@ -26,10 +26,10 @@
   .bi-inv .total td { border-top: 1px solid #000; font-weight: bold; }
 
   /* Page content is 281 mm (A4 minus the 15 mm top margin and the 1 mm bottom margin set by
-     swiss-setup.py qrbill). The invoice body is at least 175 mm, so a short invoice leaves
-     106 mm for the 105 mm SIX payment part at the foot of page 1. A longer body moves the
-     payment part to a page of its own when it does not fit (page-break-inside: avoid). */
-  .bi-body { min-height: 175mm; padding: 0 15mm; }
+     swiss-setup.py qrbill). The gap before the slip, which puts the slip at the foot of the last
+     page, is measured by a first render (qrbill.py sales_invoice_slip_spacer). */
+  .bi-body { padding: 0 15mm; }
+  .bi-marker { font-size: 1pt; line-height: 1pt; }
   /* the slip spans the full width: the page has no side margins (wkhtmltopdf clips at them), the body is padded 15 mm */
   #bi-qr { position: relative; height: 105mm; width: 210mm; font-size: 8pt; page-break-inside: avoid; }
   #bi-qr .perf { position: absolute; top: 0; left: 0; width: 210mm; border-top: 1px dashed #000; }
@@ -114,6 +114,12 @@
 </div>
 </div>
 
+{% if doc.flags.bi_qr_measure %}
+{# the first of two renders: the marker's place in the PDF is where the body ends #}
+<div class="bi-marker">BI-QR-END</div>
+{% else %}
+<div style="height: {{ sales_invoice_slip_spacer(doc) }}mm"></div>
+
 <div id="bi-qr">
   <div class="perf"></div>
   <div class="vline"></div>
@@ -146,3 +152,4 @@
     </div>
   </div>
 </div>
+{% endif %}

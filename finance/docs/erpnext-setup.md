@@ -49,10 +49,17 @@ runs all steps. Every step skips what exists, so a second run changes nothing.
 image installs. The QR code comes from the app's `qrbill.py`, drawn on the
 server with pyqrcode (Frappe's own package), so no invoice data leaves it.
 The format is enabled but not the default print format: Benchi chooses that
-after seeing a sample. The slip is 105 mm at the foot of page 1, below an invoice
-body of at least 175 mm; the page's bottom margin is 1 mm (set in the format's CSS:
-wkhtmltopdf reads `.print-format` margins, not the format's margin fields). The IBAN
-prints in groups of four; the QR text does not.
+after seeing a sample. The slip is 105 mm at the foot of the last page, whatever the
+number of pages: a short invoice keeps it on page 1, a long one gets it at the foot of
+its last page, or on a page of its own when the body leaves less than 105 mm. The page
+cannot measure its body (wkhtmltopdf runs with JavaScript off), so the format renders
+twice. The first render has the body alone with a marker after it; pypdf reads the
+marker's height on the last page (`qrbill.py` `sales_invoice_slip_spacer`), and the
+second has a gap of that height before the slip. That is one more wkhtmltopdf run per
+print, also for the HTML preview. The gap assumes A4 with the format's 15 mm top and
+1 mm bottom margins. The margins are set in the format's CSS: wkhtmltopdf reads
+`.print-format` margins, not the format's margin fields. The IBAN prints in groups of
+four; the QR text does not.
 
 **host.** Sets the site's `host_name` from the `HOST_NAME` environment variable, the
 URL the containers can reach (`https://<machine>.<tailnet>.ts.net:8448`, the tailnet

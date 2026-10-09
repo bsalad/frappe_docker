@@ -9,6 +9,10 @@ are installed (finance/scripts/build-image.sh builds it):
         sh -c 'cd /home/frappe/bi_finance_src && ../frappe-bench/env/bin/python -m unittest -v bi_finance.test_qrbill'
 """
 
+import os
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 from bi_finance import qrbill
@@ -156,6 +160,123 @@ class CompanyAccount(unittest.TestCase):
     def test_no_default_among_several_is_refused(self):
         with self.assertRaises(ValueError):
             self.pick(default="9999 - Other")
+
+
+class SlipSpacer(unittest.TestCase):
+    def test_spacer_examples(self):
+        # y is the body's end in mm from the page bottom; a body that leaves less than 105 mm
+        # pushes the slip to the next page
+        for y, want in ((106.8, 0.8), (277.2, 171.2), (99.1, 274.1), (139.1, 33.1)):
+            with self.subTest(y=y):
+                self.assertEqual(qrbill.spacer_mm(y), want)
+
+
+# The format's CSS, cut down: the body padded 15 mm, the 105 mm slip with a mark at its foot.
+# Rows are 7.3 mm, so 25 of them leave 98.5 mm of the page.
+SLIP_MARK = "BI-QR-SLIP-END"
+PAGE_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
+  body { margin: 0; font-family: sans-serif; font-size: 10pt; }
+  .bi-body { padding: 0 15mm; }
+  .row { height: 7.3mm; }
+  .bi-marker { font-size: 1pt; line-height: 1pt; }
+  #slip { position: relative; height: 105mm; width: 210mm; page-break-inside: avoid; }
+  #slip .mark { position: absolute; bottom: 0; left: 15mm; font-size: 1pt; line-height: 1pt; }
+</style></head><body>
+<div class="bi-body">{rows}</div>
+{tail}
+</body></html>"""
+WKHTML_OPTIONS = [
+    "--disable-smart-shrinking", "--print-media-type", "--disable-javascript",
+    "--page-size", "A4", "--margin-top", "15mm", "--margin-bottom", "1mm",
+    "--margin-left", "0", "--margin-right", "0", "--quiet",
+]
+
+
+def page_html(rows, gap=None):
+    body = "".join(f'<div class="row">Invented item {i}</div>' for i in range(1, rows + 1))
+    if gap is None:  # the first render: the body and the marker after it
+        tail = '<div class="bi-marker">BI-QR-END</div>'
+    else:  # the second: the body, the gap and the slip
+        tail = f'<div style="height: {gap}mm"></div><div id="slip"><div class="mark">{SLIP_MARK}</div></div>'
+    return PAGE_HTML.replace("{rows}", body).replace("{tail}", tail)
+
+
+@unittest.skipUnless(shutil.which("wkhtmltopdf"), "needs wkhtmltopdf (the image has it)")
+class Placement(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def render(self, html):
+        src, out = os.path.join(self.dir, "page.html"), os.path.join(self.dir, "page.pdf")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write(html)
+        subprocess.run(["wkhtmltopdf", *WKHTML_OPTIONS, src, out], check=True, capture_output=True)
+        with open(out, "rb") as f:
+            return f.read()
+
+    def place(self, rows):
+        """Pages and body end of the first render, the gap, then pages and the slip's mark of the second."""
+        pages1, y1 = qrbill.marker_mm(self.render(page_html(rows)), qrbill.MARKER)
+        gap = qrbill.spacer_mm(y1)
+        pages2, y2 = qrbill.marker_mm(self.render(page_html(rows, gap)), SLIP_MARK)
+        return pages1, y1, pages2, y2
+
+    def test_slip_foot_on_last_page(self):
+        for rows in (5, 25, 40, 60, 100):
+            with self.subTest(rows=rows):
+                pages1, y1, pages2, y2 = self.place(rows)
+                pushed = y1 - qrbill.BOTTOM_MM < qrbill.SLIP_MM
+                self.assertEqual(pages2, pages1 + (1 if pushed else 0))
+                self.assertTrue(1 <= y2 <= 2.5, f"slip foot {y2:.2f} mm from the bottom")
+
+    def test_short_body_stays_on_one_page(self):
+        pages1, _, pages2, _ = self.place(5)
+        self.assertEqual((pages1, pages2), (1, 1))
+
+    def test_body_leaving_less_than_the_slip_is_pushed_to_the_next_page(self):
+        pages1, y1, pages2, _ = self.place(25)
+        self.assertLess(y1 - qrbill.BOTTOM_MM, qrbill.SLIP_MM)
+        self.assertEqual((pages1, pages2), (1, 2))
+
+
+class SlipSpacerRender(unittest.TestCase):
+    # The jinja method, with the render and the measure stubbed: the flag and the recursion guard.
+    def setUp(self):
+        from types import SimpleNamespace
+
+        self.inv = SimpleNamespace(doctype="Sales Invoice", name="SINV-TEST", flags=SimpleNamespace(bi_qr_measure=False))
+
+    def test_measure_sets_the_flag_and_clears_it(self):
+        from unittest import mock
+
+        seen = []
+
+        def fake_print(doctype, name, print_format, as_pdf, doc):
+            seen.append(doc.flags.bi_qr_measure)
+            return b"%PDF"
+
+        with mock.patch.object(qrbill.frappe, "get_print", side_effect=fake_print), \
+                mock.patch.object(qrbill, "body_end_mm", return_value=(1, 106.8)):
+            self.assertEqual(qrbill.sales_invoice_slip_spacer(self.inv), 0.8)
+        self.assertEqual(seen, [True])
+        self.assertFalse(self.inv.flags.bi_qr_measure)
+
+    def test_nested_call_returns_zero_without_rendering(self):
+        from unittest import mock
+
+        self.inv.flags.bi_qr_measure = True
+        with mock.patch.object(qrbill.frappe, "get_print") as get_print:
+            self.assertEqual(qrbill.sales_invoice_slip_spacer(self.inv), 0)
+        get_print.assert_not_called()
+
+    def test_flag_is_cleared_when_the_render_fails(self):
+        from unittest import mock
+
+        with mock.patch.object(qrbill.frappe, "get_print", side_effect=RuntimeError("render")):
+            with self.assertRaises(RuntimeError):
+                qrbill.sales_invoice_slip_spacer(self.inv)
+        self.assertFalse(self.inv.flags.bi_qr_measure)
 
 
 class DataUri(unittest.TestCase):

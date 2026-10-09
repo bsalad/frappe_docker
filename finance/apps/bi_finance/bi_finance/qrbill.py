@@ -12,11 +12,13 @@ until a QRR path with bank reconciliation exists).
 """
 
 import base64
+import io
 import re
 from decimal import ROUND_HALF_UP, Decimal
 
 import frappe
 from frappe import _
+from pypdf import PdfReader
 
 # Field limits from the guidelines: name and street 70, building number and
 # postal code 16, town 35, message 140.
@@ -215,3 +217,62 @@ def sales_invoice_qr_uri(inv):
     except ValueError as e:
         frappe.throw(str(e))
     return "data:image/svg+xml;base64," + base64.b64encode(svg(text).encode("utf-8")).decode("ascii")
+
+
+# The slip sits at the foot of the last page. The page cannot measure its body (wkhtmltopdf
+# runs with JavaScript off), so the format renders twice: the body alone with a marker after
+# it, then the body, a gap and the slip. The marker's height in the PDF gives the gap.
+PAGE_MM, TOP_MM, BOTTOM_MM, SLIP_MM = 297, 15, 1, 105
+MARKER = "BI-QR-END"
+PRINT_FORMAT = "BI Sales Invoice QR"
+PT_MM = 25.4 / 72
+
+
+def spacer_mm(y_mm):
+    """Gap between the body and the slip, given the body's end y_mm from the bottom of the last page.
+
+    A body that leaves room for the slip gets the gap that puts the slip at the foot of its page.
+    One that leaves less moves the slip to the foot of a page of its own: the gap then fills
+    the rest of this page, so the slip starts the next one.
+    """
+    remaining = y_mm - BOTTOM_MM
+    content = PAGE_MM - TOP_MM - BOTTOM_MM
+    if remaining >= SLIP_MM:
+        return round(remaining - SLIP_MM, 1)
+    return round(remaining + content - SLIP_MM, 1)
+
+
+def marker_mm(pdf_bytes, marker):
+    """(pages, y) of the marker on the last page: its baseline in mm from the bottom of the page."""
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    found = []
+
+    def visitor(text, cm, tm, font_dict, font_size):
+        if marker in text:
+            # the text matrix mapped through the current transformation matrix, in points
+            found.append(cm[1] * tm[4] + cm[3] * tm[5] + cm[5])
+
+    reader.pages[-1].extract_text(visitor_text=visitor)
+    if not found:
+        frappe.throw(_("The payment slip cannot be placed: {0} is missing from the rendered PDF").format(marker))
+    return len(reader.pages), found[-1] * PT_MM
+
+
+def body_end_mm(pdf_bytes):
+    """(pages, y) of the invoice body's end, from the first render's marker."""
+    return marker_mm(pdf_bytes, MARKER)
+
+
+def sales_invoice_slip_spacer(inv):
+    """Gap before the payment slip of BI Sales Invoice QR (jinja method, hooks.py).
+
+    The flag makes the nested render skip the slip and the gap, so it does not recurse.
+    """
+    if inv.flags.bi_qr_measure:
+        return 0.0
+    inv.flags.bi_qr_measure = True
+    try:
+        pdf = frappe.get_print(inv.doctype, inv.name, print_format=PRINT_FORMAT, as_pdf=True, doc=inv)
+    finally:
+        inv.flags.bi_qr_measure = False
+    return spacer_mm(body_end_mm(pdf)[1])
