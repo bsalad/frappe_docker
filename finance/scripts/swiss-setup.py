@@ -1,6 +1,6 @@
 """Swiss setup of company BI Concepts, run inside the backend container by
 swiss-setup.sh. Steps are named on the command line (coa, vat, fiscal,
-fields, currencies, banks, gebuev); each one is re-runnable and skips what
+fields, currencies, banks, gebuev, qrbill); each one is re-runnable and skips what
 already exists. `freeze <date> [--apply]` is a separate command: it closes the
 books up to a date and is a dry run unless --apply is given."""
 import csv
@@ -419,6 +419,38 @@ def currencies():
     say(f"currencies: {frappe.db.count('Currency', {'enabled': 1})} enabled")
 
 
+# The print format is a Jinja file in finance/qrbill, read from the folder that
+# finance-local.yml mounts into the container. qrbill.py there draws the QR code.
+PRINT_FORMAT = "BI Sales Invoice QR"
+QRBILL_HTML = "/home/frappe/finance-qrbill/bi_sales_invoice_qr.html"
+
+
+def qrbill():
+    with open(QRBILL_HTML, encoding="utf-8") as f:
+        html = f.read()
+    if frappe.db.exists("Print Format", PRINT_FORMAT):
+        doc = frappe.get_doc("Print Format", PRINT_FORMAT)
+        if doc.html == html:
+            say("qrbill: print format in place")
+            return
+        doc.html = html
+        doc.save()
+        say(f"qrbill: print format {PRINT_FORMAT} updated")
+    else:
+        frappe.get_doc({
+            "doctype": "Print Format",
+            "name": PRINT_FORMAT,
+            "doc_type": "Sales Invoice",
+            "module": "Accounts",
+            "custom_format": 1,
+            "print_format_type": "Jinja",
+            "standard": "No",
+            "html": html,
+        }).insert()
+        say(f"qrbill: print format {PRINT_FORMAT} created")
+    frappe.db.commit()
+
+
 def banks():
     # Bank needs System Manager, which the API user lacks. The names are company
     # data, so they come from the BANKS environment variable (one per line),
@@ -489,7 +521,7 @@ def freeze(date, apply):
 
 
 STEPS = {"coa": coa, "vat": vat, "fiscal": fiscal, "fields": fields, "currencies": currencies, "banks": banks,
-         "gebuev": gebuev}
+         "gebuev": gebuev, "qrbill": qrbill}
 
 if __name__ == "__main__":
     args = sys.argv[1:]
