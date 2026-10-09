@@ -9,6 +9,12 @@ of export.py that need the accounting and file scopes) reads its own keychain
 item and never falls back to BEXIO_TOKEN. Which of these was used is printed to
 stderr; the token itself is never stored, printed or put in an error message.
 
+BEXIO_BROKER=1 replaces all of that: the requests go through the Varlock broker
+(a local HTTPS proxy on 127.0.0.1), which puts the real token on GET requests to
+api.bexio.com and refuses every other method. This process only ever sees a
+placeholder, and reads no keychain. It is the way to run the export without a
+person at the screen.
+
 Run the scripts that use it as:
     varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio/inventory.py
 
@@ -17,6 +23,7 @@ Standard library only, so it runs on the system Python.
 
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.error
@@ -24,6 +31,12 @@ import urllib.parse
 import urllib.request
 
 BASE_URL = "https://api.bexio.com"
+
+# The Varlock broker: an HTTPS proxy whose CA the broker's certificates are signed by.
+# The placeholder stands in for the token; the broker swaps it on the way out.
+BROKER_PROXY = "http://127.0.0.1:18899"
+BROKER_CA = "/private/var/vlbroker/ca/combined-ca.pem"
+BROKER_TOKEN = "vlk_placeholder_bexio"
 
 # bexio caps a page at 2000 records; a smaller page costs more requests.
 PAGE_SIZE = 500
@@ -42,21 +55,28 @@ class BexioError(Exception):
 
 
 TOKEN_NAMES = {
+    "broker": "Varlock broker (the token is added on the way out)",
     "oauth": "OAuth refresh token",
     "oauth-export": "OAuth export refresh token (accounting and file scopes)",
     "pat": "personal access token (BEXIO_TOKEN)",
 }
 
 
-def resolve_token(export_scope=False):
-    """(token, kind) for the API: the OAuth login first, the PAT only without one.
+def broker_mode():
+    return os.environ.get("BEXIO_BROKER") == "1"
 
-    kind is "oauth", "oauth-export" or "pat". A refresh token that exists but is
+
+def resolve_token(export_scope=False):
+    """(token, kind) for the API: the broker when BEXIO_BROKER=1, else the OAuth login first, the PAT only without one.
+
+    kind is "broker", "oauth", "oauth-export" or "pat". A refresh token that exists but is
     refused is an error, not a reason to fall back: a stale PAT would hide a login
     that needs renewing. The export login (export_scope) has no fallback at all:
     the PAT cannot stand in for the accounting and file scopes. A keychain that
     cannot be opened at all (no macOS Security framework) counts as no refresh token.
     """
+    if broker_mode():
+        return BROKER_TOKEN, "broker"
     import oauth  # lazy: the Security framework is only loaded when a token is needed
 
     keychain_account = oauth.EXPORT_KEYCHAIN_ACCOUNT if export_scope else oauth.KEYCHAIN_ACCOUNT
@@ -94,7 +114,13 @@ class Client:
             self.token_kind = "given"
         self._token = token
         self._base_url = base_url.rstrip("/")
+        self._opener = _broker_opener() if self.token_kind == "broker" else None
         self.requests = 0
+
+    def _open(self, req):
+        if self._opener is not None:
+            return self._opener.open(req, timeout=60)
+        return urllib.request.urlopen(req, timeout=60)
 
     def get(self, path, params=None, raw=False):
         """GET one resource; returns the decoded JSON body, or the bytes when raw (a file's content)."""
@@ -108,7 +134,7 @@ class Client:
             req.add_header("Authorization", "Bearer " + self._token)
             req.add_header("User-Agent", "yardr-finance-bexio-inventory/1.0")
             try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with self._open(req) as resp:
                     body = resp.read()
                 return body if raw else json.loads(body.decode("utf-8"))
             except urllib.error.HTTPError as err:
@@ -174,6 +200,15 @@ class Client:
                 return
             yield from fresh
             page += 1
+
+
+def _broker_opener():
+    """An opener that sends every request through the Varlock broker, trusting its CA."""
+    context = ssl.create_default_context(cafile=BROKER_CA)
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({"https": BROKER_PROXY}),
+        urllib.request.HTTPSHandler(context=context),
+    )
 
 
 def _unseen(rows, seen):

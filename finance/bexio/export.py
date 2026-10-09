@@ -19,7 +19,9 @@ the run; the exit status is 2 when a required entity is missing.
 the others; without it every entity is exported.
 
 Four entities need the accounting and file scopes, which bexio grants only with
-write access. They are read with the export login (oauth.py login --export-scope,
+write access. With BEXIO_BROKER=1 they are read through the Varlock broker, which
+holds the token and allows GET only; no varlock run and no login is needed then.
+Without the broker they are read with the export login (oauth.py login --export-scope,
 its own keychain item), and everything else with the read-only login. Once the
 run is done, `oauth.py logout --export-scope` removes the export login again.
 

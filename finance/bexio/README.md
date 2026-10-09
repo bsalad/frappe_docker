@@ -25,12 +25,29 @@ bills, expenses, bank accounts and bank payments. There is no
 `accounting` scope and no `*_edit` scope. The list is the `SCOPE` constant in
 `oauth.py`.
 
-## Export login (one run, then removed)
+## Broker (first choice for the export)
 
 bexio grants the accounting journal, manual entries, bank transactions and files
-only with the `accounting` and `file` scopes, and both are write scopes (bexio
-allows no read-only version). The export therefore has a second login with
-`EXPORT_SCOPE` (the read-only scopes plus those two). It is kept apart from the
+only with the `accounting` and `file` scopes, and both are write scopes. The
+Varlock broker (launchd `ch.bi-concepts.varlock-broker`, 127.0.0.1:18899) holds
+the token and answers GET requests to api.bexio.com with it; every other method is
+refused, and the caller only ever sees the placeholder `vlk_placeholder_bexio`.
+With `BEXIO_BROKER=1` the client sends its requests through the broker as an HTTPS
+proxy, trusting the broker's CA (`/private/var/vlbroker/ca/combined-ca.pem`). It reads
+no keychain and runs no OAuth refresh, for any entity. No varlock and no person at
+the screen are needed:
+
+```sh
+BEXIO_BROKER=1 python3 finance/bexio/export.py --out /Users/bsaladin/ws_yardr_finance/private/bexio-export/<date>-full --only manual_entries --only journal --only bank_transactions --only files
+```
+
+The export login below is only the fallback, for a machine without the broker. The
+temporary write scope it needs is not used when the broker is.
+
+## Export login (fallback, one run, then removed)
+
+Without the broker, the export has a second login with `EXPORT_SCOPE` (the
+read-only scopes plus `accounting` and `file`). It is kept apart from the
 read-only one: its own keychain item (account `finance:local:BEXIO_EXPORT_REFRESH_TOKEN`),
 and only `export.py` uses it, for `manual_entries`, `journal`, `bank_transactions`
 and `files`. Every other entity still goes through the read-only login. The
