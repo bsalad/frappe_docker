@@ -177,6 +177,10 @@ class CallbackHandlerTest(unittest.TestCase):
         self.assertIn("error", outcome)
         self.assertNotIn("code", outcome)
 
+    def test_non_ascii_state_is_a_mismatch_not_a_crash(self):
+        outcome, _ = self._run("/callback?code=code-not-real&state=%C3%A9")
+        self.assertIn("error", outcome)
+
     def test_bexio_error_is_reported(self):
         outcome, _ = self._run("/callback?error=access_denied&state=state-ok")
         self.assertEqual(outcome, {"error": "access_denied"})

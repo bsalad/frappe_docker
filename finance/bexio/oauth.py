@@ -146,7 +146,7 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             return
         params = urllib.parse.parse_qs(url.query)
         server = self.server
-        if not secrets.compare_digest(params.get("state", [""])[0], server.expected_state):
+        if not secrets.compare_digest(params.get("state", [""])[0].encode("utf-8"), server.expected_state.encode("utf-8")):
             server.outcome = {"error": "state does not match this login"}
         elif "error" in params:
             server.outcome = {"error": params["error"][0]}

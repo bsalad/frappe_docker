@@ -34,7 +34,8 @@ token is kept in memory only.
 ## Log in again
 
 If the refresh token expires or is revoked, the scripts stop with
-`bexio refused the refresh token ... run ... oauth.py login again`. Run the login
+an error that names bexio's answer (for example `invalid_grant`) and says to run
+`... oauth.py login` again. Run the login
 command above again. A new login replaces the stored token.
 
 Revoking the old personal access token (`BEXIO_TOKEN`) is a separate step, done in
