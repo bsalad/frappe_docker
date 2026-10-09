@@ -6,6 +6,7 @@
 #
 #   finance/scripts/swiss-setup.sh                # all steps
 #   finance/scripts/swiss-setup.sh vat fiscal     # some of: coa vat fiscal fields currencies banks gebuev
+#   finance/scripts/swiss-setup.sh vat --check <export dir>   # VAT codes against the export's taxes.json
 #   finance/scripts/swiss-setup.sh freeze 2025-12-31          # dry run: what a freeze would set
 #   finance/scripts/swiss-setup.sh freeze 2025-12-31 --apply  # sets accounts frozen till that date
 set -eu
@@ -13,8 +14,19 @@ set -eu
 # Compose files live at the repo root, two levels up from this script.
 cd "$(dirname "$0")/../.."
 
+# The container cannot see the export directory: its taxes.json and
+# accounts.json go in as environment variables.
+TAXES_JSON="" ACCOUNTS_JSON=""
+if [ "${1:-}" = vat ] && [ "${2:-}" = --check ]; then
+  dir="${3:?usage: swiss-setup.sh vat --check <export dir>}"
+  TAXES_JSON=$(cat "$dir/taxes.json")
+  ACCOUNTS_JSON=$(cat "$dir/accounts.json")
+fi
+export TAXES_JSON ACCOUNTS_JSON
+
 # bench's own Python loads the site; the script goes in on stdin so the
 # container needs no copy of it.
-docker compose -p frappe-finance -f pwd.yml -f finance-local.yml exec -T -e BANKS="${BANKS:-}" backend \
+docker compose -p frappe-finance -f pwd.yml -f finance-local.yml exec -T \
+  -e BANKS="${BANKS:-}" -e TAXES_JSON -e ACCOUNTS_JSON backend \
   sh -c 'cd /home/frappe/frappe-bench/sites && exec ../env/bin/python - "$@"' sh "$@" \
   < finance/scripts/swiss-setup.py

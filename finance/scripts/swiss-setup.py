@@ -5,6 +5,7 @@ already exists. `freeze <date> [--apply]` is a separate command: it closes the
 books up to a date and is a dry run unless --apply is given."""
 import csv
 import datetime
+import json
 import os
 import sys
 
@@ -17,23 +18,66 @@ COMPANY = "BI Concepts"
 # needs pandas, which the image does not have, so the CSV is read here.
 COA_CSV = "apps/erpnextswiss/erpnextswiss/erpnextswiss/coa_import/accounts_template.csv"
 
-# (rate, kind, period label). Rates change on 2018-01-01 and 2024-01-01; a
-# template per rate keeps the period in its name because ERPNext tax
-# templates have no validity dates. 3.8 % applied both before 2018 and from
-# 2024, so one template serves both.
-VAT_RATES = [
-    (8.1, "Normal", "ab 2024"),
-    (2.6, "Reduziert", "ab 2024"),
-    (3.8, "Beherbergung", "bis 2017, ab 2024"),
-    (7.7, "Normal", "2018-2023"),
-    (2.5, "Reduziert", "bis 2023"),
-    (3.7, "Beherbergung", "2018-2023"),
-    (8.0, "Normal", "bis 2017"),
+# bexio's 42 VAT codes (/3.0/taxes), 1:1: (kind, bexio id, code, bexio name,
+# rate, validity, active, account, deduction account). Kind S = sales, P =
+# purchase. Source: private/bexio-mapping.md, "VAT codes". Until the full export
+# has /3.0/taxes, the names come from the mapping's kind column and the accounts
+# from its kind (sales 2200, Mat/SV 1170, Inv/BA 1171): `vat --check` compares
+# them with bexio's own file once it exists. Accounts of the correction codes
+# (1172-1174) and their 8.1 ids are not in the mapping and are unverified.
+# Bezugsteuer books the same rate as deduction on 2203, so the net is 0.
+BEXIO_TAXES = [
+    ("S", 16, "UN77", "Normalsatz", 7.7, "2017-10 bis 2023-12", True, "2200", None),
+    ("S", 28, "UN81", "Normalsatz", 8.1, "ab 2023-07", True, "2200", None),
+    ("S", 17, "UR25", "Reduzierter Satz", 2.5, "2017-10 bis 2023-12", True, "2200", None),
+    ("S", 29, "UR26", "Reduzierter Satz", 2.6, "ab 2023-07", True, "2200", None),
+    ("S", 18, "US37", "Sondersatz Beherbergung", 3.7, "ab 2017-10", False, "2200", None),
+    ("S", 30, "US38", "Sondersatz Beherbergung", 3.8, "ab 2023-07", False, "2200", None),
+    ("S", 3, "UEX", "Export, steuerbefreit", 0, "", True, "2200", None),
+    ("S", 4, "ULA", "Ausland", 0, "", False, "2200", None),
+    ("S", 5, "MEL", "Meldeverfahren", 0, "", False, "2200", None),
+    ("S", 6, "UNO", "nicht optimiert", 0, "", False, "2200", None),
+    ("S", 13, "SUB", "Subventionen", 0, "", False, "2200", None),
+    ("S", 14, "SPE", "Spenden", 0, "", False, "2200", None),
+    ("S", 15, "UO77", "optiert", 7.7, "2017-10", False, "2200", None),
+    ("S", 31, "UO81", "optiert", 8.1, "ab 2023-07", False, "2200", None),
+    ("S", 48, "U00", "Null-Satz", 0, "", False, "2200", None),
+    ("P", 22, "VM77", "Normalsatz Material/DL", 7.7, "2017-10 bis 2023-12", True, "1170", None),
+    ("P", 35, "VM81", "Normalsatz Material/DL", 8.1, "ab 2023-07", True, "1170", None),
+    ("P", 8, "VM25", "Reduzierter Satz Material/DL", 2.5, "2017-10 bis 2023-12", True, "1170", None),
+    ("P", 34, "VM26", "Reduzierter Satz Material/DL", 2.6, "ab 2023-07", True, "1170", None),
+    ("P", 21, "VM37", "Sondersatz Beherbergung Material/DL", 3.7, "ab 2017-10", False, "1170", None),
+    ("P", 36, "VM38", "Sondersatz Beherbergung Material/DL", 3.8, "ab 2023-07", False, "1170", None),
+    ("P", 7, "VIM", "Import Material/DL, steuerbefreit", 0, "", True, "1170", None),
+    ("P", 9, "ZOLLM", "Einfuhrsteuer Material/DL", 0, "", True, "1170", None),
+    ("P", 33, "BZM81", "Bezugsteuer Material/DL", 8.1, "ab 2023-07", True, "1170", "2203"),
+    ("P", 19, "BZM77", "Bezugsteuer Material/DL", 7.7, "ab 2017-10", False, "1170", "2203"),
+    ("P", 24, "VB77", "Normalsatz Invest./Aufwand", 7.7, "2017-10 bis 2024-12", True, "1171", None),
+    ("P", 38, "VB81", "Normalsatz Invest./Aufwand", 8.1, "ab 2023-01", True, "1171", None),
+    ("P", 12, "VB25", "Reduzierter Satz Invest./Aufwand", 2.5, "2017-10 bis 2023-12", True, "1171", None),
+    ("P", 37, "VB26", "Reduzierter Satz Invest./Aufwand", 2.6, "ab 2023-07", True, "1171", None),
+    ("P", 23, "VB37", "Sondersatz Beherbergung Invest./Aufwand", 3.7, "ab 2017-10", False, "1171", None),
+    ("P", 39, "VB38", "Sondersatz Beherbergung Invest./Aufwand", 3.8, "ab 2023-07", True, "1171", None),
+    ("P", 47, "V00", "Null-Satz Invest./Aufwand", 0, "", True, "1171", None),
+    ("P", 10, "VSF", "Import Invest./Aufwand, steuerbefreit", 0, "", True, "1171", None),
+    ("P", 11, "ZOLLB", "Einfuhrsteuer Invest./Aufwand", 0, "", True, "1171", None),
+    ("P", 32, "BZB81", "Bezugsteuer Invest./Aufwand", 8.1, "ab 2023-07", True, "1171", "2203"),
+    ("P", 20, "BZB77", "Bezugsteuer Invest./Aufwand", 7.7, "2017-10 bis 2023-12", True, "1171", "2203"),
+    ("P", 25, "VES", "Vorsteuerkorrektur nachträglich", 7.7, "2017-10 bis 2023-12", False, "1172", None),
+    ("P", 26, "VEV", "Vorsteuerkorrektur Eigenverbrauch", 7.7, "2017-10 bis 2023-12", False, "1173", None),
+    ("P", 27, "VKÜ", "Vorsteuerkorrektur Kürzung", 7.7, "2017-10 bis 2023-12", False, "1174", None),
+    ("P", 40, "VES", "Vorsteuerkorrektur nachträglich", 8.1, "ab 2023-07", False, "1172", None),
+    ("P", 41, "VEV", "Vorsteuerkorrektur Eigenverbrauch", 8.1, "ab 2023-07", False, "1173", None),
+    ("P", 42, "VKÜ", "Vorsteuerkorrektur Kürzung", 8.1, "ab 2023-07", False, "1174", None),
 ]
-# KMU accounts, by number: USt payable, Vorsteuer on material/services and
-# on investments/operating expense.
-ACC_USt, ACC_VSt_MAT, ACC_VSt_INV = "2200", "1170", "1171"
-DEFAULT_RATE = 8.1
+# Code of the sales and purchase template that is the company default (8.1 %).
+DEFAULT_SALES, DEFAULT_PURCHASE = 28, 35
+TAX_DOCTYPES = ("Sales Taxes and Charges Template", "Purchase Taxes and Charges Template", "Item Tax Template")
+# ERPNext's own templates (MWST/USt/VSt, the rate per period in the name) are
+# replaced by the codes above and deleted by `vat`, once nothing refers to them.
+FIXED_ACCOUNTS = ("2200", "1170", "1171", "1172", "1173", "1174", "2203")
+# KMU account for USt payable (coa gives it the Tax type)
+ACC_USt = "2200"
 
 FISCAL_YEARS = range(2015, 2027)
 
@@ -58,6 +102,10 @@ BEXIO_DOCTYPES = [
     ("Sales Order", "title"),
     ("Quotation", "title"),
     ("Bank Transaction", "date"),
+    # the bexio VAT codes, mapped by bexio id (erp-7rbc)
+    ("Sales Taxes and Charges Template", "title"),
+    ("Purchase Taxes and Charges Template", "title"),
+    ("Item Tax Template", "title"),
 ]
 
 # Currencies bexio books in, enabled by the `currencies` step. CHF is paid in
@@ -175,55 +223,146 @@ def coa():
     say(f"coa: {frappe.db.count('Account', {'company': COMPANY})} accounts")
 
 
-def vat():
+def tax_title(code, rate, name):
+    # "UN81 8.1% Normalsatz": the code first, so the name tells which bexio code it is
+    return f"{code} {rate:g}% {name}"
+
+
+def tax_rows(dt, kind, account_no, deduct_no, rate):
+    acc = account(account_no)
+    if dt == "Item Tax Template":
+        return [{"tax_type": acc, "tax_rate": rate}]
+    if dt == "Sales Taxes and Charges Template":
+        return [{"charge_type": "On Net Total", "account_head": acc, "rate": rate}]
+    rows = [{"category": "Total", "add_deduct_tax": "Add", "charge_type": "On Net Total",
+             "account_head": acc, "rate": rate}]
+    if deduct_no:
+        # reverse charge: the same rate comes back as a deduction on 2203, net 0
+        rows.append({"category": "Total", "add_deduct_tax": "Deduct", "charge_type": "On Net Total",
+                     "account_head": account(deduct_no), "rate": rate})
+    return rows
+
+
+def row_key(dt):
+    if dt == "Item Tax Template":
+        return ("tax_type", "tax_rate")
+    if dt == "Sales Taxes and Charges Template":
+        return ("account_head", "rate", "description")
+    return ("account_head", "rate", "add_deduct_tax", "description")
+
+
+def sync_tax(dt, bexio_id, title, rows, disabled, is_default):
+    # Creates the template for a bexio id, or brings the one there back to the
+    # rows of bexio: re-run changes nothing.
     abbr = frappe.db.get_value("Company", COMPANY, "abbr")
-    ust, vst_mat, vst_inv = account(ACC_USt), account(ACC_VSt_MAT), account(ACC_VSt_INV)
-    for rate, kind, period in VAT_RATES:
-        label = f"{rate}% {kind} ({period})"
-        default = 1 if rate == DEFAULT_RATE else 0
+    name = frappe.db.get_value(dt, {"bexio_id": bexio_id}, "name")
+    fields = {"title": title, "disabled": disabled}
+    if dt != "Item Tax Template":
+        fields["is_default"] = is_default
+    if not name:
+        doc = frappe.get_doc({"doctype": dt, "company": COMPANY, "bexio_id": bexio_id, "taxes": rows, **fields})
+        doc.insert()
+        return "created"
+    doc = frappe.get_doc(dt, name)
+    changed = False
+    for k, v in fields.items():
+        if doc.get(k) != v:
+            doc.set(k, v)
+            changed = True
+    key = row_key(dt)
+    if [tuple(r.get(k) for k in key) for r in rows] != [tuple(getattr(r, k) for k in key) for r in doc.taxes]:
+        doc.set("taxes", rows)
+        changed = True
+    if changed:
+        doc.save()
+    if doc.name != f"{title} - {abbr}":
+        frappe.rename_doc(dt, doc.name, f"{title} - {abbr}", force=True)
+        return "renamed"
+    return "updated" if changed else "unchanged"
 
-        title = f"USt {label}"
-        if not frappe.db.exists("Sales Taxes and Charges Template", f"{title} - {abbr}"):
-            frappe.get_doc({
-                "doctype": "Sales Taxes and Charges Template",
-                "title": title,
-                "company": COMPANY,
-                "is_default": default,
-                "taxes": [{
-                    "charge_type": "On Net Total", "account_head": ust,
-                    "description": f"MWST {rate}%", "rate": rate,
-                }],
-            }).insert()
 
-        for short, acc in (("Material/DL", vst_mat), ("Invest./Aufwand", vst_inv)):
-            title = f"VSt {label} {short}"
-            if frappe.db.exists("Purchase Taxes and Charges Template", f"{title} - {abbr}"):
-                continue
-            frappe.get_doc({
-                "doctype": "Purchase Taxes and Charges Template",
-                "title": title,
-                "company": COMPANY,
-                "is_default": default if acc == vst_mat else 0,
-                "taxes": [{
-                    "category": "Total", "add_deduct_tax": "Add",
-                    "charge_type": "On Net Total", "account_head": acc,
-                    "description": f"Vorsteuer {rate}%", "rate": rate,
-                }],
-            }).insert()
-
-        # One item template serves sales and purchase: ERPNext applies the
-        # rate of the row whose account matches the tax row.
-        title = f"MWST {label}"
-        if not frappe.db.exists("Item Tax Template", f"{title} - {abbr}"):
-            frappe.get_doc({
-                "doctype": "Item Tax Template",
-                "title": title,
-                "company": COMPANY,
-                "taxes": [{"tax_type": a, "tax_rate": rate} for a in (ust, vst_mat, vst_inv)],
-            }).insert()
+def vat():
+    # bexio's codes replace ERPNext's own templates (Benchi). fields() first:
+    # the templates carry bexio_id, which is their key.
+    fields()
+    # Item Tax rows only take accounts of type Tax; the KMU template leaves
+    # these empty (as coa does for 2200)
+    for number in ("1172", "1173", "1174", "2203"):
+        name = account(number)
+        if frappe.db.get_value("Account", name, "account_type") != "Tax":
+            frappe.db.set_value("Account", name, "account_type", "Tax")
+    tally = {}
+    for kind, bexio_id, code, name, rate, valid, active, account_no, deduct_no in BEXIO_TAXES:
+        title = tax_title(code, rate, name)
+        desc = f"bexio {bexio_id}" + (f", gültig {valid}" if valid else "")
+        # every code gets an Item Tax Template; sales and purchase templates by kind
+        dts = ["Sales Taxes and Charges Template"] if kind == "S" else ["Purchase Taxes and Charges Template"]
+        dts.append("Item Tax Template")
+        for dt in dts:
+            rows = tax_rows(dt, kind, account_no, deduct_no, rate)
+            for row in rows if dt != "Item Tax Template" else []:
+                row["description"] = desc
+            is_default = int(bexio_id in (DEFAULT_SALES, DEFAULT_PURCHASE) and dt != "Item Tax Template")
+            result = sync_tax(dt, str(bexio_id), title, rows, 0 if active else 1, is_default)
+            tally[(dt, result)] = tally.get((dt, result), 0) + 1
     frappe.db.commit()
-    for dt in ("Sales Taxes and Charges Template", "Purchase Taxes and Charges Template", "Item Tax Template"):
+    for (dt, result), n in sorted(tally.items()):
+        say(f"vat: {dt} {result} {n}")
+    retire()
+    for dt in TAX_DOCTYPES:
         say(f"vat: {frappe.db.count(dt, {'company': COMPANY})} {dt}")
+
+
+def retire():
+    # ERPNext's own templates have no bexio_id. delete_doc refuses a template a
+    # document or item still links to, so nothing is removed under a reference.
+    for dt in TAX_DOCTYPES:
+        for name in frappe.get_all(dt, {"company": COMPANY}, pluck="name"):
+            if frappe.db.get_value(dt, name, "bexio_id"):
+                continue
+            frappe.delete_doc(dt, name)
+            say(f"vat: deleted {dt} {name}")
+    frappe.db.commit()
+
+
+def vat_differences(taxes, numbers, erp):
+    # taxes: bexio's /3.0/taxes rows; numbers: bexio account id -> account number;
+    # erp: bexio id -> (code, rate, account number, disabled) of the ERPNext template.
+    out = []
+    seen = set()
+    for t in taxes:
+        bid = str(t["id"])
+        seen.add(bid)
+        want = (t["code"], float(t["value"]), numbers.get(str(t.get("account_id"))), not t["is_active"])
+        if bid not in erp:
+            out.append(f"missing: {bid} {want[0]}")
+            continue
+        got = erp[bid]
+        for label, a, b in zip(("code", "rate", "account", "disabled"), want, got):
+            if a != b:
+                out.append(f"{bid} {want[0]}: {label} bexio {a!r}, erpnext {b!r}")
+    for bid in sorted(set(erp) - seen):
+        out.append(f"extra: {bid} {erp[bid][0]} is not in bexio")
+    return out
+
+
+def vat_check():
+    # Runs in the container, which cannot see the export: swiss-setup.sh puts
+    # taxes.json and accounts.json in TAXES_JSON and ACCOUNTS_JSON.
+    taxes = json.loads(os.environ["TAXES_JSON"])
+    numbers = {str(a["id"]): str(a["account_no"]) for a in json.loads(os.environ["ACCOUNTS_JSON"])}
+    erp = {}
+    for dt in ("Sales Taxes and Charges Template", "Purchase Taxes and Charges Template"):
+        for name in frappe.get_all(dt, {"company": COMPANY, "bexio_id": ["is", "set"]}, pluck="name"):
+            doc = frappe.get_doc(dt, name)
+            acc = frappe.db.get_value("Account", doc.taxes[0].account_head, "account_number")
+            erp[doc.bexio_id] = (name.split()[0], float(doc.taxes[0].rate), acc, bool(doc.disabled))
+    diffs = vat_differences(taxes, numbers, erp)
+    for d in diffs:
+        say(d)
+    say(f"vat --check: {len(diffs)} differences")
+    if diffs:
+        sys.exit(1)
 
 
 def fiscal():
@@ -354,14 +493,18 @@ STEPS = {"coa": coa, "vat": vat, "fiscal": fiscal, "fields": fields, "currencies
 
 if __name__ == "__main__":
     args = sys.argv[1:]
+    check = "--check" in args
+    steps = [a for a in args if a != "--check"] or list(STEPS)
     frappe.init(site="frontend")
     frappe.connect()
     frappe.set_user("Administrator")
     try:
         if args[:1] == ["freeze"]:
             freeze(*parse_freeze(args[1:]))
+        elif check:
+            vat_check()
         else:
-            for s in args or list(STEPS):
+            for s in steps:
                 STEPS[s]()
     finally:
         frappe.destroy()

@@ -11,9 +11,9 @@ app itself: `swiss.md`.
 | Image | `frappe-finance-custom:v16.50.0-swiss` (all eight ERPNext services) |
 | Apps | frappe 16.50.0, erpnext 16.50.0, erpnextswiss 1.34.1 |
 | Accounts, company BI Concepts | 179 (KMU chart, 9 roots, numbers in the names) |
-| Sales Taxes and Charges Templates | 7 |
-| Purchase Taxes and Charges Templates | 14 |
-| Item Tax Templates | 7 |
+| Sales Taxes and Charges Templates | 15 (bexio codes) |
+| Purchase Taxes and Charges Templates | 27 (bexio codes) |
+| Item Tax Templates | 42 (bexio codes) |
 | Fiscal years | 12 (2015 to 2026), each linked to BI Concepts |
 | Custom field `bexio_id` | 10 doctypes |
 
@@ -57,29 +57,49 @@ tax templates need. Mode of Payment `Cash` points at 1000 Kasse.
 erpnextswiss's own importer is not used: it imports `pandas`, which the image
 does not have (bead erp-p1xb).
 
-**vat.** One template per rate, since ERPNext tax templates have no validity
-dates; the period is in the name.
+**vat.** bexio's 42 VAT codes (`/3.0/taxes`), 1:1, replace the templates
+ERPNext had. Each code is one template per kind, named after the code:
+`UN81 8.1% Normalsatz`, `VM81 8.1% Normalsatz Material/DL`,
+`BZB81 8.1% Bezugsteuer Invest./Aufwand`. The bexio id is in `bexio_id`
+(unique) on all three template doctypes, and the importers map a document's tax
+by that id, never by its rate. The template's description keeps bexio's period
+(`bexio 28, gültig ab 2023-07`); a code that is inactive in bexio is disabled.
 
-| Rate | Kind | Period |
-| --- | --- | --- |
-| 8.1 % | Normal | from 2024-01-01 |
-| 2.6 % | Reduziert | from 2024-01-01 |
-| 3.8 % | Beherbergung | until 2017-12-31 and from 2024-01-01 |
-| 7.7 % | Normal | 2018-01-01 to 2023-12-31 |
-| 2.5 % | Reduziert | until 2023-12-31 |
-| 3.7 % | Beherbergung | 2018-01-01 to 2023-12-31 |
-| 8.0 % | Normal | until 2017-12-31 |
+- Sales (15): `UN77`, `UN81`, `UR25`, `UR26`, `US37`, `US38`, `UEX`, `ULA`,
+  `MEL`, `UNO`, `SUB`, `SPE`, `UO77`, `UO81`, `U00`. Booking to 2200.
+- Purchase (27): Material/DL (1170) `VM…`, `VIM`, `ZOLLM`, `BZM…`; Invest./Aufwand
+  (1171) `VB…`, `V00`, `VSF`, `ZOLLB`, `BZB…`; corrections `VES`, `VEV`, `VKÜ`
+  (1172, 1173, 1174), one per bexio id, for 7.7 and 8.1.
+- Item Tax (42): one per code, one row on the code's account.
+- Defaults: `UN81` (sales) and `VM81` (purchase, Material/DL).
 
-- Sales: `USt <rate>% <kind> (<period>)`, booking to 2200 Umsatzsteuer. 7 templates.
-- Purchase: `VSt <rate>% <kind> (<period>) Material/DL` (1170) and
-  `... Invest./Aufwand` (1171). 14 templates.
-- Item Tax: `MWST <rate>% <kind> (<period>)`, with rows for 2200, 1170 and
-  1171, so one template serves sales and purchase.
-- Defaults: the 8.1 % sales template and the 8.1 % Material/DL purchase
-  template.
+How the special codes are modelled:
 
-Checked on a draft Sales Invoice (not saved): 100.00 net with the 8.1 %
-template gives 8.10 tax on 2200 and 108.10 total.
+- **Bezugsteuer** (`BZ…`, reverse charge): one purchase template with two rows,
+  +rate on 1170 or 1171 (Vorsteuer) and -rate on 2203 Bezugsteuer. The net is 0.
+- **Einfuhrsteuer** (`ZOLLM`, `ZOLLB`): rate 0. The import VAT is on the customs
+  document; ERPNext does not deduct it from a percentage. Booking it is part of
+  the import (open question in `bexio-mapping.md`).
+- **Corrections** (`VES`, `VEV`, `VKÜ`): inactive in bexio. Booked as journal
+  entries, so the templates exist for reference only. Their accounts (1172 to
+  1174, by the order of the mapping) are not verified.
+- Accounts of the other codes follow the kind (sales 2200, Material/DL 1170,
+  Invest./Aufwand 1171). The accounts of the export's taxes are not in the
+  repo; `vat --check` compares them once the full export exists.
+- Account types: 1172 to 1174 and 2203 are set to `Tax`, as 2200 is in `coa`:
+  an Item Tax row takes only accounts of that type.
+
+Retired: the ERPNext templates `USt…`, `VSt…` and `MWST…` (the 8 %-period
+names of the first setup). `vat` deletes them once nothing refers to them; a
+template still linked by an item or a document stops the step.
+
+`swiss-setup.sh vat --check <export dir>` compares the export's `taxes.json`
+and `accounts.json` with the templates (code, rate, account, active) and prints
+each difference; it exits 1 on any. Needs the full export with `/3.0/taxes`.
+
+Checked on a draft Sales Invoice (not saved) with the former 8.1 % template:
+100.00 net gives 8.10 tax on 2200 and 108.10 total. The same numbers apply to
+`UN81`.
 
 Method: ERPNext books VAT on the invoice date. The effective method on
 payments received (vereinnahmte Entgelte) is therefore a matter of the VAT
@@ -151,9 +171,8 @@ written. Once it does:
   tax rate 7.7, 6950 and 6990 (Finanzertrag, Währungsgewinne) sit under the
   Expense root 6, and root 8 is typed Income although it holds expense. Add
   missing accounts with numbers from bexio rather than renumbering.
-- Match bexio VAT codes to the seven rates and the two Vorsteuer accounts
-  (1170 against 1171). A bexio code for exempt, export or zero-rated sales has
-  no template yet; add one when the mapping names it.
+- Map a document's tax by its bexio tax id (`bexio_id` on the templates), never
+  by the rate. A tax id without a template is reported, not guessed.
 - Fill `bexio_id` on every imported record; use it as the key for re-runs.
 - Currency: the template has EUR accounts (1020, 1101, 2001); check against
   bexio's foreign-currency accounts.
