@@ -67,7 +67,7 @@ VAT_OF_TAX_ID = {
 
 DOCTYPES = [
     "Currency", "Customer Group", "Supplier Group", "Account", "Item", "Item Price",
-    "Customer", "Supplier", "Contact", "Address", "Bank Account",
+    "Customer", "Supplier", "Contact", "Address", "Bank Account", "Purchase Invoice",
 ]
 
 
