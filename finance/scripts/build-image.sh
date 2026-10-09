@@ -3,14 +3,14 @@
 # plus erpnextswiss, from finance/apps.json. Builds only; it does not touch the
 # running stack. Switching the stack to this image is a later bead, after a backup.
 #
-# usage: finance/scripts/build-image.sh [tag]     (default tag: v16.50.0-swiss-bi1)
+# usage: finance/scripts/build-image.sh [tag]     (default tag: v16.50.0-swiss-bi3)
 # result: frappe-finance-custom:<tag>
 #
 # Needs Docker with the buildx plugin (BuildKit secrets). apps.json goes in as a
 # secret, not a build arg, so nothing from it ends up in image metadata.
 set -eu
 
-TAG="${1:-v16.50.0-swiss-bi1}"
+TAG="${1:-v16.50.0-swiss-bi3}"
 FRAPPE_TAG=v16.50.0
 
 # Compose files live at the repo root, two levels up from this script.

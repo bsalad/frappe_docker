@@ -121,18 +121,21 @@ def svg(text):
         f"M{x + QUIET_MODULES},{y + QUIET_MODULES}h1v1h-1z"
         for y, row in enumerate(code) for x, v in enumerate(row) if v
     )
-    # White square of 7 mm with a black plus in it; the bars are a third of the
-    # square's side and the arms reach 5/7 of it. Proportions not yet checked
-    # against the guidelines (see finance/docs/swiss.md).
+    # The Swiss cross of the guidelines: a 7 mm box with a white border, a black square
+    # in it and a white cross on the square. Measured on a 19.8 unit box: square 0.7 to
+    # 19.2, arms 3.3 wide and 11 long.
     side = CROSS_MM / QR_MM * n
-    c = size / 2
-    h = side / 6  # half bar width
-    r = side * 5 / 14  # half arm length
-    pts = [(-h, -r), (h, -r), (h, -h), (r, -h), (r, h), (h, h), (h, r), (-h, r), (-h, h), (-r, h), (-r, -h), (-h, -h)]
-    plus = "M" + "L".join(f"{c + x:.3f},{c + y:.3f}" for x, y in pts) + "z"
+    u = side / 19.8
+    x0 = size / 2 - side / 2
+
+    def rect(x, y, w, h, fill):
+        return f'<rect x="{x0 + x * u:.3f}" y="{x0 + y * u:.3f}" width="{w * u:.3f}" height="{h * u:.3f}" fill="{fill}"/>'
+
     cross = (
-        f'<rect x="{c - side / 2:.3f}" y="{c - side / 2:.3f}" width="{side:.3f}" height="{side:.3f}" fill="#fff"/>'
-        f'<path fill="#000" d="{plus}"/>'
+        rect(0, 0, 19.8, 19.8, "#fff")
+        + rect(0.7, 0.7, 18.5, 18.5, "#000")
+        + rect(8.25, 4.4, 3.3, 11, "#fff")
+        + rect(4.4, 8.25, 11, 3.3, "#fff")
     )
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" '
@@ -191,7 +194,9 @@ def sales_invoice_iban(inv):
 def sales_invoice_payload(inv):
     """QR text of a Sales Invoice: the bank account, the company as creditor, the customer as debtor."""
     account = _company_account(inv.company, inv.currency)
-    creditor = _address(inv.company_address) or address_lines(name=inv.company)
+    creditor = _address(inv.company_address)
+    if not creditor or not (creditor[4] and creditor[5]):
+        frappe.throw(_("The company address needs a postal code and a town for the QR-bill"))
     creditor[1] = _clip(frappe.db.get_value("Company", inv.company, "company_name") or inv.company, NAME_MAX)
     debtor = _address(inv.customer_address)
     if debtor:

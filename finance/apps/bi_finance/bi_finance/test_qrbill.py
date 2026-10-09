@@ -5,7 +5,7 @@ The module imports frappe, so run it in the image, where pyqrcode, pypng and cv2
 are installed (finance/scripts/build-image.sh builds it):
 
     docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro" \
-        frappe-finance-custom:v16.50.0-swiss \
+        frappe-finance-custom:v16.50.0-swiss-bi3 \
         sh -c 'cd /home/frappe/bi_finance_src && ../frappe-bench/env/bin/python -m unittest -v bi_finance.test_qrbill'
 """
 
@@ -116,7 +116,10 @@ class QrCode(unittest.TestCase):
         out = qrbill.svg(qrbill.payload(IBAN, CREDITOR, 1, "CHF"))
         self.assertIn('viewBox="0 0 ', out)
         self.assertIn('width="46mm"', out)
-        self.assertEqual(out.count("<path"), 2)
+        self.assertEqual(out.count("<path"), 1)  # the modules
+        # white box, black square, two white bars: a white cross on black, as in the guidelines
+        self.assertEqual(out.count("<rect"), 5)
+        self.assertEqual(out.count('fill="#000"'), 2)  # modules and the cross square
 
 
 class CompanyAccount(unittest.TestCase):
