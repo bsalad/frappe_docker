@@ -26,6 +26,7 @@ YEARS = [
     year(18, "2019-01-01", "2019-12-31", "closed"),  # the earliest by start, with the highest id
     year(1, "2020-01-01", "2020-12-31"),
 ]
+FIRST_YEAR = year(18, "2019-01-01", "2019-12-31", "closed")
 
 
 class FirstYearTest(unittest.TestCase):
@@ -86,6 +87,52 @@ class OpeningEntryTest(unittest.TestCase):
         lines = [("4444", 10, 0), ("9100", 0, 10)]
         with self.assertRaises(op.Unmapped):
             op.opening_entry(lines, year(18, "2019-01-01", "2019-12-31"), BY_NUMBER)
+
+
+# invented bexio accounts: export ids and account numbers
+BEXIO_ACCOUNTS = [
+    {"id": 71, "account_no": 1100}, {"id": 72, "account_no": 2200},
+    {"id": 73, "account_no": 9100}, {"id": 74, "account_no": 6000},
+]
+
+
+def line(lid, date, debit, credit, amount):
+    return {"id": lid, "date": date, "debit_account_id": debit, "credit_account_id": credit, "base_currency_amount": amount}
+
+
+class OpeningLinesTest(unittest.TestCase):
+    def test_no_journal_lines_in_the_first_year_means_no_rows(self):
+        journal = [line(1, "2020-04-02T00:00:00+02:00", 71, 72, 500)]
+        self.assertEqual(op.opening_lines(journal, BEXIO_ACCOUNTS, FIRST_YEAR), [])
+
+    def test_line_touching_9100_gives_both_sides(self):
+        journal = [line(1, "2019-01-01T00:00:00+01:00", 71, 73, 500)]
+        self.assertEqual(op.opening_lines(journal, BEXIO_ACCOUNTS, FIRST_YEAR), [("1100", 500, 0), ("9100", 0, 500)])
+
+    def test_ordinary_posting_in_the_first_year_is_not_an_opening_booking(self):
+        journal = [line(1, "2019-06-30T00:00:00+02:00", 71, 74, 80)]
+        self.assertEqual(op.opening_lines(journal, BEXIO_ACCOUNTS, FIRST_YEAR), [])
+
+    def test_opening_account_line_in_another_year_is_not_counted(self):
+        journal = [line(1, "2020-01-01T00:00:00+01:00", 71, 73, 500)]
+        self.assertEqual(op.opening_lines(journal, BEXIO_ACCOUNTS, FIRST_YEAR), [])
+
+    def test_account_id_missing_from_the_export_is_unmapped(self):
+        journal = [line(1, "2019-01-01T00:00:00+01:00", 999, 73, 500)]
+        with self.assertRaises(op.Unmapped):
+            op.opening_lines(journal, BEXIO_ACCOUNTS, FIRST_YEAR)
+
+    def test_rows_make_one_balanced_opening_entry(self):
+        journal = [
+            line(1, "2019-01-01T00:00:00+01:00", 71, 73, 500),
+            line(2, "2019-01-01T00:00:00+01:00", 73, 72, 200),
+        ]
+        doc = op.opening_entry(op.opening_lines(journal, BEXIO_ACCOUNTS, FIRST_YEAR), FIRST_YEAR, BY_NUMBER)
+        self.assertEqual(doc["accounts"], [
+            {"account": "1100 - Testbank - bic", "debit_in_account_currency": 500.0, "credit_in_account_currency": 0},
+            {"account": "2200 - Testkapital - bic", "debit_in_account_currency": 0, "credit_in_account_currency": 200.0},
+            {"account": "9100 - Testeröffnung - bic", "debit_in_account_currency": 0, "credit_in_account_currency": 300.0},
+        ])
 
 
 class SurveyTest(unittest.TestCase):

@@ -12,16 +12,15 @@ chart (Equity), so the equity side needs no mapping of its own. A missing accoun
 is unmapped, never created here. ERPNext's "Temporary Opening" is not used: this
 site's chart has no such account.
 
-Two cases build no entry, and the dry run says which one applies:
-- the export has no journal (the journal call needs the accounting scope, which
-  the bexio login does not have yet; see README), so the opening bookings are
-  unknown;
-- the journal has no opening lines in the first year (the company started in
-  bexio), so no opening entry is needed.
+The opening bookings are the journal lines dated in the first year that touch 9100 or
+9900; both sides of each line are rows of the entry. No entry is built when there are
+none (the company started in bexio), and the dry run says so. Without a journal in
+the export the bookings are unknown, and no entry is built either.
 
 Nothing is written here. --dry-run reads ERPNext (whether 9100 and 9900 are in the chart, and the
 Opening Entries already there) and prints what the export gives. The
-live run is erp-a2ma's, after the posting plan (finance-3qsp).
+live run is erp-t1cx's, after the posting plan (finance-3qsp), and only if the
+first year has opening lines.
 
 Run it as:
 
@@ -94,6 +93,32 @@ def map_account(number, by_number):
     return by_number[number]
 
 
+def opening_lines(journal, accounts, year):
+    """(account number, debit, credit) rows for the first year's journal lines that touch 9100 or 9900.
+
+    A journal line moves its amount from its debit account to its credit account, so each
+    line gives two rows. Lines of the year that touch neither opening account are ordinary
+    postings, not the opening bookings. Amounts are in the base currency (CHF).
+    """
+    numbers = {a["id"]: str(a["account_no"]) for a in accounts}
+    rows = []
+    for line in journal:
+        if not year["start"] <= line["date"][:10] <= year["end"]:
+            continue
+        sides = []
+        for key in ("debit_account_id", "credit_account_id"):
+            if line[key] not in numbers:
+                raise Unmapped("journal line {} names account id {}, which the export does not have".format(line["id"], line[key]))
+            sides.append(numbers[line[key]])
+        debit, credit = sides
+        if debit not in OPENING_ACCOUNTS and credit not in OPENING_ACCOUNTS:
+            continue
+        amount = line["base_currency_amount"]
+        rows.append((debit, amount, 0))
+        rows.append((credit, 0, amount))
+    return rows
+
+
 def opening_entry(lines, year, by_number, company=COMPANY):
     """ONE Journal Entry from (account number, debit, credit) lines of the first year.
 
@@ -152,8 +177,27 @@ def main(argv):
     if s["journal"] != "exported":
         print("opening entry: not built, the export has no journal ({}); the opening bookings are unknown".format(s["journal"]))
         return 1
-    print("opening entry: not built, the export has journal.json, which this module does not read yet")
-    return 1
+    with open(os.path.join(export_dir, "journal.json"), encoding="utf-8") as f:
+        journal = json.load(f)
+    with open(os.path.join(export_dir, "accounts.json"), encoding="utf-8") as f:
+        bexio_accounts = json.load(f)
+    in_year = sum(1 for line in journal if first["start"] <= line["date"][:10] <= first["end"])
+    rows = opening_lines(journal, bexio_accounts, first)
+    print("journal: {} lines in the first business year, {} of them touch 9100 or 9900".format(in_year, len(rows) // 2))
+    if not rows:
+        print("opening entry: none needed, the first business year has no opening lines (the company started in bexio)")
+        return 0
+    try:
+        doc = opening_entry(rows, first, {r["account_number"]: r["name"] for r in accounts})
+    except Unmapped as err:
+        print("aborted: {}".format(err), file=sys.stderr)
+        return 2
+    if doc is None:
+        print("opening entry: none needed, the opening lines net to nothing")
+        return 0
+    debit_total = sum(r["debit_in_account_currency"] for r in doc["accounts"])
+    print("opening entry: one Journal Entry, {} accounts, debit total {:.2f} CHF (not written)".format(len(doc["accounts"]), debit_total))
+    return 0
 
 
 if __name__ == "__main__":
