@@ -61,3 +61,32 @@ bexio once the scripts run on this login.
 Each record is keyed by `bexio_id`; a second run changes nothing. Take a backup
 first (`bench --site frontend backup`). The export directory is company data and
 stays under `~/ws_yardr_finance/private/`, never in the repository.
+
+## Sales documents (invoices, credit notes, orders, offers)
+
+`import_sales.py` maps the exported sales documents to ERPNext: `invoices.json`
+to Sales Invoice, `credit_vouchers.json` to Sales Invoice with `is_return`
+against the original, `orders.json` to Sales Order, `offers.json` to Quotation.
+Each record is read with its positions (the single-document call). The
+functions return the ERPNext document as a dict; nothing is inserted or
+submitted yet. The live run is erp-a2ma's, after the posting plan (finance-3qsp).
+
+    python3 finance/bexio/import_sales.py --dry-run [--export DIR]
+
+The dry run reads ERPNext and prints totals only: counts per export file, the
+CHF net, tax and gross per year, and the invoice status counts (8 open, 9
+paid). The differences and unmapped records, by bexio id, go to
+`<private>/bexio-sales-differences.txt`.
+
+- VAT: each position's bexio tax id is looked up in the Sales Taxes and Charges
+  Templates by their `bexio_id`. A tax id without a template is unmapped; the
+  rate never picks a template. The tax rows are computed from the positions,
+  and bexio's own tax per rate is compared, not copied.
+- Free-text positions and text lines go to the item `bexio Position`; the
+  description keeps the bexio text. Discounts and unknown position types are
+  unmapped, not guessed.
+- Credit notes get `bexio_id` `credit-<id>`, since a credit note and an invoice
+  can share an id. Their link to the invoice is the field `invoice_id`, not yet
+  confirmed against a real export.
+- Document number: kept in `remarks` ("bexio Nr. ..."); the dry run lists any
+  field the ERPNext doctype does not have.
