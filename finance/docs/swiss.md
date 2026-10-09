@@ -146,14 +146,18 @@ Build result: see the bead note.
    the format's margin fields, so the format sets them itself (top 15 mm, bottom
    1 mm, sides 0 with the body padded 15 mm). A short invoice now renders on one
    page with the slip at the foot (`private/qr-sample.pdf`, 1 page).
-   **Layout, fixed in code (2026-10-10), pending the live samples (erp-a6eq):** the
-   slip is at the foot of the last page for any page count. The format renders twice:
-   the body alone with a marker, then the body, a gap computed from the marker's place
-   in the PDF, and the slip (`qrbill.py` `sales_invoice_slip_spacer`). A body that leaves
-   less than 105 mm moves the slip to a page of its own, at its foot. Offline, with
-   wkhtmltopdf and invented rows, the foot lands 1.5 to 1.8 mm from the page edge for
-   1, 2 and 3 pages. Not yet on the site: the bi5 image and the samples of a short and a
-   long invoice are erp-a6eq.
+   **Layout, fixed in code (2026-10-10):** the slip is meant to sit at the foot of the
+   last page for any page count. The format renders twice: the body alone with a marker,
+   then the body, a gap computed from the marker's place in the PDF, and the slip
+   (`qrbill.py` `sales_invoice_slip_spacer`). A body that leaves less than 105 mm moves
+   the slip to a page of its own, at its foot. Offline, with wkhtmltopdf and invented
+   rows, the foot lands 1.5 to 1.8 mm from the page edge for 1, 2 and 3 pages.
+   **On the live site (bi5, 2026-10-10, erp-a6eq):** the short sample is 1 page with the
+   slip at the foot (`private/qr-sample.pdf`). The long sample (40 rows) is 3 pages:
+   the slip is at the foot of page 2, but page 3 is blank. **Open:** the blank last page
+   is not explained by the offline tests (the real format has more content after the
+   slip than the invented HTML); the template was not changed on the site. Decide
+   whether to fix it in the template or the spacer (`private/qr-sample-long.pdf`).
    **PDF host, fixed (2026-10-10):** `host_name` is the tailnet URL, set by the
    `host` step. The backend and queue containers reach it; a stock format renders.
    Mails and prints link to that URL.

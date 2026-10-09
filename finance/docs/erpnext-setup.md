@@ -8,7 +8,7 @@ app itself: `swiss.md`.
 
 | Item | Count |
 | --- | --- |
-| Image | `frappe-finance-custom:v16.50.0-swiss-bi3` (all eight ERPNext services; previous images `v16.50.0-swiss-bi1` and `v16.50.0-swiss` kept for rollback) |
+| Image | `frappe-finance-custom:v16.50.0-swiss-bi5` (all eight ERPNext services; previous images `v16.50.0-swiss-bi4` and `v16.50.0-swiss-bi3`, and `v16.50.0-swiss-bi1` and `v16.50.0-swiss`, kept for rollback) |
 | Apps | frappe 16.50.0, erpnext 16.50.0, erpnextswiss 1.34.1, bi_finance 0.0.1 |
 | Accounts, company BI Concepts | 179 (KMU chart, 9 roots, numbers in the names) |
 | Sales Taxes and Charges Templates | 15 (bexio codes) |
@@ -196,7 +196,7 @@ under a new tag, then point `finance-local.yml` at it (the base is not rebuilt):
 
 ```sh
 docker build --build-arg BASE=frappe-finance-custom:v16.50.0-swiss-bi1-base \
-    --tag frappe-finance-custom:v16.50.0-swiss-bi3 --file finance/images/bi_finance.Containerfile .
+    --tag frappe-finance-custom:v16.50.0-swiss-bi5 --file finance/images/bi_finance.Containerfile .
 ```
 
 ## Redo on a fresh site
@@ -218,7 +218,7 @@ the image. Its offline tests run in the image:
 
 ```sh
 docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro" \
-    frappe-finance-custom:v16.50.0-swiss-bi3 \
+    frappe-finance-custom:v16.50.0-swiss-bi5 \
     sh -c 'cd /home/frappe/bi_finance_src && ../frappe-bench/env/bin/python -m unittest bi_finance.test_qrbill'
 ```
 
