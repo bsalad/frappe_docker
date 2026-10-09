@@ -1,0 +1,267 @@
+"""Map the bexio manual entries to ERPNext Journal Entries, offline.
+
+One step of the bexio pipeline after import_master.py: map_entry() returns the
+Journal Entry dict for one bexio manual entry, as import_sales.py and
+import_purchase.py do for their documents. Nothing is written here. The
+command line runs the dry run only, which reads ERPNext and prints totals; the
+live run belongs to erp-a2ma, after the posting plan (finance-3qsp).
+
+Run it as:
+
+    python3 finance/bexio/import_manual_entries.py --dry-run [--export DIR]
+
+--export defaults to the newest directory under <private>/bexio-export/. The
+entries are read from manual_entries.json in it. While that file is not
+there (the export is still pending, HTTP 403) the dry run says "not exported
+yet" and stops. The dry run prints totals only; the bexio ids of the entries
+it cannot map go to <private>/bexio-manual-entries-dry-run.txt, never to the
+screen or the repository.
+
+Each entry is one Journal Entry with a row for every debit and credit of its
+lines, so it always has at least two rows. Assumptions the posting plan has
+to confirm: the amount of a line is gross (incl. VAT) when the line has a
+tax_id; the VAT is then split off on the side of the tax account (assets and
+expenses are debited, liabilities, income and equity credited, which is the
+side the VAT account carries) and booked to tax_account_id at the rate of its
+code (import_purchase's VAT_OF_TAX_ID). A code without an Item Tax Template in
+ERPNext is reported, not guessed. Entries of type banking_transaction are
+mapped too, but counted apart: the posting plan decides whether they or the
+bank transactions carry the booking.
+
+Standard library only, apart from import_master and import_purchase.
+"""
+
+import argparse
+import datetime
+import json
+import os
+import sys
+from decimal import Decimal, ROUND_HALF_UP
+
+import import_master as im
+import import_purchase as ip
+
+ENTRIES_FILE = "manual_entries.json"
+CURRENCIES_FILE = "currencies.json"
+PROBLEMS_FILE = "bexio-manual-entries-dry-run.txt"
+JOURNAL = "Journal Entry"
+SINGLE, COMPOUND, GROUP = "manual_single_entry", "manual_compound_entry", "manual_group_entry"
+# the type of the entries a bank import created; bexio's docs do not list it, the name is from the mapping notes
+BANKING = "banking_transaction"
+TYPES = (SINGLE, COMPOUND, GROUP)
+# the side a VAT account carries: Vorsteuer (assets) is debited, Umsatzsteuer (liabilities) credited
+SIDE_OF_ROOT = {"Asset": "debit", "Expense": "debit", "Liability": "credit", "Income": "credit", "Equity": "credit"}
+CENT = Decimal("0.01")
+ZERO = Decimal("0")
+
+
+class Lookups:
+    """What the mapping reads from ERPNext: Accounts by bexio_id with their root type, and Item Tax Templates by bexio_id."""
+
+    def __init__(self, accounts, taxes):
+        self.accounts = accounts  # bexio account id -> (Account name, root type)
+        self.taxes = taxes        # bexio tax id -> Item Tax Template name
+
+    @classmethod
+    def from_erp(cls, erp):
+        rows = erp.list("Account", [["company", "=", im.COMPANY], ["bexio_id", "is", "set"]], ["name", "bexio_id", "root_type"])
+        return cls(
+            accounts={r["bexio_id"]: (r["name"], r["root_type"]) for r in rows},
+            taxes={r["bexio_id"]: r["name"] for r in erp.list("Item Tax Template", [["company", "=", im.COMPANY], ["bexio_id", "is", "set"]], ["name", "bexio_id"])},
+        )
+
+
+def _money(value):
+    return Decimal(str(value))
+
+
+def _chf(value, factor):
+    return (value * factor).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def _day(entry):
+    try:
+        return datetime.date.fromisoformat(entry["date"])
+    except (KeyError, TypeError, ValueError):
+        raise ip.MappingError("no valid date")
+
+
+def _account(lookups, bexio_id):
+    found = lookups.accounts.get(str(bexio_id))
+    if not found:
+        raise ip.MappingError("no Account for account {}".format(bexio_id))
+    return found
+
+
+def _vat(line, lookups):
+    """(rate, tax account name, side of the tax account) of a line, or None when the line carries no VAT."""
+    tax_id = line.get("tax_id")
+    if not tax_id or tax_id in ip.ZERO_RATE_IDS:
+        return None
+    if tax_id not in im.VAT_OF_TAX_ID:
+        raise ip.MappingError("unknown VAT code {}".format(tax_id))
+    if not lookups.taxes.get(str(tax_id)):
+        raise ip.MappingError("no Item Tax Template with bexio_id {} in ERPNext".format(tax_id))
+    tax_account, root = _account(lookups, line.get("tax_account_id"))
+    if root not in SIDE_OF_ROOT:
+        raise ip.MappingError("VAT account {} has root type {}".format(line.get("tax_account_id"), root))
+    rate, _ = im.VAT_OF_TAX_ID[tax_id]
+    return rate, tax_account, SIDE_OF_ROOT[root]
+
+
+def _line_parts(line, lookups, currencies):
+    """The (account, side, amount in the line's currency, amount in CHF) of one bexio line, the VAT split off when it has one."""
+    debit, _ = _account(lookups, line.get("debit_account_id"))
+    credit, _ = _account(lookups, line.get("credit_account_id"))
+    code = currencies.get(str(line.get("currency_id")))
+    if not code:
+        raise ip.MappingError("unknown currency {}".format(line.get("currency_id")))
+    amount = _money(line["amount"])
+    factor = _money(line.get("currency_factor") or 1)
+    gross = _chf(amount, factor)
+    vat = _vat(line, lookups)
+    if vat is None:
+        return [(debit, "debit", amount, gross), (credit, "credit", amount, gross)], factor
+    rate, tax_account, side = vat
+    net = (amount / (1 + _money(rate) / 100)).quantize(CENT, rounding=ROUND_HALF_UP)
+    net_chf = _chf(net, factor)
+    # the CHF tax is the rest of the gross, so the rows add up to the gross in CHF to the rappen
+    tax_chf = gross - net_chf
+    if side == "debit":
+        parts = [(debit, "debit", net, net_chf), (tax_account, "debit", amount - net, tax_chf), (credit, "credit", amount, gross)]
+    else:
+        parts = [(credit, "credit", net, net_chf), (tax_account, "credit", amount - net, tax_chf), (debit, "debit", amount, gross)]
+    # debit rows first, as a journal reads
+    return sorted(parts, key=lambda part: part[1] != "debit"), factor
+
+
+def map_entry(entry, lookups, currencies):
+    """The Journal Entry dict for one bexio manual entry; raises MappingError when a part has no home.
+
+    currencies maps bexio currency ids to ERPNext currency codes (currencies.json).
+    """
+    kind = entry.get("type")
+    if kind not in TYPES + (BANKING,):
+        raise ip.MappingError("unknown entry type {!r}".format(kind))
+    lines = entry.get("entries") or []
+    if not lines:
+        raise ip.MappingError("no entries lines")
+    if kind == SINGLE and len(lines) != 1:
+        raise ip.MappingError("single entry with {} lines".format(len(lines)))
+    rows, debit, credit = [], ZERO, ZERO
+    reference = entry.get("reference_nr") or ""
+    for line in lines:
+        parts, factor = _line_parts(line, lookups, currencies)
+        for account, side, value, chf in parts:
+            if side == "debit":
+                debit += chf
+            else:
+                credit += chf
+            rows.append(_row(account, side, value, chf, factor, line.get("description") or ""))
+    if debit != credit:
+        raise ip.MappingError("debit {} and credit {} differ".format(debit, credit))
+    return {
+        "doctype": JOURNAL, "company": im.COMPANY, "voucher_type": "Journal Entry",
+        "posting_date": _day(entry).isoformat(), "cheque_no": reference, "user_remark": reference,
+        "multi_currency": int(any(row["exchange_rate"] != 1 for row in rows)),
+        "bexio_id": str(entry["id"]),
+        "accounts": rows,
+    }
+
+
+def _row(account, side, value, chf, factor, remark):
+    """One Journal Entry Account row: the amount in the account's currency, and in CHF with the rate of the line."""
+    row = {"account": account, "user_remark": remark, "exchange_rate": float(factor)}
+    row["debit" if side == "debit" else "credit"] = float(chf)
+    row["debit_in_account_currency" if side == "debit" else "credit_in_account_currency"] = float(value)
+    return row
+
+
+class Totals:
+    """Per year: the entries seen, what maps, what is from banking, and the CHF debit of what maps."""
+
+    def __init__(self):
+        self.rows = {}
+        self.problems = []
+
+    def row(self, year):
+        return self.rows.setdefault(year, {"entries": 0, "mapped": 0, "banking": 0, "unmapped": 0, "debit": ZERO, "banking_debit": ZERO})
+
+
+def dry_run(entries, lookups, currencies):
+    """Map every entry and total it; writes nothing. Returns the Totals."""
+    totals = Totals()
+    for entry in entries:
+        try:
+            year = _day(entry).year
+        except ip.MappingError:
+            year = None
+        row = totals.row(year)
+        row["entries"] += 1
+        try:
+            doc = map_entry(entry, lookups, currencies)
+        except ip.MappingError as err:
+            row["unmapped"] += 1
+            totals.problems.append("manual entry {}: unmapped, {}".format(entry.get("id"), err))
+            continue
+        debit = sum((_money(r.get("debit", 0)) for r in doc["accounts"]), ZERO)
+        row["mapped"] += 1
+        row["debit"] += debit
+        if entry.get("type") == BANKING:
+            row["banking"] += 1
+            row["banking_debit"] += debit
+    return totals
+
+
+def report(totals, export_dir):
+    lines = ["manual entries dry run from {}".format(export_dir),
+             "{:<6}{:>9}{:>8}{:>9}{:>10}{:>16}{:>16}".format("year", "entries", "mapped", "banking", "unmapped", "debit CHF", "of banking")]
+    for year, r in sorted(totals.rows.items(), key=lambda item: (item[0] is None, item[0] or 0)):
+        lines.append("{:<6}{:>9}{:>8}{:>9}{:>10}{:>16}{:>16}".format(
+            year if year is not None else "?", r["entries"], r["mapped"], r["banking"], r["unmapped"], r["debit"], r["banking_debit"]))
+    lines.append("dry run: nothing was written")
+    return "\n".join(lines)
+
+
+def load_entries(export_dir):
+    """(entries, currency codes by bexio id) of the export, or None when manual_entries.json is not there yet."""
+    path = os.path.join(export_dir, ENTRIES_FILE)
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        entries = json.load(f)
+    with open(os.path.join(export_dir, CURRENCIES_FILE), encoding="utf-8") as f:
+        currencies = {str(c["id"]): c["name"] for c in json.load(f)}
+    return entries, currencies
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description="Map the bexio manual entries to ERPNext Journal Entries (dry run).")
+    parser.add_argument("--export", default=None, help="export directory (default: the newest under <private>/bexio-export/)")
+    parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals")
+    parser.add_argument("--token-file", default=im.TOKEN_FILE)
+    args = parser.parse_args(argv)
+    if not args.dry_run:
+        print("the live run is erp-a2ma's; this command takes --dry-run only", file=sys.stderr)
+        return 2
+    export_dir = args.export or im.newest_export()
+    loaded = load_entries(export_dir)
+    if loaded is None:
+        print("manual entries: not exported yet ({} is not in {})".format(ENTRIES_FILE, export_dir))
+        return 0
+    entries, currencies = loaded
+    try:
+        lookups = Lookups.from_erp(im.Erp.from_file(args.token_file))
+    except im.ErpError as err:
+        print("aborted: {}".format(err), file=sys.stderr)
+        return 2
+    totals = dry_run(entries, lookups, currencies)
+    print(report(totals, export_dir))
+    if totals.problems:
+        ip.write_private(os.path.join(im.PRIVATE, PROBLEMS_FILE), totals.problems)
+        print("{} entry(ies) listed by bexio id in {}".format(len(totals.problems), os.path.join(im.PRIVATE, PROBLEMS_FILE)), file=sys.stderr)
+    return 1 if any(r["unmapped"] for r in totals.rows.values()) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
