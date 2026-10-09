@@ -18,6 +18,11 @@ the run; the exit status is 2 when a required entity is missing.
 --only reruns the named entities (repeatable) and keeps the manifest entries of
 the others; without it every entity is exported.
 
+Four entities need the accounting and file scopes, which bexio grants only with
+write access. They are read with the export login (oauth.py login --export-scope,
+its own keychain item), and everything else with the read-only login. Once the
+run is done, `oauth.py logout --export-scope` removes the export login again.
+
 Documents come with their positions: invoices, orders, offers and purchase bills
 are read as a list, then one call per record adds the positions to it. The
 payments of each invoice go to invoice_payments.json. The content of each file
@@ -91,6 +96,10 @@ ENTITIES = {
     "salutations": (offset("/2.0/salutation"), False),
     "languages": (offset("/2.0/language"), False),
 }
+
+
+# The entities read with the export login; every other one uses the read-only login.
+EXPORT_SCOPE_ENTITIES = frozenset({"manual_entries", "journal", "bank_transactions", FILES})
 
 
 def default_out(today=None):
@@ -181,8 +190,11 @@ def read_manifest(out):
         return json.load(f)
 
 
-def export(client, out, entities=None, only=None):
-    """Write the entities (all, or just `only`) to `out` and return the manifest (also written there)."""
+def export(client, out, entities=None, only=None, export_client=None):
+    """Write the entities (all, or just `only`) to `out` and return the manifest (also written there).
+
+    The entities of EXPORT_SCOPE_ENTITIES go through export_client, the others through client.
+    """
     entities = entities or ENTITIES
     os.makedirs(out, mode=0o700, exist_ok=True)
     os.chmod(out, 0o700)
@@ -190,9 +202,10 @@ def export(client, out, entities=None, only=None):
     manifest["exported_on"] = datetime.date.today().isoformat()
     for name in (only or entities):
         spec, required = entities[name]
+        source = export_client if name in EXPORT_SCOPE_ENTITIES and export_client is not None else client
         entry = {"file": name + ".json", "required": required}
         try:
-            rows = read_entity(client, spec)
+            rows = read_entity(source, spec)
         except BexioError as err:
             # A stale file from an earlier run must not pass for this run's data.
             stale = os.path.join(out, entry["file"])
@@ -203,7 +216,7 @@ def export(client, out, entities=None, only=None):
             write_private(os.path.join(out, entry["file"]), rows)
             entry.update(status="ok", count=len(rows))
             if name == FILES:
-                entry.update(download_files(client, rows, out))
+                entry.update(download_files(source, rows, out))
         manifest["entities"][name] = entry
     write_private(os.path.join(out, "manifest.json"), manifest)
     return manifest
@@ -220,7 +233,12 @@ def main(argv):
                         help="export only this entity (repeatable); the manifest keeps the others")
     args = parser.parse_args(argv)
     out = args.out or default_out()
-    manifest = export(Client(), out, only=args.only)
+    names = list(args.only or ENTITIES)
+    # Each login is only opened when a requested entity needs it: the export login
+    # stops the run before anything is written when it is not in the keychain.
+    client = Client() if any(name not in EXPORT_SCOPE_ENTITIES for name in names) else None
+    export_client = Client(export_scope=True) if any(name in EXPORT_SCOPE_ENTITIES for name in names) else None
+    manifest = export(client, out, only=args.only, export_client=export_client)
     print("exported to {}".format(out))
     for name, entry in manifest["entities"].items():
         if entry["status"] != "ok":

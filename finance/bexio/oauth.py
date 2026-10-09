@@ -1,17 +1,24 @@
 """OAuth login for the bexio API: one login by hand, then refresh tokens from the keychain.
 
-The login asks bexio for read-only scopes (SCOPE below), and bexio enforces
-them: the account cannot be changed with this token, whatever the code does.
-A later bead adds `accounting` to SCOPE, behind a consent of its own.
+There are two logins, each with its own keychain item and its own scopes:
+
+- the read-only login (SCOPE below), which every script uses. bexio enforces
+  the scopes, so this token cannot change the account, whatever the code does.
+- the export login (EXPORT_SCOPE below), which only export.py uses, for the
+  journal, manual entries, bank transactions and files. bexio grants those
+  scopes only with write access, so this login is kept apart and removed again
+  after the run (`logout --export-scope`).
 
 Benchi logs in once, on the Mac mini's desktop Terminal:
 
     varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio/oauth.py login
+    varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio/oauth.py login --export-scope
 
-The refresh token goes to the macOS keychain (service "varlock", account
-"finance:local:BEXIO_REFRESH_TOKEN"). bexio rotates it on every use, so each
-refresh saves the new one back into that same item. Access tokens stay in
-memory. Nothing here prints or writes a token or the client secret.
+The refresh tokens go to the macOS keychain (service "varlock", accounts
+"finance:local:BEXIO_REFRESH_TOKEN" and "finance:local:BEXIO_EXPORT_REFRESH_TOKEN").
+bexio rotates each token on every use, so each refresh saves the new one back
+into that same item. Access tokens stay in memory. Nothing here prints or writes
+a token or the client secret.
 
 The keychain is read and written through the Security framework (ctypes),
 never `security -w <value>`, which would put the value on the command line.
@@ -51,11 +58,21 @@ SCOPE = (
     "bank_account_show bank_payment_show"
 )
 
+# The export login: the read-only scopes plus the two bexio grants only with
+# write access. Used for one export run, then removed with `logout --export-scope`.
+EXPORT_SCOPE = SCOPE + " accounting file"
+
 KEYCHAIN_SERVICE = "varlock"
 KEYCHAIN_ACCOUNT = "finance:local:BEXIO_REFRESH_TOKEN"
+EXPORT_KEYCHAIN_ACCOUNT = "finance:local:BEXIO_EXPORT_REFRESH_TOKEN"
 LOGIN_COMMAND = (
     "varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- "
     "python3 finance/bexio/oauth.py login"
+)
+EXPORT_LOGIN_COMMAND = LOGIN_COMMAND + " --export-scope"
+LOGOUT_COMMAND = (
+    "varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- "
+    "python3 finance/bexio/oauth.py logout --export-scope"
 )
 
 _ERR_ITEM_NOT_FOUND = -25300
@@ -69,8 +86,8 @@ class KeychainError(Exception):
     """The keychain answered with an error status."""
 
 
-def _login_hint():
-    return "run `{}` again".format(LOGIN_COMMAND)
+def _login_hint(export_scope=False):
+    return "run `{}` again".format(EXPORT_LOGIN_COMMAND if export_scope else LOGIN_COMMAND)
 
 
 def _client_credentials():
@@ -87,12 +104,12 @@ def _challenge(verifier):
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-def authorize_url(state, challenge):
+def authorize_url(state, challenge, scope=SCOPE):
     query = {
         "client_id": _client_credentials()["client_id"],
         "redirect_uri": REDIRECT_URI,
         "response_type": "code",
-        "scope": SCOPE,
+        "scope": scope,
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
@@ -168,7 +185,7 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def wait_for_code(expected_state):
+def wait_for_code(expected_state, export_scope=False):
     """Serve the callback once and return the authorization code.
 
     Other requests (a favicon, a stray reload) get their own answer and do not
@@ -182,13 +199,13 @@ def wait_for_code(expected_state):
         while server.outcome is None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise OAuthError("no answer from bexio within {} seconds; {}".format(LOGIN_TIMEOUT, _login_hint()))
+                raise OAuthError("no answer from bexio within {} seconds; {}".format(LOGIN_TIMEOUT, _login_hint(export_scope)))
             server.timeout = remaining
             server.handle_request()
     finally:
         server.server_close()
     if "error" in server.outcome:
-        raise OAuthError("bexio did not grant the login ({}); {}".format(server.outcome["error"], _login_hint()))
+        raise OAuthError("bexio did not grant the login ({}); {}".format(server.outcome["error"], _login_hint(export_scope)))
     return server.outcome["code"]
 
 
@@ -210,6 +227,8 @@ def _security():
     lib.SecKeychainAddGenericPassword.restype = ctypes.c_int32
     lib.SecKeychainItemModifyAttributesAndData.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_char_p]
     lib.SecKeychainItemModifyAttributesAndData.restype = ctypes.c_int32
+    lib.SecKeychainItemDelete.argtypes = [ctypes.c_void_p]
+    lib.SecKeychainItemDelete.restype = ctypes.c_int32
     lib.SecKeychainItemFreeContent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     lib.SecKeychainItemFreeContent.restype = ctypes.c_int32
     return lib
@@ -226,11 +245,11 @@ def _check(status, what):
         raise KeychainError("could not {} (keychain status {})".format(what, status))
 
 
-def read_refresh_token():
-    """The stored refresh token, or None when the login has not run yet."""
+def read_refresh_token(keychain_account=KEYCHAIN_ACCOUNT):
+    """The stored refresh token of that login, or None when it has not run yet."""
     sec = _security()
     service = KEYCHAIN_SERVICE.encode("ascii")
-    account = KEYCHAIN_ACCOUNT.encode("ascii")
+    account = keychain_account.encode("ascii")
     length = ctypes.c_uint32()
     data = ctypes.c_void_p()
     item = ctypes.c_void_p()
@@ -248,11 +267,11 @@ def read_refresh_token():
         _release(item)
 
 
-def write_refresh_token(token):
-    """Save the token: update the existing item in place, or create it on the first login."""
+def write_refresh_token(token, keychain_account=KEYCHAIN_ACCOUNT):
+    """Save the token: update that login's item in place, or create it on its first login."""
     sec = _security()
     service = KEYCHAIN_SERVICE.encode("ascii")
-    account = KEYCHAIN_ACCOUNT.encode("ascii")
+    account = keychain_account.encode("ascii")
     value = token.encode("ascii")
     length = ctypes.c_uint32()
     data = ctypes.c_void_p()
@@ -277,58 +296,103 @@ def write_refresh_token(token):
         _release(item)
 
 
-def login():
+def delete_refresh_token(keychain_account):
+    """Remove that login's item. Returns False when there was none to remove."""
+    sec = _security()
+    service = KEYCHAIN_SERVICE.encode("ascii")
+    account = keychain_account.encode("ascii")
+    length = ctypes.c_uint32()
+    data = ctypes.c_void_p()
+    item = ctypes.c_void_p()
+    status = sec.SecKeychainFindGenericPassword(
+        None, len(service), service, len(account), account,
+        ctypes.byref(length), ctypes.byref(data), ctypes.byref(item),
+    )
+    if status == _ERR_ITEM_NOT_FOUND:
+        return False
+    _check(status, "find the bexio refresh token")
+    try:
+        sec.SecKeychainItemFreeContent(None, data)
+        _check(sec.SecKeychainItemDelete(item), "delete the bexio refresh token")
+    finally:
+        _release(item)
+    return True
+
+
+def login(export_scope=False):
     """Run the one-time login: browser, callback, code exchange, keychain."""
     verifier = secrets.token_urlsafe(64)  # PKCE: 43 to 128 characters
     state = secrets.token_urlsafe(32)
-    url = authorize_url(state, _challenge(verifier))
-    print("Open this URL to log in to bexio with read-only scopes:")
+    scope = EXPORT_SCOPE if export_scope else SCOPE
+    keychain_account = EXPORT_KEYCHAIN_ACCOUNT if export_scope else KEYCHAIN_ACCOUNT
+    url = authorize_url(state, _challenge(verifier), scope)
+    print("Open this URL to log in to bexio with {} scopes:".format("export" if export_scope else "read-only"))
     print(url)
     webbrowser.open(url)
-    code = wait_for_code(state)
+    code = wait_for_code(state, export_scope)
     body = exchange_code(code, verifier)
     refresh = body.get("refresh_token")
     if not refresh:
         raise OAuthError("bexio sent no refresh token; the login needs offline_access in its scopes")
-    write_refresh_token(refresh)
-    print("Saved the bexio refresh token in the keychain (service {}, account {}).".format(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT))
+    write_refresh_token(refresh, keychain_account)
+    print("Saved the bexio {}refresh token in the keychain (service {}, account {}).".format(
+        "export " if export_scope else "", KEYCHAIN_SERVICE, keychain_account))
 
 
-def refresh_access_token():
-    """An access token for the API, from the stored refresh token.
+def refresh_access_token(export_scope=False):
+    """An access token for the API, from the stored refresh token of that login.
 
     bexio rotates the refresh token on every use: the new one is saved in place
     before this returns. The access token is only returned, never stored.
     Raises OAuthError when there is no refresh token or bexio refuses it.
     """
-    current = read_refresh_token()
+    keychain_account = EXPORT_KEYCHAIN_ACCOUNT if export_scope else KEYCHAIN_ACCOUNT
+    label = "export refresh token" if export_scope else "refresh token"
+    hint = _login_hint(export_scope)
+    current = read_refresh_token(keychain_account)
     if current is None:
-        raise OAuthError("no bexio refresh token in the keychain; {}".format(_login_hint()))
+        raise OAuthError("no bexio {} in the keychain; {}".format(label, hint))
     fields = {"grant_type": "refresh_token", "refresh_token": current}
     fields.update(_client_credentials())
     try:
         body = _token_request(fields)
     except OAuthError as err:
-        raise OAuthError("{}. If bexio refused the refresh token (expired or revoked), {}".format(err, _login_hint())) from None
+        raise OAuthError("{}. If bexio refused the {} (expired or revoked), {}".format(err, label, hint)) from None
     rotated = body.get("refresh_token")
     if not rotated or not body.get("access_token"):
-        raise OAuthError("bexio's refresh answer had no tokens; {}".format(_login_hint()))
+        raise OAuthError("bexio's refresh answer had no tokens; {}".format(hint))
     try:
-        write_refresh_token(rotated)
+        write_refresh_token(rotated, keychain_account)
     except KeychainError as err:
         # The old token is spent once bexio rotated it, so the new one must be saved or the login is lost.
-        raise OAuthError("bexio rotated the refresh token but it could not be saved ({}); {}".format(err, _login_hint())) from None
+        raise OAuthError("bexio rotated the {} but it could not be saved ({}); {}".format(label, err, hint)) from None
     return body["access_token"]
 
 
+USAGE = "usage: python3 finance/bexio/oauth.py login [--export-scope] | logout --export-scope"
+
+
 def main(argv):
+    export_scope = "--export-scope" in argv
+    argv = [arg for arg in argv if arg != "--export-scope"]
     if argv == ["login"]:
         try:
-            login()
+            login(export_scope)
         except (OAuthError, KeychainError) as err:
             raise SystemExit("login failed: {}".format(err))
         return
-    raise SystemExit("usage: python3 finance/bexio/oauth.py login")
+    # Only the export login can be removed here: the read-only login stays.
+    if argv == ["logout"] and export_scope:
+        try:
+            removed = delete_refresh_token(EXPORT_KEYCHAIN_ACCOUNT)
+        except KeychainError as err:
+            raise SystemExit("logout failed: {}".format(err))
+        if removed:
+            print("Removed the bexio export refresh token from the keychain. Revoke the app's access in bexio too (finance/bexio/README.md).")
+        else:
+            print("No bexio export refresh token in the keychain; nothing to remove.")
+        return
+    raise SystemExit(USAGE)
 
 
 if __name__ == "__main__":

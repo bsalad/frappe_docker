@@ -4,8 +4,10 @@ GET only: this module has no way to write to bexio, so the scripts cannot
 change the account. The access token comes from the OAuth refresh token in the
 keychain (oauth.refresh_access_token()); only where no refresh token exists
 does the BEXIO_TOKEN environment variable (a personal access token, injected
-by varlock) stand in. Which of the two was used is printed to stderr; the
-token itself is never stored, printed or put in an error message.
+by varlock) stand in. The export login (export_scope=True, for the few entities
+of export.py that need the accounting and file scopes) reads its own keychain
+item and never falls back to BEXIO_TOKEN. Which of these was used is printed to
+stderr; the token itself is never stored, printed or put in an error message.
 
 Run the scripts that use it as:
     varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio/inventory.py
@@ -39,27 +41,41 @@ class BexioError(Exception):
         self.path = path
 
 
-def resolve_token():
+TOKEN_NAMES = {
+    "oauth": "OAuth refresh token",
+    "oauth-export": "OAuth export refresh token (accounting and file scopes)",
+    "pat": "personal access token (BEXIO_TOKEN)",
+}
+
+
+def resolve_token(export_scope=False):
     """(token, kind) for the API: the OAuth login first, the PAT only without one.
 
-    kind is "oauth" or "pat". A refresh token that exists but is refused is an
-    error, not a reason to fall back: a stale PAT would hide a login that needs
-    renewing. A keychain that cannot be opened at all (no macOS Security
-    framework) counts as no refresh token.
+    kind is "oauth", "oauth-export" or "pat". A refresh token that exists but is
+    refused is an error, not a reason to fall back: a stale PAT would hide a login
+    that needs renewing. The export login (export_scope) has no fallback at all:
+    the PAT cannot stand in for the accounting and file scopes. A keychain that
+    cannot be opened at all (no macOS Security framework) counts as no refresh token.
     """
     import oauth  # lazy: the Security framework is only loaded when a token is needed
 
+    keychain_account = oauth.EXPORT_KEYCHAIN_ACCOUNT if export_scope else oauth.KEYCHAIN_ACCOUNT
+    kind = "oauth-export" if export_scope else "oauth"
     try:
-        has_login = oauth.read_refresh_token() is not None
+        has_login = oauth.read_refresh_token(keychain_account) is not None
     except OSError:
         has_login = False
     except oauth.KeychainError as err:
         raise SystemExit("keychain: {}".format(err))
     if has_login:
         try:
-            return oauth.refresh_access_token(), "oauth"
+            return oauth.refresh_access_token(export_scope=export_scope), kind
         except (oauth.OAuthError, oauth.KeychainError) as err:
             raise SystemExit("bexio login: {}".format(err))
+    if export_scope:
+        raise SystemExit(
+            "no bexio export login in the keychain; log in with `{}` (see finance/bexio/README.md)".format(oauth.EXPORT_LOGIN_COMMAND)
+        )
     pat = os.environ.get("BEXIO_TOKEN")
     if pat:
         return pat, "pat"
@@ -70,10 +86,10 @@ def resolve_token():
 
 
 class Client:
-    def __init__(self, token=None, base_url=BASE_URL):
+    def __init__(self, token=None, base_url=BASE_URL, export_scope=False):
         if token is None:
-            token, self.token_kind = resolve_token()
-            print("bexio token: {}".format("OAuth refresh token" if self.token_kind == "oauth" else "personal access token (BEXIO_TOKEN)"), file=sys.stderr)
+            token, self.token_kind = resolve_token(export_scope)
+            print("bexio token: {}".format(TOKEN_NAMES[self.token_kind]), file=sys.stderr)
         else:
             self.token_kind = "given"
         self._token = token

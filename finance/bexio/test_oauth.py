@@ -3,6 +3,7 @@
 Run with: python3 -m unittest discover -s finance/bexio -p 'test_*.py'
 """
 
+import contextlib
 import io
 import os
 import unittest
@@ -34,6 +35,75 @@ class ScopeTest(unittest.TestCase):
             "kb_offer_show kb_order_show kb_delivery_show kb_bill_show kb_expense_show "
             "bank_account_show bank_payment_show".split(),
         )
+
+
+class ExportScopeTest(unittest.TestCase):
+    def test_export_scope_is_the_read_scopes_plus_accounting_and_file(self):
+        self.assertEqual(
+            set(oauth.EXPORT_SCOPE.split()),
+            set(oauth.SCOPE.split()) | {"accounting", "file"},
+        )
+        self.assertFalse(any(s.endswith("_edit") for s in oauth.EXPORT_SCOPE.split()))
+
+    def test_export_login_has_its_own_keychain_item(self):
+        self.assertNotEqual(oauth.EXPORT_KEYCHAIN_ACCOUNT, oauth.KEYCHAIN_ACCOUNT)
+
+    def test_export_login_asks_for_the_export_scope_and_saves_to_its_own_item(self):
+        self._login(export_scope=True)
+        self.authorize.assert_called_once()
+        self.assertEqual(self.authorize.call_args.args[2], oauth.EXPORT_SCOPE)
+        self.write.assert_called_once_with("refresh-not-real", oauth.EXPORT_KEYCHAIN_ACCOUNT)
+
+    def test_default_login_stays_read_only_and_saves_to_the_read_item(self):
+        self._login(export_scope=False)
+        self.assertEqual(self.authorize.call_args.args[2], oauth.SCOPE)
+        self.write.assert_called_once_with("refresh-not-real", oauth.KEYCHAIN_ACCOUNT)
+
+    def _login(self, export_scope):
+        body = {"access_token": "access-not-real", "refresh_token": "refresh-not-real"}
+        with mock.patch.dict(os.environ, FAKE_ENV), \
+                mock.patch.object(oauth, "authorize_url", return_value="https://example.invalid/") as self.authorize, \
+                mock.patch.object(oauth.webbrowser, "open"), \
+                mock.patch.object(oauth, "wait_for_code", return_value="code-not-real"), \
+                mock.patch.object(oauth, "exchange_code", return_value=body), \
+                mock.patch.object(oauth, "write_refresh_token") as self.write, \
+                contextlib.redirect_stdout(io.StringIO()):
+            oauth.login(export_scope=export_scope)
+
+
+class LogoutTest(unittest.TestCase):
+    def test_logout_removes_only_the_export_item(self):
+        with mock.patch.object(oauth, "delete_refresh_token", return_value=True) as delete, \
+                contextlib.redirect_stdout(io.StringIO()):
+            oauth.main(["logout", "--export-scope"])
+        delete.assert_called_once_with(oauth.EXPORT_KEYCHAIN_ACCOUNT)
+
+    def test_logout_without_export_scope_is_refused_and_removes_nothing(self):
+        with mock.patch.object(oauth, "delete_refresh_token") as delete:
+            with self.assertRaises(SystemExit):
+                oauth.main(["logout"])
+        delete.assert_not_called()
+
+    def test_login_flag_selects_the_export_login(self):
+        with mock.patch.object(oauth, "login") as login:
+            oauth.main(["login", "--export-scope"])
+        login.assert_called_once_with(True)
+
+    def test_delete_of_a_missing_item_is_not_an_error(self):
+        sec = mock.Mock()
+        sec.SecKeychainFindGenericPassword.return_value = oauth._ERR_ITEM_NOT_FOUND
+        with mock.patch.object(oauth, "_security", return_value=sec):
+            self.assertFalse(oauth.delete_refresh_token(oauth.EXPORT_KEYCHAIN_ACCOUNT))
+        sec.SecKeychainItemDelete.assert_not_called()
+
+    def test_delete_names_the_export_item_and_deletes_it(self):
+        sec = mock.Mock()
+        sec.SecKeychainFindGenericPassword.return_value = 0
+        sec.SecKeychainItemDelete.return_value = 0
+        with mock.patch.object(oauth, "_security", return_value=sec), mock.patch.object(oauth, "_release"):
+            self.assertTrue(oauth.delete_refresh_token(oauth.EXPORT_KEYCHAIN_ACCOUNT))
+        self.assertEqual(sec.SecKeychainFindGenericPassword.call_args.args[4], b"finance:local:BEXIO_EXPORT_REFRESH_TOKEN")
+        sec.SecKeychainItemDelete.assert_called_once()
 
 
 class PkceTest(unittest.TestCase):
@@ -83,7 +153,17 @@ class RefreshTest(unittest.TestCase):
         fields = request.call_args.args[0]
         self.assertEqual(fields["grant_type"], "refresh_token")
         self.assertEqual(fields["refresh_token"], "refresh-old")
-        write.assert_called_once_with("refresh-rotated")
+        write.assert_called_once_with("refresh-rotated", oauth.KEYCHAIN_ACCOUNT)
+
+    def test_export_refresh_uses_its_own_keychain_item(self):
+        answer = {"access_token": "access-export", "refresh_token": "refresh-export-rotated"}
+        with mock.patch.dict(os.environ, FAKE_ENV), \
+                mock.patch.object(oauth, "read_refresh_token", return_value="refresh-export-old") as read, \
+                mock.patch.object(oauth, "_token_request", return_value=answer), \
+                mock.patch.object(oauth, "write_refresh_token") as write:
+            self.assertEqual(oauth.refresh_access_token(export_scope=True), "access-export")
+        read.assert_called_once_with(oauth.EXPORT_KEYCHAIN_ACCOUNT)
+        write.assert_called_once_with("refresh-export-rotated", oauth.EXPORT_KEYCHAIN_ACCOUNT)
 
     def test_refused_refresh_token_asks_for_a_new_login(self):
         with mock.patch.dict(os.environ, FAKE_ENV), \

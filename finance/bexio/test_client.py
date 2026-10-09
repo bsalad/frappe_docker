@@ -214,5 +214,46 @@ class TokenSourceTest(unittest.TestCase):
         self.assertNotIn("secret-access-token", err.getvalue())
 
 
+class ExportTokenTest(unittest.TestCase):
+    # The export login reads its own keychain item, the accounting and file scopes
+    # it was granted; the PAT never stands in for it.
+
+    def test_export_login_refreshes_its_own_token(self):
+        import oauth
+
+        with mock.patch.object(oauth, "read_refresh_token", return_value="refresh-export") as read, \
+                mock.patch.object(oauth, "refresh_access_token", return_value="access-export") as refresh:
+            self.assertEqual(client.resolve_token(export_scope=True), ("access-export", "oauth-export"))
+        read.assert_called_once_with(oauth.EXPORT_KEYCHAIN_ACCOUNT)
+        refresh.assert_called_once_with(export_scope=True)
+
+    def test_export_login_never_falls_back_to_the_pat(self):
+        import oauth
+
+        with mock.patch.object(oauth, "read_refresh_token", return_value=None), \
+                mock.patch.dict(os.environ, {"BEXIO_TOKEN": "pat-value-not-real"}, clear=True):
+            with self.assertRaises(SystemExit) as ctx:
+                client.resolve_token(export_scope=True)
+        self.assertIn("--export-scope", str(ctx.exception))
+        self.assertNotIn("pat-value-not-real", str(ctx.exception))
+
+
+class GetOnlyTest(unittest.TestCase):
+    def test_client_has_no_method_that_writes(self):
+        public = {name for name in dir(Client) if not name.startswith("_")}
+        self.assertEqual(public, {"get", "paginate", "paginate_pages"})
+
+    def test_every_request_is_a_get_even_with_params_and_raw(self):
+        c = _client()
+        ok = mock.MagicMock()
+        ok.__enter__.return_value.read.return_value = b"[]"
+        with mock.patch("urllib.request.urlopen", return_value=ok) as opened:
+            c.get("/x", params={"a": 1})
+            c.get("/y", raw=True)
+            list(c.paginate("/z"))
+        methods = {call.args[0].get_method() for call in opened.call_args_list}
+        self.assertEqual(methods, {"GET"})
+
+
 if __name__ == "__main__":
     unittest.main()

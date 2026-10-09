@@ -39,6 +39,19 @@ RAW = {
 }
 
 
+def recording(client):
+    """Wrap the client's get so that the paths it is asked for are listed."""
+    paths = []
+    real = client.get
+
+    def get(path, params=None, raw=False):
+        paths.append(path)
+        return real(path, params, raw)
+
+    client.get = get
+    return paths
+
+
 def fake_client(missing=()):
     """A Client whose GETs answer from the fixtures: [] for unknown lists, 404 for unknown files, 403 for `missing`."""
     c = Client(token="test-token-not-real")
@@ -181,6 +194,22 @@ class ExportTest(unittest.TestCase):
             export.export(c, self.out)
         methods = {call.args[0].get_method() for call in opened.call_args_list}
         self.assertEqual(methods, {"GET"})
+
+    def test_export_scope_entities_go_through_the_export_client_only(self):
+        read, write = fake_client(), fake_client()
+        asked_read, asked_write = recording(read), recording(write)
+        export.export(read, self.out, export_client=write)
+        export_paths = ["/3.0/accounting/journal", "/3.0/accounting/manual_entries", "/3.0/banking/transactions", "/3.0/files"]
+        for path in export_paths:
+            self.assertIn(path, asked_write)
+            self.assertNotIn(path, asked_read)
+        self.assertIn("/3.0/files/9/download", asked_write)  # file contents need the file scope too
+        self.assertNotIn("/3.0/files/9/download", asked_read)
+        self.assertIn("/2.0/contact", asked_read)
+        self.assertNotIn("/2.0/contact", asked_write)
+
+    def test_the_export_scope_set_is_exactly_the_four_entities(self):
+        self.assertEqual(export.EXPORT_SCOPE_ENTITIES, {"manual_entries", "journal", "bank_transactions", "files"})
 
     def test_raw_get_returns_the_bytes_and_plain_get_decodes_json(self):
         c = Client(token="test-token-not-real")

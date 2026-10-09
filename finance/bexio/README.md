@@ -12,18 +12,42 @@ varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio
 ```
 
 The command prints the bexio authorize URL and opens it in the browser. Approve the
-login there. The browser then returns to `http://localhost:8765/callback`, the local
+login there (the export login, `login --export-scope`, is described above). The browser then returns to `http://localhost:8765/callback`, the local
 listener on 127.0.0.1:8765 takes the code, and the refresh token is saved in the
 macOS keychain (service `varlock`, account `finance:local:BEXIO_REFRESH_TOKEN`).
 The token itself is never printed.
 
 ## What the scopes allow
 
-Every scope is read-only: `openid offline_access` for the login and the refresh,
+Every scope of the read-only login is read-only: `openid offline_access` for the login and the refresh,
 and `*_show` for contacts, notes, articles, invoices, offers, orders, deliveries,
 bills, expenses, bank accounts and bank payments. There is no
 `accounting` scope and no `*_edit` scope. The list is the `SCOPE` constant in
-`oauth.py`; a later import adds `accounting` there, behind its own consent.
+`oauth.py`.
+
+## Export login (one run, then removed)
+
+bexio grants the accounting journal, manual entries, bank transactions and files
+only with the `accounting` and `file` scopes, and both are write scopes (bexio
+allows no read-only version). The export therefore has a second login with
+`EXPORT_SCOPE` (the read-only scopes plus those two). It is kept apart from the
+read-only one: its own keychain item (account `finance:local:BEXIO_EXPORT_REFRESH_TOKEN`),
+and only `export.py` uses it, for `manual_entries`, `journal`, `bank_transactions`
+and `files`. Every other entity still goes through the read-only login. The
+client stays GET-only in both cases.
+
+Run it on the Mac mini's desktop Terminal, before the export run:
+
+```sh
+varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio/oauth.py login --export-scope
+varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio/export.py --out /Users/bsaladin/ws_yardr_finance/private/bexio-export/<date>-full --only manual_entries --only journal --only bank_transactions --only files
+varlock run -p /Users/bsaladin/ws_yardr_finance/secrets -- python3 finance/bexio/oauth.py logout --export-scope
+```
+
+Afterwards, `logout --export-scope` deletes the export keychain item. It does not
+revoke anything at bexio: revoke the app's access in bexio as well. If that revoke
+also kills the read-only refresh token, log in again with `oauth.py login` (the read-only one).
+A login that is never removed keeps the write scopes in the keychain, so the logout is not optional.
 
 ## How the scripts use it
 
