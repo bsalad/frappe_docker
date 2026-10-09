@@ -142,6 +142,9 @@ def _document(doctype, record, lookups, credit=False):
     customer = lookups["customer"].get(str(record.get("contact_id")))
     if customer is None:
         raise Unmapped("contact {} has no Customer".format(record.get("contact_id")))
+    # unit prices that include the VAT would make the net, and so the tax rows, wrong
+    if record.get("mwst_is_net") is False:
+        raise Unmapped("prices include the VAT (mwst_is_net is false)")
     currency, rate = _currency(record, lookups)
     rows, taxable = _rows(record, lookups)
 
@@ -172,6 +175,9 @@ def _document(doctype, record, lookups, credit=False):
         diff = have - _dec(record[field])
         if diff:
             differences.append("{} {:+}".format(label, diff))
+            # bexio rounds the gross to 5 rappen; named, but still a difference, never adjusted
+            if field == "total_gross" and _dec(record.get("total_rounding_difference") or 0) == -diff:
+                differences[-1] += " (bexio rounding difference)"
 
     doc = {
         "doctype": doctype, "company": COMPANY, "currency": currency, "conversion_rate": float(rate),
