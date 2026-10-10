@@ -333,8 +333,10 @@ right after the row; otherwise the entry's date and the row's text). Entries tha
 `import_manual_fix.py` corrects the VAT of the live entries without touching a submitted document: for each live
 entry (a submitted Journal Entry `manual-<id>`) the difference per account between the mapping and ERPNext's GL,
 its own corrections included (`manual-<id>-<suffix>`, `vatfix-manual-<id>`), is one Journal Entry on the entry's
-posting date, keyed `vatfix-manual-<id>`. A group with no difference gets nothing; an unbalanced one, or an account
-not in CHF, is listed by bexio id.
+posting date, keyed `vatfix-manual-<id>` (or `vatfix-manual-<id>-2`, `-3` … when that key is taken: the loader never
+rewrites a submitted document). A group with no difference gets nothing; an unbalanced one, or an account not in CHF,
+is listed by bexio id. An entry listed in `<private>/bexio-manual-journal-wins.txt` (bexio id and reason) is the
+exception to the mapping: its expected side is what bexio's journal books for it, and the dry run counts it apart.
 
     python3 finance/bexio/import_manual_fix.py --dry-run [--export DIR]
     python3 finance/bexio/import_manual_fix.py --write FILE [--export DIR]

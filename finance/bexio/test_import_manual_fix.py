@@ -139,6 +139,78 @@ class PlanTest(unittest.TestCase):
         self.assertEqual((documents, problems, counts["not live"]), ([], [], 1))
 
 
+def journal_line(line_id, debit, credit, amount, description="Testbuchung"):
+    return {"id": line_id, "ref_class": "ManualEntry", "date": "2025-06-30", "description": description,
+            "debit_account_id": debit, "credit_account_id": credit, "base_currency_amount": amount}
+
+
+class JournalWinsTest(unittest.TestCase):
+    def test_a_listed_entry_takes_bexios_journal_as_its_expected_side(self):
+        # the mapping books the VAT on the Vorsteuer account; bexio's journal books the gross on the expense, so the
+        # listed entry's correction moves the 8.10 from the Vorsteuer account to the expense
+        live = [gl("JV-1", PURCHASE, debit=100), gl("JV-1", VORSTEUER, debit=8.10), gl("JV-1", BANK, credit=108.10)]
+        export = [entry("5", lines=[line(21, 11, 108.10, tax_id=35, tax_account_id=21)])]
+        journal = [journal_line(1, 21, 11, 108.10)]
+        documents, problems, details, counts = imf.plan(export, [voucher("JV-1", "manual-5")], live, lookups(), CURRENCIES,
+                                                         journal, {"5": "test reason"})
+        self.assertEqual(problems, [])
+        self.assertEqual(counts["journal wins"], 1)
+        self.assertEqual([d["bexio_id"] for d in documents], ["vatfix-manual-5"])
+        self.assertEqual(documents[0]["values"]["accounts"], [
+            {"account": VORSTEUER, "credit_in_account_currency": 8.1},
+            {"account": PURCHASE, "debit_in_account_currency": 8.1},
+        ])
+        self.assertIn("journal wins: test reason", details[0])
+
+    def test_an_entry_not_listed_keeps_the_mapping(self):
+        live = [gl("JV-1", PURCHASE, debit=100), gl("JV-1", VORSTEUER, debit=8.10), gl("JV-1", BANK, credit=108.10)]
+        export = [entry("5", lines=[line(21, 11, 108.10, tax_id=35, tax_account_id=21)])]
+        journal = [journal_line(1, 21, 11, 108.10)]
+        documents, problems, _, counts = imf.plan(export, [voucher("JV-1", "manual-5")], live, lookups(), CURRENCIES, journal, {})
+        self.assertEqual((documents, problems, counts["unchanged"], counts.get("journal wins", 0)), ([], [], 1, 0))
+
+    def test_journal_line_on_an_account_without_erp_account_lists_the_entry(self):
+        live = [gl("JV-1", PURCHASE, debit=108.10), gl("JV-1", BANK, credit=108.10)]
+        export = [entry("5", lines=[line(21, 11, 108.10, tax_id=35, tax_account_id=21)])]
+        journal = [journal_line(1, 21, 999, 108.10)]
+        documents, problems, _, _ = imf.plan(export, [voucher("JV-1", "manual-5")], live, lookups(), CURRENCIES, journal, {"5": "r"})
+        self.assertEqual(documents, [])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("no Account in ERPNext", problems[0][1])
+
+    def test_a_group_already_corrected_gets_the_next_free_key(self):
+        # the group's first correction is live (vatfix-manual-5, submitted); the loader would skip that key, so the new one is -2
+        live = [gl("JV-1", PURCHASE, debit=100), gl("JV-1", VORSTEUER, debit=8.10), gl("JV-1", BANK, credit=108.10),
+                gl("JV-2", PURCHASE, debit=0)]
+        vouchers = [voucher("JV-1", "manual-5"), voucher("JV-2", "vatfix-manual-5")]
+        journal = [journal_line(1, 21, 11, 108.10)]
+        export = [entry("5", lines=[line(21, 11, 108.10, tax_id=35, tax_account_id=21)])]
+        documents, problems, _, _ = imf.plan(export, vouchers, live, lookups(), CURRENCIES, journal, {"5": "r"})
+        self.assertEqual(problems, [])
+        self.assertEqual([d["bexio_id"] for d in documents], ["vatfix-manual-5-2"])
+
+    def test_correction_key_is_the_first_free_one(self):
+        self.assertEqual(imf.correction_key("5", []), "vatfix-manual-5")
+        self.assertEqual(imf.correction_key("5", ["manual-5", "vatfix-manual-5"]), "vatfix-manual-5-2")
+        self.assertEqual(imf.correction_key("5", ["vatfix-manual-5", "vatfix-manual-5-2"]), "vatfix-manual-5-3")
+
+    def test_reasons_file_lists_bexio_ids_with_their_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "wins.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("# entries bexio books differently\n\n7001 test reason, with a comma\n")
+            self.assertEqual(imf.load_journal_wins(path), {"7001": "test reason, with a comma"})
+            self.assertEqual(imf.load_journal_wins(os.path.join(tmp, "missing.txt")), {})
+
+    def test_reasons_file_line_without_reason_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "wins.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("7001\n")
+            with self.assertRaises(ValueError):
+                imf.load_journal_wins(path)
+
+
 class ReportTest(unittest.TestCase):
     def test_report_prints_counts_and_totals_per_year_and_account(self):
         documents = [{"values": {"posting_date": "2025-06-30", "accounts": [

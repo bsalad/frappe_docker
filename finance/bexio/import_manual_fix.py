@@ -11,7 +11,10 @@ on the entry's posting date, keyed vatfix-manual-<id>:
   the vatfix-manual-<id> entry an earlier run submitted, so a finished group has no difference left;
 - the expected side is the mapping of the export's entry alone, not of the --extra entries (they are corrections of
   what is live, not bexio's entries);
-- a group whose correction does not balance, or whose entry no longer maps, is listed by bexio id and not written.
+- a group whose correction does not balance, or whose entry no longer maps, is listed by bexio id and not written;
+- an entry listed in the private journal-wins file is the exception to the mapping: its expected side is what bexio's
+  journal books for it (the lines entry_of_lines pairs with it), because bexio booked it differently on purpose.
+  Each listed entry says why in that file; the dry run counts them apart.
 
 The dry run reads ERPNext and prints counts and totals per year and account. The live run is --write FILE, which hands
 the Journal Entries to the loader (finance/scripts/bexio-drafts.sh FILE submit). Nothing goes into ERPNext here.
@@ -40,6 +43,7 @@ KEY_PREFIX = "manual-"
 CORRECTION_PREFIX = "vatfix-manual-"
 PROBLEMS_FILE = "bexio-manual-fix-problems.txt"
 DETAILS_FILE = "bexio-manual-fix-documents.txt"
+JOURNAL_WINS_FILE = "bexio-manual-journal-wins.txt"
 
 
 def group_of(key):
@@ -88,6 +92,43 @@ def expected_group(entry, lookups, currencies):
     return {"want": dict(want), "voucher_type": doc["voucher_type"], "date": doc["posting_date"]}
 
 
+def load_journal_wins(path):
+    """The entries whose expected side is bexio's journal, from the private file: one bexio id per line, then its reason.
+    {group: reason}. Blank lines and lines starting with # are skipped; a missing file lists none."""
+    if not os.path.exists(path):
+        return {}
+    reasons = {}
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            text = raw.strip()
+            if not text or text.startswith("#"):
+                continue
+            bexio_id, _, reason = text.partition(" ")
+            if not reason.strip():
+                raise ValueError("a line of {} has no reason after its bexio id".format(path))
+            reasons[bexio_id] = reason.strip()
+    return reasons
+
+
+def journal_wins(entry, export_entries, journal, lookups):
+    """What bexio's journal books for one export entry, per account (CHF, debit minus credit): the journal lines that
+    import_manual_entries.entry_of_lines pairs with it, over all the export's entries. Raises ip.MappingError when a line books an
+    account with no Account in ERPNext."""
+    owner = ime.entry_of_lines(export_entries, journal)
+    names = {str(bexio_id): name for bexio_id, (name, _) in lookups.accounts.items()}
+    want = collections.defaultdict(lambda: ZERO)
+    for line in journal:
+        if owner.get(line["id"]) != str(entry["id"]):
+            continue
+        amount = _money(line["base_currency_amount"])
+        for side, sign in (("debit_account_id", 1), ("credit_account_id", -1)):
+            account = names.get(str(line[side]))
+            if account is None:
+                raise ip.MappingError("bexio's journal line {} books an account with no Account in ERPNext".format(line["id"]))
+            want[account] += sign * amount
+    return dict(want)
+
+
 def difference(want, live):
     """The corrections that take the live amounts to the expected ones: {account name: debit minus credit}, only where they differ."""
     lines = {}
@@ -98,8 +139,18 @@ def difference(want, live):
     return lines
 
 
-def correction_document(group, day, voucher_type, lines, lookups):
-    """The Journal Entry for the loader: one row per account of the difference, keyed vatfix-manual-<group>."""
+def correction_key(group, taken):
+    """The bexio_id of a group's next correction: vatfix-manual-<group>, or -2, -3 … when that key is taken. The loader never
+    rewrites a submitted document, so a group that was corrected before gets a new key rather than a skip."""
+    key, number = CORRECTION_PREFIX + group, 1
+    while key in taken:
+        number += 1
+        key = "{}{}-{}".format(CORRECTION_PREFIX, group, number)
+    return key
+
+
+def correction_document(group, day, voucher_type, lines, lookups, key=None):
+    """The Journal Entry for the loader: one row per account of the difference, keyed by key (default vatfix-manual-<group>)."""
     rows = []
     for account in sorted(lines):
         amount = lines[account]
@@ -109,18 +160,20 @@ def correction_document(group, day, voucher_type, lines, lookups):
         else:
             row["credit_in_account_currency"] = float(-amount)
         rows.append(row)
-    key = CORRECTION_PREFIX + group
+    key = key or CORRECTION_PREFIX + group
     return {"doctype": "Journal Entry", "name": None, "bexio_id": key, "values": {
         "company": im.COMPANY, "voucher_type": voucher_type, "bexio_id": key, "posting_date": day,
         "user_remark": "VAT by code, bexio manual entry {}".format(group), "accounts": rows,
     }}
 
 
-def plan(export_entries, vouchers, gl, lookups, currencies):
+def plan(export_entries, vouchers, gl, lookups, currencies, journal=(), wins=None):
     """The corrections for the live groups: (documents, problems, details, counts). A live group whose entry is in the
-    export is compared with its mapping; an export entry that is not live is counted, not written."""
+    export is compared with its mapping, or with bexio's journal when its bexio id is in wins (the reasons by bexio id,
+    see load_journal_wins); an export entry that is not live is counted, not written."""
     groups = live_groups(vouchers, gl)
     exported = {str(entry["id"]): entry for entry in export_entries}
+    wins = wins or {}
     documents, problems, details = [], [], []
     counts = collections.Counter()
     for group in sorted(groups, key=str):
@@ -131,11 +184,15 @@ def plan(export_entries, vouchers, gl, lookups, currencies):
             continue
         try:
             expected = expected_group(exported[group], lookups, currencies)
+            if group in wins:
+                expected["want"] = journal_wins(exported[group], export_entries, journal, lookups)
+                counts["journal wins"] += 1
         except ip.MappingError as err:
             problems.append((group, "the entry does not map: {}".format(err)))
             continue
         lines = difference(expected["want"], found["live"])
-        details.append("manual {} ({}): correction {}".format(group, expected["date"], _listed(lines)))
+        details.append("manual {} ({}){}: correction {}".format(
+            group, expected["date"], " journal wins: " + wins[group] if group in wins else "", _listed(lines)))
         if not lines:
             counts["unchanged"] += 1
             continue
@@ -147,7 +204,8 @@ def plan(export_entries, vouchers, gl, lookups, currencies):
             problems.append((group, "the correction touches an account not in CHF: {}".format(", ".join(sorted(currency)))))
             continue
         voucher_type = "Depreciation Entry" if any(account in lookups.depreciation for account in lines) else "Journal Entry"
-        documents.append(correction_document(group, expected["date"], voucher_type, lines, lookups))
+        key = correction_key(group, found["keys"])
+        documents.append(correction_document(group, expected["date"], voucher_type, lines, lookups, key))
         counts["corrections"] += 1
     for group in sorted(set(exported) - set(groups), key=str):
         counts["not live"] += 1
@@ -171,8 +229,8 @@ def totals_by_year(documents, numbers):
 
 def report(counts, documents, numbers):
     lines = ["manual entries: VAT corrections, nothing was written",
-             "live groups {}, corrections {}, unchanged {}, not live {}".format(
-                 counts["live groups"], counts["corrections"], counts["unchanged"], counts["not live"]),
+             "live groups {}, corrections {}, unchanged {}, journal wins {}, not live {}".format(
+                 counts["live groups"], counts["corrections"], counts["unchanged"], counts.get("journal wins", 0), counts["not live"]),
              "{:<6}{:<8}{:>16}".format("year", "acc", "correction")]
     for (year, number), amount in sorted(totals_by_year(documents, numbers).items()):
         if amount != ZERO:
@@ -214,7 +272,12 @@ def main(argv):
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2
-    documents, problems, details, counts = plan(export_entries, vouchers, gl, lookups, currencies)
+    wins = load_journal_wins(os.path.join(im.PRIVATE, JOURNAL_WINS_FILE))
+    journal = []
+    if wins:
+        with open(os.path.join(export_dir, ime.JOURNAL_FILE), encoding="utf-8") as f:
+            journal = json.load(f)
+    documents, problems, details, counts = plan(export_entries, vouchers, gl, lookups, currencies, journal, wins)
     print(report(counts, documents, numbers))
     ip.write_private(os.path.join(im.PRIVATE, PROBLEMS_FILE), ["{}: {}".format(group, reason) for group, reason in problems] or ["none"])
     ip.write_private(os.path.join(im.PRIVATE, DETAILS_FILE), details or ["none"])
