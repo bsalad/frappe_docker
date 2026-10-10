@@ -10,6 +10,7 @@ import os
 import tempfile
 import unittest
 from decimal import Decimal
+from unittest import mock
 
 import import_manual_entries as ime
 import import_purchase as ip
@@ -17,8 +18,9 @@ import import_purchase as ip
 CURRENCIES = {"1": "CHF", "2": "EUR"}
 
 
-def lookups(taxes=None):
+def lookups(taxes=None, by_number=None, currencies=None):
     return ime.Lookups(
+        currencies=currencies,
         accounts={
             "11": ("1020 - Bank Test - bic", "Asset"),
             "12": ("1100 - Debitoren Test - bic", "Asset"),
@@ -30,11 +32,14 @@ def lookups(taxes=None):
             "99": ("9999 - Ohne Wurzel - bic", "Stock"),
         },
         taxes={"35": "Test MWST bexio 35", "22": "Test MWST bexio 22"} if taxes is None else dict(taxes),
+        by_number={"1172": ("1170 - Vorsteuer Test - bic", "Asset"), "2202": ("2200 - Bezugsteuer Test - bic", "Liability")}
+        if by_number is None else dict(by_number),
     )
 
 
 def line(debit, credit, amount, description="Testbuchung", **extra):
-    return dict({"debit_account_id": debit, "credit_account_id": credit, "amount": amount,
+    # a row with an id, as every row of a single, group or compound entry has except a compound's counterpart
+    return dict({"id": 1, "debit_account_id": debit, "credit_account_id": credit, "amount": amount,
                  "description": description, "currency_id": 1, "currency_factor": 1, "tax_id": None,
                  "tax_account_id": None}, **extra)
 
@@ -42,6 +47,11 @@ def line(debit, credit, amount, description="Testbuchung", **extra):
 def entry(eid="m-1", kind="manual_single_entry", lines=None, **extra):
     return dict({"id": eid, "type": kind, "date": "2025-06-30", "reference_nr": "BU-1",
                  "entries": lines if lines is not None else [line(21, 11, 100)]}, **extra)
+
+
+def counterpart(debit, credit, amount, description="Gegenkonto"):
+    """A compound entry's counterpart row: no id, the account every id row of the entry is booked against."""
+    return dict(line(debit, credit, amount, description), id=None)
 
 
 def side_totals(doc):
@@ -60,17 +70,26 @@ class MapEntryTest(unittest.TestCase):
         doc = ime.map_entry(entry(), lookups(), CURRENCIES)
         self.assertEqual(doc["doctype"], "Journal Entry")
         self.assertEqual(doc["posting_date"], "2025-06-30")
-        self.assertEqual(doc["bexio_id"], "m-1")
+        self.assertEqual(doc["bexio_id"], "manual-m-1")
         self.assertEqual(rows_of(doc), [("5001 - Testaufwand - bic", 100.0, 0.0), ("1020 - Bank Test - bic", 0.0, 100.0)])
         self.assertEqual(side_totals(doc), (Decimal("100"), Decimal("100")))
         self.assertEqual(doc["multi_currency"], 0)
 
+    def test_bexio_key_is_prefixed_so_it_cannot_meet_a_journal_line_id(self):
+        self.assertEqual(ime.manual_key(153), "manual-153")
+
     def test_reference_goes_to_cheque_number_and_remark(self):
         doc = ime.map_entry(entry(reference_nr="BU-77"), lookups(), CURRENCIES)
         self.assertEqual((doc["cheque_no"], doc["user_remark"]), ("BU-77", "BU-77"))
+        # ERPNext refuses a reference number without a reference date, so the date is the entry's own
+        self.assertEqual(doc["cheque_date"], "2025-06-30")
+
+    def test_entry_without_reference_has_no_reference_date(self):
+        doc = ime.map_entry(entry(reference_nr=""), lookups(), CURRENCIES)
+        self.assertIsNone(doc["cheque_date"])
 
     def test_compound_entry_puts_every_line_in_one_journal_entry(self):
-        lines = [line(21, 11, 60, "Teil 1"), line(12, 32, 40, "Teil 2")]
+        lines = [line(None, 11, 60, "Teil 1"), line(None, 12, 40, "Teil 2"), counterpart(21, None, 100)]
         doc = ime.map_entry(entry(kind="manual_compound_entry", lines=lines), lookups(), CURRENCIES)
         self.assertEqual(len(doc["accounts"]), 4)
         self.assertEqual([r["user_remark"] for r in doc["accounts"]], ["Teil 1", "Teil 1", "Teil 2", "Teil 2"])
@@ -138,10 +157,54 @@ class MapEntryTest(unittest.TestCase):
         self.assertEqual(doc["multi_currency"], 1)
         self.assertEqual(side_totals(doc), (Decimal("93.00"), Decimal("93.00")))
 
+    def test_foreign_currency_on_a_chf_account_takes_the_chf_amount(self):
+        # bexio: 100 EUR at 0.93 = 93.00 CHF. The CHF bank account must get 93.00 at rate 1, or ERPNext books 100.00 as CHF
+        chf = {"1020 - Bank Test - bic": "CHF", "5001 - Testaufwand - bic": "CHF"}
+        lines = [line(21, 11, 100, currency_id=2, currency_factor=0.93)]
+        doc = ime.map_entry(entry(lines=lines), lookups(currencies=chf), CURRENCIES)
+        self.assertEqual([(r["account"], r["debit_in_account_currency"], r["exchange_rate"]) for r in doc["accounts"] if "debit_in_account_currency" in r],
+                         [("5001 - Testaufwand - bic", 93.0, 1.0)])
+        self.assertEqual(rows_of(doc), [("5001 - Testaufwand - bic", 93.0, 0.0), ("1020 - Bank Test - bic", 0.0, 93.0)])
+        self.assertEqual(doc["multi_currency"], 0)
+
+    def test_account_in_the_line_currency_keeps_the_amount_and_rate(self):
+        eur = {"1020 - Bank Test - bic": "EUR", "5001 - Testaufwand - bic": "EUR"}
+        doc = ime.map_entry(entry(lines=[line(21, 11, 100, currency_id=2, currency_factor=0.93)]), lookups(currencies=eur), CURRENCIES)
+        self.assertEqual((doc["accounts"][0]["debit"], doc["accounts"][0]["debit_in_account_currency"], doc["accounts"][0]["exchange_rate"]), (93.0, 100.0, 0.93))
+
+    def test_account_in_another_currency_is_not_mapped(self):
+        usd = {"1020 - Bank Test - bic": "USD", "5001 - Testaufwand - bic": "CHF"}
+        with self.assertRaisesRegex(ip.MappingError, "a EUR line on an account in USD"):
+            ime.map_entry(entry(lines=[line(21, 11, 100, currency_id=2, currency_factor=0.93)]), lookups(currencies=usd), CURRENCIES)
+
     def test_foreign_currency_with_vat_balances_in_chf(self):
         lines = [line(21, 11, 108.10, currency_id=2, currency_factor=0.93, tax_id=35, tax_account_id=22)]
         doc = ime.map_entry(entry(lines=lines), lookups(), CURRENCIES)
         self.assertEqual(side_totals(doc), (Decimal("100.53"), Decimal("100.53")))
+
+    def test_untyped_entry_is_booked_as_a_single_one(self):
+        doc = ime.map_entry(entry(kind=None), lookups(), CURRENCIES)
+        self.assertEqual(rows_of(doc), [("5001 - Testaufwand - bic", 100.0, 0.0), ("1020 - Bank Test - bic", 0.0, 100.0)])
+
+    def test_compound_counterpart_is_not_posted_and_completes_each_row(self):
+        first, second = dict(line(None, 11, 60, "Teil 1"), id=1), dict(line(None, 12, 40, "Teil 2"), id=2)
+        doc = ime.map_entry(entry(kind="manual_compound_entry", lines=[first, counterpart(21, None, 100, "Gegenkonto"), second]), lookups(), CURRENCIES)
+        self.assertEqual(rows_of(doc), [
+            ("5001 - Testaufwand - bic", 60.0, 0.0), ("1020 - Bank Test - bic", 0.0, 60.0),
+            ("5001 - Testaufwand - bic", 40.0, 0.0), ("1100 - Debitoren Test - bic", 0.0, 40.0),
+        ])
+        self.assertEqual(side_totals(doc), (Decimal("100"), Decimal("100")))
+
+    def test_reverse_charge_is_net_with_the_tax_on_vorsteuer_and_bezugsteuer(self):
+        # 100.00 net at 8.1 %: the expense and the bank are 100.00, and the tax 8.10 goes to Vorsteuer and back on Bezugsteuer
+        doc = ime.map_entry(entry(lines=[line(21, 11, 100, tax_id=32, tax_account_id=21)]), lookups(), CURRENCIES)
+        self.assertEqual(rows_of(doc), [
+            ("5001 - Testaufwand - bic", 100.0, 0.0),
+            ("1170 - Vorsteuer Test - bic", 8.1, 0.0),
+            ("1020 - Bank Test - bic", 0.0, 100.0),
+            ("2200 - Bezugsteuer Test - bic", 0.0, 8.1),
+        ])
+        self.assertEqual(side_totals(doc), (Decimal("108.10"), Decimal("108.10")))
 
     def test_banking_entry_is_mapped_and_is_the_same_shape(self):
         doc = ime.map_entry(entry(kind=ime.BANKING), lookups(), CURRENCIES)
@@ -154,7 +217,24 @@ class MapEntryErrorTest(unittest.TestCase):
             ime.map_entry(record, known or lookups(), CURRENCIES)
 
     def test_unknown_type_is_reported(self):
-        self.assertUnmapped(entry(kind=None), "unknown entry type None")
+        self.assertUnmapped(entry(kind="manual_other_entry"), "unknown entry type 'manual_other_entry'")
+
+    def test_row_without_id_outside_a_compound_entry_is_reported(self):
+        self.assertUnmapped(entry(kind="manual_group_entry", lines=[line(21, 11, 50), counterpart(21, None, 50)]),
+                            "row without id in a manual_group_entry entry")
+
+    def test_entry_without_id_is_reported(self):
+        self.assertUnmapped(dict(entry(), id=None), "entry without id")
+
+    def test_compound_entry_needs_exactly_one_counterpart_row(self):
+        self.assertUnmapped(entry(kind="manual_compound_entry", lines=[line(None, 11, 100)]), "compound entry with 0 counterpart rows")
+
+    def test_compound_counterpart_without_account_is_reported(self):
+        self.assertUnmapped(entry(kind="manual_compound_entry", lines=[line(None, 11, 100), counterpart(None, None, 100)]),
+                            "counterpart row without an account")
+
+    def test_reverse_charge_without_its_accounts_is_reported(self):
+        self.assertUnmapped(entry(lines=[line(21, 11, 100, tax_id=32)]), "no Account 1172 in ERPNext", known=lookups(by_number={}))
 
     def test_entry_without_lines_is_reported(self):
         self.assertUnmapped(entry(lines=[]), "no entries lines")
@@ -205,6 +285,12 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(totals.rows[2025]["unmapped"], 1)
         self.assertEqual(totals.problems, ["manual entry m-9: unmapped, no Account for account 777"])
 
+    def test_documents_hold_what_maps_and_nothing_else(self):
+        totals = ime.dry_run([entry("m-1"), entry("m-9", lines=[line(777, 11, 10)])], lookups(), CURRENCIES)
+        self.assertEqual([d["bexio_id"] for d in totals.documents], ["manual-m-1"])
+        self.assertEqual(totals.documents[0]["doctype"], "Journal Entry")
+        self.assertIsNone(totals.documents[0]["name"])
+
     def test_entry_with_bad_date_is_counted_under_no_year(self):
         totals = ime.dry_run([entry("m-8", date="x")], lookups(), CURRENCIES)
         self.assertEqual(totals.rows[None]["unmapped"], 1)
@@ -234,9 +320,27 @@ class LoadEntriesTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    def test_live_run_is_refused(self):
+    def test_no_mode_is_refused(self):
         with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(ime.main(["--export", "/nonexistent"]), 2)
+            with self.assertRaises(SystemExit) as cm:
+                ime.main(["--export", "/nonexistent"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_write_puts_the_loader_plan_in_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, ime.ENTRIES_FILE), "w", encoding="utf-8") as f:
+                json.dump([entry("m-1"), entry("m-9", lines=[line(777, 11, 10)])], f)
+            with open(os.path.join(tmp, ime.CURRENCIES_FILE), "w", encoding="utf-8") as f:
+                json.dump([{"id": 1, "name": "CHF"}], f)
+            out_file = os.path.join(tmp, "plan.json")
+            with mock.patch.object(ime.Lookups, "from_erp", return_value=lookups()), \
+                    mock.patch.object(ime.im.Erp, "from_file", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                ime.main(["--write", out_file, "--export", tmp])
+            with open(out_file, encoding="utf-8") as f:
+                plan = json.load(f)
+        self.assertEqual([d["bexio_id"] for d in plan["documents"]], ["manual-m-1"])
+        self.assertEqual(plan["exchange_rates"], [])
 
     def test_pending_export_says_not_exported_yet(self):
         with tempfile.TemporaryDirectory() as tmp:
