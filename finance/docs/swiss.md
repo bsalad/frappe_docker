@@ -69,8 +69,16 @@ quarter of its payment. ERPNext books the same moves on the same dates
 payment-basis accounts per quarter, bexio's journal against the ERPNext General
 Ledger, read only: 2200 (Ziffer 399), 1170 and 1171 (Vorsteuer, Ziffer 400 to 420)
 and 2203 (Bezugsteuer), net per quarter; and the gross flows of 2200, 1170, 1171,
-2202 and 1172 per quarter. Result: 27 quarters (2020 Q2 to 2026 Q4), 178 comparisons, 9
-with a difference in 6 quarters, after the two rules below.
+2202 and 1172 per quarter. On ERPNext's side the gross keeps the lines whose voucher
+carries bexio's key (`bexio_keyed()`): bexio's journal lines and manual entries, the
+direct card and bank entries the import made from bexio, the credit notes, and the
+vatfix-manual lines that book manual VAT on 1171 and 2203. The other lines of those
+accounts are ERPNext-only: the invoices with their invoice-date reversals, and the
+vatfix-invoice and vatfix-bill mirrors on 2200, 1170 and 1171. They must net to zero
+per quarter and account, which the check prints as its own measure. Result for 27
+quarters (2020 Q2 to 2026 Q4): 230 comparisons; net 0 differences; ERPNext-only 0;
+gross 5 differences, all on 1171, in 5 quarters (2023 Q4, 2024 Q2, 2025 Q1, 2026 Q1,
+2026 Q2).
 
 bexio settles in three steps, and the two GL checks of `mwst_report.py` measure its
 moves, not the net. On receipt, the sales VAT moves 2202 -> 2200; on the bill's payment,
@@ -84,7 +92,7 @@ Purchase Invoice (the moves, and the direct bank, card and manual input tax), an
 the settlement entry of the quarter (its 2200 debit and its 1170 and 1171 credits)
 against both sums. A settlement that differs from the sums is a correction bexio made
 in the settlement. 21 of 27 quarters are settled; 2026 Q3 and later are open. The
-per-quarter figures are in the private file `bexio-mwst-gross-check.txt`.
+per-quarter comparison is in the private file `bexio-mwst-compare.csv`.
 
 Explained, not a difference in the books:
 
@@ -96,14 +104,19 @@ Explained, not a difference in the books:
 - **Rappen.** bexio's journal amounts carry more than two decimals in some
   lines; each line is rounded to the rappen, as ERPNext posts it.
 
-Not explained yet (the gross differences, 9 in 6 quarters): 1171 debits in 5 quarters,
-where bexio holds the direct card and bank input tax against 2010 and 1020/1021 and
-ERPNext holds it against the expense accounts or not at all, as far as checked (the direct input tax, left
-for its own bead); and 2202 and 1172 in 2026 Q2 and Q3, where ERPNext holds transit
-entries that bexio's journal does not. The settlement's input leg differs from the
-ERPNext input sum in 13 of 21 settled quarters, which the same direct input tax would
-explain; the settlement's sales leg differs in 3, two of them by the same amount in
-adjacent quarters (2022 Q2 and Q3).
+Explained since the first run: the transit entries of 2026 Q2 and Q3 were the ERPNext
+credit notes, which post their transit VAT to 2202 directly, as bexio does; their key
+(`credit-<id>`) now counts them as bexio's, and the transit accounts net to zero in
+every quarter. The invoice-date mirrors (vatfix-invoice, vatfix-bill) are ERPNext-only
+on 2200, 1170 and 1171 and net against the invoices.
+
+Not explained yet (the gross differences, 5 in 5 quarters, all on 1171): bexio holds
+the direct card and bank input tax against 2010 and 1020/1021, and ERPNext holds it
+against the expense accounts or not at all, as far as checked. That is the direct input
+tax, left for its own bead (erp-9fkd). The cause is not proven on these quarters. The
+settlement's input leg differs from the ERPNext input sum in 13 of 21 settled quarters,
+which the same direct input tax would explain; the settlement's sales leg differs in 3,
+two of them by the same amount in adjacent quarters (2022 Q2 and Q3).
 
 Not compared yet: the form's rows per rate (200, 302 to 343), the base of each
 Ziffer, and the split of the Vorsteuer in 400 and 405. They need each receipt

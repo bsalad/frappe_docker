@@ -83,33 +83,58 @@ class ErpSideTest(unittest.TestCase):
     NAMES = {"2200 - Geschuldete MWST - bic": "2200", "1170 - Vorsteuer - bic": "1170",
              "2202 - Transit - bic": "2202"}
 
-    def test_gl_entries_net_per_quarter_and_account_and_gross_per_side(self):
+    KEYS = {("Journal Entry", "JE-1"): "manual-7", ("Journal Entry", "JE-2"): "vatfix-invoice-3",
+            ("Journal Entry", "JE-3"): "manual-9", ("Journal Entry", "JE-4"): "journal-12",
+            ("Journal Entry", "JE-5"): "vatfix-manual-9", ("Sales Invoice", "CN-1"): "credit-5"}
+
+    def test_gl_entries_net_gross_and_erpnext_only_per_quarter_and_account(self):
         entries = [
-            {"account": "2200 - Geschuldete MWST - bic", "voucher_type": "Sales Invoice",
+            {"account": "2200 - Geschuldete MWST - bic", "voucher_type": "Sales Invoice", "voucher_no": "SI-1",
              "posting_date": "2026-02-28", "debit": 0, "credit": 100},
-            {"account": "2200 - Geschuldete MWST - bic", "voucher_type": "Journal Entry",
+            {"account": "2200 - Geschuldete MWST - bic", "voucher_type": "Journal Entry", "voucher_no": "JE-1",
              "posting_date": "2026-02-28", "debit": 0, "credit": 40},
-            {"account": "2200 - Geschuldete MWST - bic", "voucher_type": "Journal Entry",
+            {"account": "2200 - Geschuldete MWST - bic", "voucher_type": "Journal Entry", "voucher_no": "JE-2",
              "posting_date": "2026-03-01", "debit": 20, "credit": 0},
-            {"account": "1170 - Vorsteuer - bic", "voucher_type": "Purchase Invoice",
+            {"account": "1170 - Vorsteuer - bic", "voucher_type": "Purchase Invoice", "voucher_no": "PI-1",
              "posting_date": "2026-07-15", "debit": 5, "credit": 0},
-            {"account": "1170 - Vorsteuer - bic", "voucher_type": "Bank Entry",
+            {"account": "1170 - Vorsteuer - bic", "voucher_type": "Bank Entry", "voucher_no": "BE-1",
              "posting_date": "2026-07-15", "debit": 3, "credit": 0},
-            {"account": "2202 - Transit - bic", "voucher_type": "Journal Entry",
+            {"account": "2202 - Transit - bic", "voucher_type": "Journal Entry", "voucher_no": "JE-3",
              "posting_date": "2026-02-10", "debit": 30, "credit": 0},
-            {"account": "2202 - Transit - bic", "voucher_type": "Journal Entry",
-             "posting_date": "2026-02-10", "debit": 0, "credit": 30},
-            {"account": "9999 - Other - bic", "voucher_type": "Journal Entry",
+            {"account": "2202 - Transit - bic", "voucher_type": "Journal Entry", "voucher_no": "JE-4",
+             "posting_date": "2026-02-10", "debit": 30, "credit": 0},
+            {"account": "9999 - Other - bic", "voucher_type": "Journal Entry", "voucher_no": "JE-9",
              "posting_date": "2026-07-15", "debit": 5, "credit": 0},
         ]
-        balances = mc.erp_balances(entries, self.NAMES)
+        balances = mc.erp_balances(entries, self.NAMES, self.KEYS)
         self.assertEqual(balances, {
             ("2026Q1", "2200", "net"): Decimal("-120"),
             ("2026Q1", "2200", "gross"): Decimal("40"),
+            ("2026Q1", "2200", "erpnext_only"): Decimal("-80"),
             ("2026Q3", "1170", "net"): Decimal("8"),
-            ("2026Q3", "1170", "gross"): Decimal("3"),
+            ("2026Q3", "1170", "erpnext_only"): Decimal("8"),
             ("2026Q1", "2202", "gross"): Decimal("30"),
+            ("2026Q1", "2202", "erpnext_only"): Decimal("30"),
         })
+
+    def test_a_manual_entry_transit_line_is_erpnext_only_but_its_sales_tax_is_bexios(self):
+        self.assertFalse(mc.bexio_keyed({"voucher_type": "Journal Entry", "voucher_no": "JE-3"}, "2202", self.KEYS))
+        self.assertTrue(mc.bexio_keyed({"voucher_type": "Journal Entry", "voucher_no": "JE-1"}, "2200", self.KEYS))
+
+    def test_a_vatfix_manual_line_on_1171_is_bexios_but_on_a_transit_account_it_is_not(self):
+        self.assertTrue(mc.bexio_keyed({"voucher_type": "Journal Entry", "voucher_no": "JE-5"}, "1171", self.KEYS))
+        self.assertFalse(mc.bexio_keyed({"voucher_type": "Journal Entry", "voucher_no": "JE-5"}, "1172", self.KEYS))
+
+    def test_an_invoice_and_its_vatfix_reversal_are_erpnext_only_on_the_invoice_accounts(self):
+        self.assertFalse(mc.bexio_keyed({"voucher_type": "Journal Entry", "voucher_no": "JE-2"}, "2200", self.KEYS))
+        self.assertFalse(mc.bexio_keyed({"voucher_type": "Sales Invoice", "voucher_no": "SI-1"}, "2200", self.KEYS))
+
+    def test_a_vatfix_invoice_line_on_a_transit_account_is_bexios(self):
+        self.assertTrue(mc.bexio_keyed({"voucher_type": "Journal Entry", "voucher_no": "JE-2"}, "2202", self.KEYS))
+
+    def test_a_credit_note_posts_its_transit_vat_as_bexio_does(self):
+        self.assertTrue(mc.bexio_keyed({"voucher_type": "Sales Invoice", "voucher_no": "CN-1"}, "2202", self.KEYS))
+        self.assertFalse(mc.bexio_keyed({"voucher_type": "Sales Invoice", "voucher_no": "CN-1"}, "2200", self.KEYS))
 
 
 class CompareTest(unittest.TestCase):

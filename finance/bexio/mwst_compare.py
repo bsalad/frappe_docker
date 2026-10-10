@@ -5,8 +5,10 @@ receipt date, the purchase VAT from 1172 to 1170 or 1171 on the payment date. Th
 is zero in a settled quarter, because bexio's settlement clears it, so the gross flows are compared too: the credits
 of 2200 and the debits of 1170 and 1171 per quarter, and the debits of 2202 and the credits of 1172 (transit). Both
 sides are compared here account by account and quarter by quarter: bexio's from the journal of the export (read
-only), ERPNext's from its General Ledger (read only). On ERPNext's side the gross leaves out the invoice-date vouchers
-that bexio books to 2202 and 1172. 2203 (Bezugsteuer) is compared on the net only.
+only), ERPNext's from its General Ledger (read only). On ERPNext's side the gross keeps the lines whose voucher carries a
+bexio key (bexio_keyed); the other lines on the gross accounts are ERPNext-only and must net to zero per quarter and
+account, which shows that ERPNext's own pairs (invoices and their vatfix mirrors, a manual line and its correction)
+cancel. 2203 (Bezugsteuer) is compared on the net only.
 
 The per-rate Ziffern (302 to 343, 200) are not in the journal: bexio's invoices carry them, and they are not compared
 here. See the docs of erp-agpf's report for what remains.
@@ -45,9 +47,12 @@ ALL = COMPARED + ("2202", "1172")
 # date, and the export's journal holds only the manual part of it.
 GROSS = {"2200": "credit", "1170": "debit", "1171": "debit", "2202": "debit", "1172": "credit"}
 
-# ERPNext books the invoice-date VAT on these vouchers (2200, 1170, 1171); bexio books it to 2202 and 1172 instead,
-# so the ERPNext side of the gross leaves them out.
-INVOICE_VOUCHER = {"2200": "Sales Invoice", "1170": "Purchase Invoice", "1171": "Purchase Invoice"}
+# The vouchers that carry a bexio key (bexio_id): the import made them from bexio's journal and documents. Their lines
+# on the gross accounts are the ERPNext side of the gross; every other line is ERPNext-only, see bexio_keyed().
+BEXIO_VOUCHERS = ("Journal Entry", "Payment Entry", "Sales Invoice", "Purchase Invoice")
+INVOICE_TYPES = ("Sales Invoice", "Purchase Invoice")
+INVOICE_CORRECTIONS = ("vatfix-invoice-", "vatfix-credit-", "vatfix-bill-")
+MANUAL_KEYS = ("manual-", "vatfix-manual-")
 
 JOURNAL = os.path.join(im.PRIVATE, "bexio-export", "2026-10-10-complete", "journal.json")
 ACCOUNTS = os.path.join(im.PRIVATE, "bexio-export", "2026-10-10-complete", "accounts.json")
@@ -95,9 +100,28 @@ def bexio_balances(journal, numbers):
     return dict(out)
 
 
-def erp_balances(entries, numbers_by_name):
-    """Per (quarter, account number, measure) of the GL entries on the compared accounts. The gross side leaves out
-    the invoice-date vouchers that bexio books to 2202 and 1172 instead (INVOICE_VOUCHER); the net keeps all."""
+def bexio_keyed(entry, number, keys):
+    """True when a GL entry on a gross account is bexio's: its voucher carries a bexio key that bexio's journal holds
+    on that account. The invoices themselves (no key here) book their VAT on 2200, 1170 and 1171 at the invoice date,
+    and the invoice-date corrections (vatfix-invoice-*, vatfix-credit-*, vatfix-bill-*) reverse it there; bexio books
+    it to 2202 and 1172 instead, so the corrections are bexio's on those two transit accounts only. A manual entry's VAT (manual-*) and the
+    vatfix-manual-* correction that books it on 1171 and 2203 as bexio does are bexio's; the 2202 and 1172 lines of
+    either are not, since bexio books no transit line for a manual entry."""
+    voucher_type = entry.get("voucher_type")
+    key = keys.get((voucher_type, entry.get("voucher_no")))
+    transit = number in ("2202", "1172")
+    if key is None:
+        return False
+    if voucher_type in INVOICE_TYPES or key.startswith(INVOICE_CORRECTIONS):
+        return transit
+    return not (transit and key.startswith(MANUAL_KEYS))
+
+
+def erp_balances(entries, numbers_by_name, keys):
+    """Per (quarter, account number, measure) of the GL entries on the compared accounts. keys: (voucher type, voucher
+    no) -> bexio_id. The net keeps all entries. The gross keeps the bexio-keyed ones; the erpnext_only measure is the
+    net of the others, on the gross accounts, which must come to zero per quarter and account: the ERPNext-made pairs
+    (an invoice and its vatfix mirror, a wrong manual line and its correction) cancel in the quarter they are made."""
     out = defaultdict(lambda: ZERO)
     for e in entries:
         number = numbers_by_name.get(e["account"])
@@ -108,8 +132,11 @@ def erp_balances(entries, numbers_by_name):
         credit = Decimal(str(e["credit"]))
         if number in COMPARED:
             out[(quarter, number, "net")] += debit - credit
-        if number in GROSS and e.get("voucher_type") != INVOICE_VOUCHER.get(number):
-            out[(quarter, number, "gross")] += debit if GROSS[number] == "debit" else credit
+        if number in GROSS:
+            if bexio_keyed(e, number, keys):
+                out[(quarter, number, "gross")] += debit if GROSS[number] == "debit" else credit
+            else:
+                out[(quarter, number, "erpnext_only")] += debit - credit
     return dict(out)
 
 
@@ -144,8 +171,11 @@ def summary_lines(rows):
     bad = differences(rows)
     return [
         "quarters compared: {}".format(len(quarters)),
-        "comparisons compared: {} (net of {} accounts, gross of {})".format(len(rows), len(COMPARED), len(GROSS)),
+        "comparisons compared: {} (net of {} accounts, gross of {}, ERPNext-only nets on the gross accounts)".format(
+            len(rows), len(COMPARED), len(GROSS)),
         "comparisons with a difference: {}".format(len(bad)),
+        "  by measure: net {}, gross {}, ERPNext-only {}".format(
+            *[len([r for r in bad if r[2] == m]) for m in ("net", "gross", "erpnext_only")]),
         "quarters with a difference: {}".format(len({r[0] for r in bad})),
     ]
 
@@ -170,12 +200,17 @@ def main(argv):
                             ["name", "account_number"])
         names = {a["name"]: str(a["account_number"]) for a in accounts}
         entries = erp.list("GL Entry", [["account", "in", list(names)], ["is_cancelled", "=", 0]],
-                           ["account", "voucher_type", "posting_date", "debit", "credit"]) if names else []
+                           ["account", "voucher_type", "voucher_no", "posting_date", "debit", "credit"]) if names else []
+        keys = {}
+        for doctype in BEXIO_VOUCHERS:
+            for r in erp.list(doctype, [["company", "=", COMPANY], ["docstatus", "=", 1], ["bexio_id", "is", "set"]],
+                              ["name", "bexio_id"]):
+                keys[(doctype, r["name"])] = r["bexio_id"]
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2
 
-    rows = compare(bexio, erp_balances(entries, names))
+    rows = compare(bexio, erp_balances(entries, names, keys))
     for line in summary_lines(rows):
         print(line)
     write_csv(args.report, rows)
