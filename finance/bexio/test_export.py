@@ -29,13 +29,16 @@ FAKE = {
 DETAIL = {
     "/2.0/kb_invoice/5": {"id": 5, "positions": [{"amount": "1"}]},
     "/2.0/kb_invoice/5/payment": [{"value": "10"}],
-    "/4.0/purchase/bills/b1": {"data": {"id": "b1", "lines": [{"text": "Papier"}]}},
+    "/4.0/purchase/bills/b1": {"data": {"id": "b1", "lines": [{"text": "Papier"}], "document_no": "B-1",
+                                        "bill_date": "2026-01-02", "attachment_ids": ["u-1", "u-2"]}},
 }
 
 # Raw file contents. File 10 answers only on its second candidate path; file 11 on none.
+# The bill attachment u-1 is on the uuid's download path; u-2 on none.
 RAW = {
     "/3.0/files/9/download": b"%PDF-invented",
     "/3.0/files/10/content": b"\x00\x01",
+    "/3.0/files/u-1/download": b"%PDF-attachment",
 }
 
 
@@ -135,7 +138,41 @@ class ExportTest(unittest.TestCase):
         export.export(c, self.out, only=["bills"])
         bills = [p for path, p in seen if path == "/4.0/purchase/bills"]
         self.assertIn("page", bills[0])
-        self.assertEqual(self.load("bills.json"), [{"id": "b1", "gross": "10", "lines": [{"text": "Papier"}]}])
+        self.assertEqual(self.load("bills.json"), [{"id": "b1", "gross": "10", "lines": [{"text": "Papier"}],
+                                                    "document_no": "B-1", "bill_date": "2026-01-02",
+                                                    "attachment_ids": ["u-1", "u-2"]}])
+
+    def test_bill_attachments_are_one_row_per_uuid_with_the_bill_and_its_content(self):
+        manifest = export.export(fake_client(), self.out, only=["bill_attachments"])
+        rows = self.load("bill_attachments.json")
+        self.assertEqual([r["id"] for r in rows], ["u-1", "u-2"])
+        self.assertEqual(rows[0], {"id": "u-1", "uuid": "u-1", "bill_id": "b1", "document_no": "B-1",
+                                   "bill_date": "2026-01-02", "extension": "pdf", "name": "u-1.pdf",
+                                   "size_in_bytes": len(b"%PDF-attachment")})
+        with open(os.path.join(self.out, "files", "u-1.pdf"), "rb") as f:
+            self.assertEqual(f.read(), b"%PDF-attachment")
+        self.assertEqual(manifest["entities"]["bill_attachments"]["downloaded"], 1)
+        self.assertEqual(manifest["entities"]["bill_attachments"]["failed"], ["u-2"])
+
+    def test_a_row_without_an_extension_takes_it_from_the_content(self):
+        c = Client(token="test-token-not-real")
+        c.get = lambda path, params=None, raw=False: {"/3.0/files/u-3/download": b"\x89PNG\r\n\x1a\nxx"}[path]
+        rows = [{"id": "u-3", "uuid": "u-3"}]
+        export.download_files(c, rows, self.out, export.ATTACHMENT_CONTENT_PATHS)
+        self.assertEqual((rows[0]["extension"], rows[0]["name"], rows[0]["size_in_bytes"]), ("png", "u-3.png", 10))
+        self.assertTrue(os.path.exists(os.path.join(self.out, "files", "u-3.png")))
+
+    def test_the_content_types_of_bexio_attachments_are_sniffed_by_their_first_bytes(self):
+        self.assertEqual(export.sniff_extension(b"%PDF-1.7"), "pdf")
+        self.assertEqual(export.sniff_extension(b"\xff\xd8\xff\xe1\x00"), "jpg")
+        self.assertEqual(export.sniff_extension(b"\x89PNG\r\n\x1a\n"), "png")
+        self.assertEqual(export.sniff_extension(b"<html>"), "bin")
+
+    def test_a_failed_bill_attachment_keeps_its_row_without_a_size(self):
+        export.export(fake_client(), self.out, only=["bill_attachments"])
+        failed = [r for r in self.load("bill_attachments.json") if r["id"] == "u-2"]
+        self.assertEqual(len(failed), 1)
+        self.assertNotIn("size_in_bytes", failed[0])
 
     def test_invoices_carry_their_positions(self):
         export.export(fake_client(), self.out, only=["invoices"])
@@ -205,11 +242,14 @@ class ExportTest(unittest.TestCase):
             self.assertNotIn(path, asked_read)
         self.assertIn("/3.0/files/9/download", asked_write)  # file contents need the file scope too
         self.assertNotIn("/3.0/files/9/download", asked_read)
+        self.assertIn("/3.0/files/u-1/download", asked_write)  # and so do the bill attachments
+        self.assertNotIn("/3.0/files/u-1/download", asked_read)
         self.assertIn("/2.0/contact", asked_read)
         self.assertNotIn("/2.0/contact", asked_write)
 
-    def test_the_export_scope_set_is_exactly_the_four_entities(self):
-        self.assertEqual(export.EXPORT_SCOPE_ENTITIES, {"manual_entries", "journal", "bank_transactions", "files"})
+    def test_the_export_scope_set_is_the_five_entities_with_file_contents(self):
+        self.assertEqual(export.EXPORT_SCOPE_ENTITIES,
+                         {"manual_entries", "journal", "bank_transactions", "files", "bill_attachments"})
 
     def test_raw_get_returns_the_bytes_and_plain_get_decodes_json(self):
         c = Client(token="test-token-not-real")

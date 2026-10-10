@@ -11,7 +11,9 @@ ERPNext and writes nothing:
 
     python3 finance/bexio/import_files.py --dry-run [--export DIR]
 
---export defaults to the newest directory under <private>/bexio-export/. The dry run prints
+--export defaults to the newest directory under <private>/bexio-export/. A file is found by its uuid:
+files.json (the /3.0/files list) and bill_attachments.json (the attachments of the bills, export.py)
+both hold the uuid that a bill lists in attachment_ids. The dry run prints
 totals per doctype only. The bexio ids of the files it cannot place go to
 <private>/bexio-files-dry-run.txt, never to the screen or the repository.
 
@@ -31,11 +33,13 @@ import urllib.error
 import urllib.request
 import uuid
 
+import export as ex
 import import_master as im
 import import_purchase as ip
 
 DOCTYPE = "Purchase Invoice"  # bills and expenses both become Purchase Invoices
 FILES_FILE = "files.json"
+BILL_ATTACHMENTS_FILE = "bill_attachments.json"
 CONTENT_DIR = "files"
 PROBLEMS_FILE = "bexio-files-dry-run.txt"
 MARKER = "bexio file {}"
@@ -73,23 +77,30 @@ def attachment_owners(bills, expenses):
 
 
 def load_files(export_dir):
-    """The file metadata by bexio id, or None when the export has no files.json (its login gets a 403 so far)."""
-    path = os.path.join(export_dir, FILES_FILE)
-    if not os.path.exists(path):
+    """The file metadata by file uuid, from files.json and bill_attachments.json; None when the export has neither.
+
+    A bill lists its files by uuid (attachment_ids), so both are keyed by uuid, not by the integer id
+    of /3.0/files. A file's content is named by its id (export.file_name), so content_path reads the id.
+    """
+    names = [n for n in (FILES_FILE, BILL_ATTACHMENTS_FILE) if os.path.exists(os.path.join(export_dir, n))]
+    if not names:
         return None
-    with open(path, encoding="utf-8") as f:
-        return {str(x["id"]): x for x in json.load(f)}
+    files = {}
+    for name in names:
+        with open(os.path.join(export_dir, name), encoding="utf-8") as f:
+            files.update({str(x["uuid"]): x for x in json.load(f)})
+    return files
 
 
-def content_path(export_dir, file_id, meta):
-    return os.path.join(export_dir, CONTENT_DIR, file_id + os.path.splitext(meta.get("name") or "")[1])
+def content_path(export_dir, meta):
+    return os.path.join(export_dir, CONTENT_DIR, ex.file_name(meta))
 
 
 def already_attached(file_id, meta, files):
     # the marker is compared whole: "bexio file 1" must not match "bexio file 12"
     return any(
         f.get("description") == MARKER.format(file_id)
-        or (f.get("file_name") == meta["name"] and f.get("file_size") == int(meta["size"]))
+        or (f.get("file_name") == meta["name"] and f.get("file_size") == meta.get("size_in_bytes"))
         for f in files
     )
 
@@ -108,10 +119,10 @@ def classify(file_id, meta, holders, lookups, export_dir):
         return "no metadata", document
     if already_attached(file_id, meta, lookups.attached.get(document, [])):
         return ATTACHED, document
-    path = content_path(export_dir, file_id, meta)
+    path = content_path(export_dir, meta)
     if not os.path.isfile(path):
         return "no content", document
-    if os.path.getsize(path) != int(meta["size"]):
+    if os.path.getsize(path) != meta.get("size_in_bytes"):
         return "size differs", document
     return ATTACH, document
 
@@ -125,7 +136,7 @@ def plan(files, owners, lookups, export_dir):
         outcome, document = classify(file_id, meta, holders, lookups, export_dir)
         rows.append({
             "file": file_id, "outcome": outcome, "doctype": DOCTYPE if holders else "-",
-            "document": document, "size": int(meta["size"]) if meta else None,
+            "document": document, "size": meta.get("size_in_bytes") if meta else None,
         })
     return rows
 
@@ -136,7 +147,7 @@ def run(export_dir, erp):
     files = load_files(export_dir)
     lookups = Lookups.from_erp(erp)
     rows = plan(files or {}, attachment_owners(bills, expenses), lookups, export_dir)
-    return rows, files is not None
+    return rows, os.path.exists(os.path.join(export_dir, FILES_FILE))
 
 
 def report(rows, export_dir, has_files):

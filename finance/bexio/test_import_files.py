@@ -13,7 +13,7 @@ import import_master as im
 from test_import_master import FakeErp
 
 
-def write_export(root, bills=(), expenses=(), files=None, contents=None):
+def write_export(root, bills=(), expenses=(), files=None, bill_attachments=None, contents=None):
     """An export directory with invented records; files is the files.json list, contents {file id: (name, bytes)}."""
     with open(os.path.join(root, "bills.json"), "w", encoding="utf-8") as f:
         json.dump(list(bills), f)
@@ -22,6 +22,9 @@ def write_export(root, bills=(), expenses=(), files=None, contents=None):
     if files is not None:
         with open(os.path.join(root, imf.FILES_FILE), "w", encoding="utf-8") as f:
             json.dump(files, f)
+    if bill_attachments is not None:
+        with open(os.path.join(root, imf.BILL_ATTACHMENTS_FILE), "w", encoding="utf-8") as f:
+            json.dump(bill_attachments, f)
     os.makedirs(os.path.join(root, imf.CONTENT_DIR), exist_ok=True)
     for file_id, (name, data) in (contents or {}).items():
         ext = os.path.splitext(name)[1]
@@ -30,7 +33,9 @@ def write_export(root, bills=(), expenses=(), files=None, contents=None):
 
 
 def meta(file_id, name, data):
-    return {"id": file_id, "name": name, "size": len(data)}
+    """A files.json row for the file with this uuid (the test id doubles as the uuid); the id is the content's name."""
+    return {"id": file_id, "uuid": file_id, "name": name,
+            "extension": os.path.splitext(name)[1].lstrip("."), "size_in_bytes": len(data)}
 
 
 def erp_with(purchase_invoices=(), files=()):
@@ -53,6 +58,30 @@ class LookupsTest(unittest.TestCase):
         self.assertEqual(lookups.documents, {"10": "PINV-1", "11": "PINV-2"})
         self.assertEqual(lookups.attached, {"PINV-1": [
             {"name": "FILE-1", "attached_to_name": "PINV-1", "file_name": "a.pdf", "file_size": 3, "description": "bexio file f-1"}]})
+
+
+class LoadFilesTest(unittest.TestCase):
+    def test_files_and_bill_attachments_are_keyed_by_uuid(self):
+        with tempfile.TemporaryDirectory() as root:
+            write_export(root, files=[dict(meta("f-1", "a.pdf", b"x"), id=9, uuid="u-1")],
+                         bill_attachments=[dict(meta("u-2", "u-2.pdf", b"yy"), bill_id=10)])
+            files = imf.load_files(root)
+        self.assertEqual(sorted(files), ["u-1", "u-2"])
+        self.assertEqual(files["u-2"]["bill_id"], 10)
+
+    def test_no_export_file_means_no_metadata_at_all(self):
+        with tempfile.TemporaryDirectory() as root:
+            write_export(root)
+            self.assertIsNone(imf.load_files(root))
+
+    def test_content_is_named_by_the_integer_id_of_files_json(self):
+        # export.py names a file's content <id>.<extension>, so the import must look under the integer id
+        with tempfile.TemporaryDirectory() as root:
+            data = b"%PDF"
+            write_export(root, contents={"9": ("Beleg.pdf", data)})
+            row = {"id": 9, "uuid": "u-9", "name": "Beleg.pdf", "extension": "pdf", "size_in_bytes": len(data)}
+            self.assertEqual(imf.classify("u-9", row, ["10"], imf.Lookups({"10": "PINV-1"}, {}), root),
+                             (imf.ATTACH, "PINV-1"))
 
 
 class AttachmentOwnersTest(unittest.TestCase):

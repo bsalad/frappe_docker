@@ -211,10 +211,15 @@ the same `bexio_id`. The live run is erp-a2ma's. The dry run reads ERPNext and w
     python3 finance/bexio/import_files.py --dry-run [--export DIR]
 
 It prints totals per doctype only. The bexio ids of the files it cannot place go to
-`<private>/bexio-files-dry-run.txt`. Rows: `no metadata` (no `files.json` entry), `no content`
-(no file under `files/`), `size differs`, `no document` (the Purchase Invoice is not in ERPNext
-yet), `unlinked` (no record lists it), `shared` (two records list it). A file already attached
+`<private>/bexio-files-dry-run.txt`. Rows: `no metadata` (no `files.json` or `bill_attachments.json`
+entry), `no content` (no file under `files/`), `size differs`, `no document` (the Purchase Invoice is not in
+ERPNext yet), `unlinked` (no record lists it), `shared` (two records list it). A file already attached
 is recognised by the description `bexio file <id>` or by name and size, so a second run skips it.
+
+The bills list their files by uuid, and `/3.0/files` has the integer id and the same uuid. Both
+`files.json` and `bill_attachments.json` (the attachments of the bills, `export.py --only bill_attachments`,
+content from `/3.0/files/<uuid>/download`) are keyed by uuid; the marker `bexio file <uuid>` is the
+uuid, not the integer id.
 
 ## Purchase bills
 

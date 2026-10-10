@@ -29,6 +29,10 @@ Documents come with their positions: invoices, orders, offers and purchase bills
 are read as a list, then one call per record adds the positions to it. The
 payments of each invoice go to invoice_payments.json. The content of each file
 goes to files/<id>.<extension>; files.json holds the metadata of all of them.
+
+bill_attachments.json holds the attachments of the bills, one row per file uuid (the
+bills list the uuids in attachment_ids; their content is on /3.0/files/<uuid>/download).
+Their content goes to files/<uuid>.pdf, the same folder as files.json's.
 """
 
 import argparse
@@ -45,10 +49,18 @@ from client import BexioError, Client  # noqa: E402
 PRIVATE = "/Users/bsaladin/ws_yardr_finance/private"
 
 FILES = "files"
+BILL_ATTACHMENTS = "bill_attachments"
 
 # A file's content, tried in order: the first path that answers wins. Not yet
 # checked against the live API; a 404 on both is recorded per file in the manifest.
 FILE_CONTENT_PATHS = ("/3.0/files/{id}/download", "/3.0/files/{id}/content")
+
+# A bill attachment is named by its file uuid, and its content is on the same
+# download path (probed through the broker: 200 for the uuid, 415 for /3.0/files/{uuid}).
+ATTACHMENT_CONTENT_PATHS = ("/3.0/files/{id}/download",)
+
+# The entities whose content is downloaded into files/, with the paths to try.
+CONTENT_PATHS = {FILES: FILE_CONTENT_PATHS, BILL_ATTACHMENTS: ATTACHMENT_CONTENT_PATHS}
 
 
 def offset(path):
@@ -67,6 +79,11 @@ def detailed(listing, template):
 def attached(listing, template):
     """One item per record of `listing`: {"parent_id", "rows"} with the answer of GET `template`."""
     return ("attached", listing, template)
+
+
+def attachments(listing, template):
+    """One row per attachment of the records of `listing`, from the answer of GET `template` (attachment_ids)."""
+    return ("attachments", listing, template)
 
 
 # file name -> (how to read it, required). Required entities are what the
@@ -93,6 +110,7 @@ ENTITIES = {
     "payments": (pages("/4.0/banking/payments", "per-page", "results"), False),
     "bank_transactions": (offset("/3.0/banking/transactions"), True),
     FILES: (offset("/3.0/files"), False),
+    BILL_ATTACHMENTS: (attachments(pages("/4.0/purchase/bills", "page_size", "data"), "/4.0/purchase/bills/{id}"), False),
     "countries": (offset("/2.0/country"), False),
     "units": (offset("/2.0/unit"), False),
     "salutations": (offset("/2.0/salutation"), False),
@@ -101,7 +119,8 @@ ENTITIES = {
 
 
 # The entities read with the export login; every other one uses the read-only login.
-EXPORT_SCOPE_ENTITIES = frozenset({"manual_entries", "journal", "bank_transactions", FILES})
+# bill_attachments needs the file scope for its content, as files does.
+EXPORT_SCOPE_ENTITIES = frozenset({"manual_entries", "journal", "bank_transactions", FILES, BILL_ATTACHMENTS})
 
 
 def default_out(today=None):
@@ -134,7 +153,33 @@ def read_entity(client, spec):
     if kind == "attached":
         return [{"parent_id": row["id"], "rows": get_record(client, spec[2], row["id"])}
                 for row in read_entity(client, spec[1])]
+    if kind == "attachments":
+        rows = []
+        for bill in read_entity(client, spec[1]):
+            rows.extend(attachment_rows(get_record(client, spec[2], bill["id"])))
+        return rows
     raise ValueError("unknown entity kind {!r}".format(kind))
+
+
+def attachment_rows(bill):
+    """One row per attachment of a bill: the file's uuid as id, with the bill's document_no and bill_date.
+
+    The bill carries no file name or extension: download_files takes both from the content.
+    """
+    return [{"id": uuid, "uuid": uuid, "bill_id": bill["id"], "document_no": bill.get("document_no"),
+             "bill_date": bill.get("bill_date")}
+            for uuid in bill.get("attachment_ids") or []]
+
+
+# The first bytes of the content types bexio attachments come in; anything else is "bin".
+SNIFFED = ((b"%PDF-", "pdf"), (b"\xff\xd8\xff", "jpg"), (b"\x89PNG\r\n\x1a\n", "png"))
+
+
+def sniff_extension(content):
+    for magic, extension in SNIFFED:
+        if content.startswith(magic):
+            return extension
+    return "bin"
 
 
 def _open_private(path):
@@ -161,15 +206,19 @@ def file_name(row):
     return "{}.{}".format(row["id"], extension) if extension else str(row["id"])
 
 
-def download_files(client, rows, out):
-    """Write each file's content to out/files/; returns the manifest summary of the downloads."""
+def download_files(client, rows, out, templates=FILE_CONTENT_PATHS):
+    """Write each file's content to out/files/; returns the manifest summary of the downloads.
+
+    A row without a size_in_bytes, extension or name (a bill attachment) gets them from its content, so
+    the JSON written after the download carries them.
+    """
     folder = os.path.join(out, "files")
     os.makedirs(folder, mode=0o700, exist_ok=True)
     os.chmod(folder, 0o700)
     summary = {"downloaded": 0, "bytes": 0, "failed": []}
     for row in rows:
         content = None
-        for template in FILE_CONTENT_PATHS:
+        for template in templates:
             try:
                 content = client.get(template.format(id=row["id"]), raw=True)
                 break
@@ -178,6 +227,9 @@ def download_files(client, rows, out):
         if content is None:
             summary["failed"].append(row["id"])
             continue
+        row.setdefault("size_in_bytes", len(content))
+        row.setdefault("extension", sniff_extension(content))
+        row.setdefault("name", "{}.{}".format(row["id"], row["extension"]))
         write_private_bytes(os.path.join(folder, file_name(row)), content)
         summary["downloaded"] += 1
         summary["bytes"] += len(content)
@@ -215,10 +267,11 @@ def export(client, out, entities=None, only=None, export_client=None):
                 os.remove(stale)
             entry.update(status="error", error="HTTP {} on {}".format(err.status, err.path), count=0)
         else:
+            # the content first: a download adds the size of each row, which the JSON must carry
+            if name in CONTENT_PATHS:
+                entry.update(download_files(source, rows, out, CONTENT_PATHS[name]))
             write_private(os.path.join(out, entry["file"]), rows)
             entry.update(status="ok", count=len(rows))
-            if name == FILES:
-                entry.update(download_files(source, rows, out))
         manifest["entities"][name] = entry
     write_private(os.path.join(out, "manifest.json"), manifest)
     return manifest
@@ -247,7 +300,7 @@ def main(argv):
             print("  {:<18} {}".format(name, entry["error"]))
             continue
         line = "  {:<18} {}".format(name, entry["count"])
-        if name == FILES:
+        if name in CONTENT_PATHS:
             line += " (downloaded {}, {} bytes, failed {})".format(
                 entry["downloaded"], entry["bytes"], len(entry["failed"]))
         print(line)
