@@ -44,7 +44,13 @@ def new_rows(rows, fed_ids, imported):
     """
     create = []
     summary = {"rows": len(rows), "already_fed": 0, "already_imported": 0}
+    seen = set()
     for row in rows:
+        # a movement on the edge of two statement windows comes back in both; the first one counts, as write() would
+        if row["transaction_id"] in seen:
+            summary["rows"] -= 1
+            continue
+        seen.add(row["transaction_id"])
         if row["transaction_id"] in fed_ids:
             summary["already_fed"] += 1
             continue

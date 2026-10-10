@@ -94,8 +94,8 @@ def run(dry_run):
             frappe.db.commit()
         accounts.append(_account_report(currency, bank_account, create, summary, _amount(balance), now, rates))
     if not dry_run:
-        settings.last_sync = now
-        settings.save(ignore_permissions=True)
+        # one field, not settings.save(): a save would write back the token and switches as read at the start of the run
+        frappe.db.set_single_value("Wise Settings", "last_sync", now)
         frappe.db.commit()
     return {"accounts": accounts, "total": _total(accounts)}
 

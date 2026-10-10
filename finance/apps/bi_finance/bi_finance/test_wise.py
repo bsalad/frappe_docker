@@ -173,6 +173,12 @@ class Dedupe(unittest.TestCase):
         create, _ = bank_feed.new_rows(rows, set(), self.imported(self.row("")))
         self.assertEqual(len(create), 2)
 
+    def test_a_row_repeated_across_statement_windows_counts_once(self):
+        rows = [self.row("wise:9:R1"), self.row("wise:9:R1"), self.row("wise:9:R2")]
+        create, summary = bank_feed.new_rows(rows, set(), self.imported(self.row("")))
+        self.assertEqual([r["transaction_id"] for r in create], ["wise:9:R2"])
+        self.assertEqual((summary["rows"], summary["already_imported"]), (2, 1))
+
     def test_second_run_creates_nothing(self):
         rows = [self.row("wise:9:R1"), self.row("wise:9:R2", deposit=10.0, withdrawal=0.0)]
         first, _ = bank_feed.new_rows(rows, set(), self.imported())
