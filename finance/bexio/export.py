@@ -35,8 +35,9 @@ bills list the uuids in attachment_ids; their content is on /3.0/files/<uuid>/do
 Their content goes to files/<uuid>.pdf, the same folder as files.json's.
 
 --payroll exports the payroll module instead (employees, absences per year, payslip PDFs
-per month) to <private>/bexio-payroll/, with its own manifest. It is not part of the
-default run: it needs payroll scopes that the read-only login does not have yet.
+per month, the paystub overview and the company reads) to <private>/bexio-payroll/, with its
+own manifest. It is not part of the default run, and it reads with the read-only login, which
+needs the payroll scopes (oauth.SCOPE) consented once.
 """
 
 import argparse
@@ -284,13 +285,24 @@ def export(client, out, entities=None, only=None, export_client=None):
 # The payroll export (--payroll), for the move of payroll into ERPNext HRMS. Names, AHV numbers,
 # salaries, absences and payslips: it goes to its own folder, apart from the export above, and is
 # read with the read-only login, so its scopes must be in that login's consent (oauth.SCOPE).
-# The paths are from a third-party description of the 4.0 payroll API, not yet checked against the
-# live API: a 403 means a scope is missing, a 404 on a payslip means none for that month.
+# The paths are from docs.bexio.com (read 2026-10-10), base 4.0. Not yet checked against the live API:
+# the year parameter of the absences and the shape of the paystub overview. A 403 means a scope is
+# missing, a 404 on a payslip means none for that month.
 PAYROLL = "/Users/bsaladin/ws_yardr_finance/private/bexio-payroll"
 PAYSTUBS = "paystubs"
 PAYROLL_EMPLOYEES = "/4.0/payroll/employees"
 PAYROLL_ABSENCES = "/4.0/payroll/employees/{id}/absences"
-PAYROLL_PAYSTUB = "/4.0/payroll/employees/{id}/paystubs/{year}/{month}/pdf"
+# The download replaces the deprecated /paystubs/{year}/{month}/pdf (deprecated 2026-05-26).
+PAYROLL_PAYSTUB = "/4.0/payroll/employees/{id}/paystub-pdf-download/{year}/{month}"
+PAYROLL_PAYSTUBS_OVERVIEW = "/4.0/payroll/paystubs/overview"
+# Company-level reads for the HRMS study: each is kept as it comes, under its path.
+PAYROLL_COMPANY = (
+    "/4.0/payroll/companies/elm-status",
+    "/4.0/payroll/companies/qst-status",
+    "/4.0/payroll/companies/statistic-enabled",
+    "/4.0/payroll/accounting/last-transfer",
+    "/4.0/payroll/payments/last-transfer",
+)
 
 
 def payroll_rows(body, path):
@@ -337,6 +349,17 @@ def payroll_paystubs(client, out, employees, years, today):
     return index
 
 
+def payroll_company(client):
+    """The company-level reads, one row each: {"path", "body"}, or {"path", "error"} for a read that was refused."""
+    rows = []
+    for path in PAYROLL_COMPANY:
+        try:
+            rows.append({"path": path, "body": client.get(path)})
+        except BexioError as err:
+            rows.append({"path": path, "error": "HTTP {}".format(err.status)})
+    return rows
+
+
 def by_month(index):
     """The number of payslips per month, as "YYYY-MM": counts only."""
     counts = {}
@@ -377,7 +400,10 @@ def export_payroll(client, out, years, today=None):
     employees = _payroll_entity(out, manifest, "employees", True,
                                 lambda: payroll_rows(client.get(PAYROLL_EMPLOYEES), PAYROLL_EMPLOYEES))
     if manifest["entities"]["employees"]["status"] == "ok":
+        _payroll_entity(out, manifest, "company", False, lambda: payroll_company(client))
         _payroll_entity(out, manifest, "absences", False, lambda: payroll_absences(client, employees, years))
+        _payroll_entity(out, manifest, "paystubs_overview", False,
+                        lambda: payroll_rows(client.get(PAYROLL_PAYSTUBS_OVERVIEW), PAYROLL_PAYSTUBS_OVERVIEW))
         paystubs = _payroll_entity(out, manifest, "paystubs", False,
                                    lambda: payroll_paystubs(client, out, employees, years, today))
         if manifest["entities"]["paystubs"]["status"] == "ok":

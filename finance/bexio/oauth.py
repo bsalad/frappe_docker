@@ -55,7 +55,8 @@ LOGIN_TIMEOUT = 300  # seconds to wait for the browser to come back
 SCOPE = (
     "openid offline_access contact_show note_show article_show kb_invoice_show "
     "kb_offer_show kb_order_show kb_delivery_show kb_bill_show kb_expense_show "
-    "bank_account_show bank_payment_show"
+    "bank_account_show bank_payment_show payroll_employee_show payroll_absence_show "
+    "payroll_paystub_show"
 )
 
 # The export login: the read-only scopes plus the two bexio grants only with

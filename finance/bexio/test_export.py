@@ -273,6 +273,9 @@ PAYROLL_PAYSLIPS = {
 PAYROLL_TODAY = datetime.date(2026, 2, 15)
 
 
+PAYROLL_OVERVIEW = [{"employee_id": 101, "year": 2026, "month": 1}]
+
+
 def payroll_client(missing=()):
     """A Client whose payroll GETs answer from the invented fixtures; 404 for a payslip not in PAYROLL_PAYSLIPS."""
     c = Client(token="test-token-not-real")
@@ -282,9 +285,13 @@ def payroll_client(missing=()):
             raise BexioError(403, path)
         if path == export.PAYROLL_EMPLOYEES:
             return {"data": PAYROLL_EMPLOYEES}
+        if path == export.PAYROLL_PAYSTUBS_OVERVIEW:
+            return {"data": PAYROLL_OVERVIEW}
+        if path in export.PAYROLL_COMPANY:
+            return {"status": "invented"}
         if path.endswith("/absences"):
             return {"data": [{"reason": "Vacation", "days": 5, "year": params["year"]}]}
-        _, _, _, _, employee, _, year, month, _ = path.split("/")
+        _, _, _, _, employee, _, year, month = path.split("/")
         key = (int(employee), int(year), int(month))
         if not raw or key not in PAYROLL_PAYSLIPS:
             raise BexioError(404, path)
@@ -322,6 +329,31 @@ class PayrollExportTest(unittest.TestCase):
         self.assertEqual(manifest["entities"]["paystubs"]["by_month"], {"2026-01": 2, "2026-02": 1})
         self.assertEqual(self.load("manifest.json"), manifest)
 
+    def test_overview_and_company_reads_are_exported_as_their_own_entities(self):
+        manifest = export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
+        self.assertEqual(manifest["entities"]["paystubs_overview"]["count"], 1)
+        self.assertEqual(self.load("paystubs_overview.json"), PAYROLL_OVERVIEW)
+        self.assertEqual(manifest["entities"]["company"]["count"], len(export.PAYROLL_COMPANY))
+        self.assertEqual(self.load("company.json")[0], {"path": export.PAYROLL_COMPANY[0], "body": {"status": "invented"}})
+        self.assertFalse(manifest["entities"]["company"]["required"])
+
+    def test_a_refused_company_read_is_recorded_and_the_others_still_export(self):
+        path = export.PAYROLL_COMPANY[1]
+        manifest = export.export_payroll(payroll_client(missing={path}), self.out, [2026], today=PAYROLL_TODAY)
+        rows = self.load("company.json")
+        self.assertEqual(rows[1], {"path": path, "error": "HTTP 403"})
+        self.assertEqual(rows[0]["body"], {"status": "invented"})
+        self.assertEqual(manifest["entities"]["company"]["status"], "ok")
+        self.assertEqual(manifest["entities"]["paystubs"]["count"], 3)
+        self.assertEqual(export.failed_required(manifest), [])
+
+    def test_a_refused_overview_fails_only_its_entity(self):
+        manifest = export.export_payroll(payroll_client(missing={export.PAYROLL_PAYSTUBS_OVERVIEW}), self.out, [2026],
+                                         today=PAYROLL_TODAY)
+        self.assertEqual(manifest["entities"]["paystubs_overview"]["status"], "error")
+        self.assertEqual(manifest["entities"]["paystubs"]["status"], "ok")
+        self.assertFalse(os.path.exists(os.path.join(self.out, "paystubs_overview.json")))
+
     def test_no_payslip_is_asked_for_after_today(self):
         # Months after February 2026 are not asked for at all: a 404 there would hide a bug.
         seen = []
@@ -334,7 +366,7 @@ class PayrollExportTest(unittest.TestCase):
 
         c.get = get
         export.export_payroll(c, self.out, [2026], today=PAYROLL_TODAY)
-        self.assertFalse([p for p in seen if "/2026/3/" in p or "/2026/12/" in p])
+        self.assertFalse([p for p in seen if p.endswith(("/2026/3", "/2026/12"))])
 
     def test_a_forbidden_employee_list_stops_the_run(self):
         manifest = export.export_payroll(payroll_client(missing={export.PAYROLL_EMPLOYEES}), self.out, [2026],
