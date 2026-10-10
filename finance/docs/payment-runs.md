@@ -50,9 +50,10 @@ drafts, and un-marks the invoices.
 - An IBAN whose check digits fail (mod 97) stops the file before it is made, naming the
   row; the bank would refuse the file otherwise. An empty IBAN is not checked here.
 - **Not verified:** that UBS e-banking accepts this file. No UBS source found
-  confirms the version or the Swiss variant. Before the first live file, upload a
-  test file to UBS's ISO 20022 test platform (or ask UBS, 0848 848 064) and note
-  the result on the bead.
+  confirms the version or the Swiss variant. Acceptance is manual, on the first real
+  run: upload the file in UBS e-banking, check each payment (creditor, IBAN, amount,
+  date) before release; nothing is paid until it is released. A rejected file: copy
+  UBS's message into a note on the bead.
 
 ## Limits
 
