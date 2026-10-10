@@ -667,13 +667,21 @@ class Drafts(unittest.TestCase):
         self.assertEqual((draft["values"]["currency"], draft["values"]["conversion_rate"]), ("CHF", 1.0))
         self.assertEqual(out["exchange_rates"], [])
 
-    def test_orders_and_offers_and_unmapped_invoices_are_left_out(self):
+    def test_an_unmapped_invoice_is_left_out(self):
         bad = record(INVOICE, id=502, document_nr="RE-1003", contact_id=999)
-        order = {"id": 900, "document_nr": "AB-1", "contact_id": 100, "currency_id": 1, "is_valid_from": "2024-03-01",
-                 "positions": [], "total": "0"}
-        count, out = self.write(self.results([INVOICE, bad], orders=[order]))
+        count, out = self.write(self.results([INVOICE, bad]))
         self.assertEqual(count, 1)
         self.assertEqual([d["name"] for d in out["documents"]], ["RE-1001"])
+
+    def test_orders_and_offers_are_drafts_of_their_doctype_and_an_unmapped_one_is_left_out(self):
+        # the order and the offer carry the invoice's positions; the unmapped order has a contact with no Customer
+        order = record(INVOICE, id=900, document_nr="AB-1")
+        order_bad = record(INVOICE, id=901, document_nr="AB-2", contact_id=999)
+        offer = record(INVOICE, id=950, document_nr="AN-1")
+        count, out = self.write(self.results([], orders=[order, order_bad], offers=[offer]))
+        self.assertEqual(count, 2)
+        self.assertEqual(sorted((d["doctype"], d["name"], d["bexio_id"]) for d in out["documents"]),
+                         [("Quotation", "AN-1", "950"), ("Sales Order", "AB-1", "900")])
 
 
 if __name__ == "__main__":

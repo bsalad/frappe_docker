@@ -169,7 +169,8 @@ GL posts: the documents are drafts (docstatus 0). The posting plan
     python3 finance/bexio/import_sales.py --dry-run [--export DIR]
     python3 finance/bexio/import_sales.py --apply [--export DIR]
 
-`--apply` writes the invoices and credit notes as drafts. The plan goes to
+`--apply` writes the invoices, credit notes, orders and offers as drafts (orders are Sales Orders and offers
+Quotations, named by bexio's document number; neither is ever submitted, so they post no GL). The plan goes to
 `<private>/bexio-sales-drafts.json`, and the loader
 (`finance/scripts/bexio-drafts.sh`, `bexio-drafts.py`) inserts it inside the
 backend container as Administrator. Each draft is named by bexio's
@@ -229,6 +230,9 @@ paid). The differences and unmapped records, by bexio id, go to
   amount, and its quantity and discount stay in its text ("1.58 x 1000.00 less
   10%: ..."). A zero-rate row keeps a zero price list rate, so ERPNext does not
   fill the free-text item's selling price into it.
+- Orders and offers keep the refusal of a total difference that no tax row takes: a Sales Order or Quotation
+  with one is not written, and is listed by bexio id. A difference up to 5 rappen goes into the last tax row as for
+  an invoice.
 - Not written by `--apply`: an invoice whose total differs from bexio's by more
   than 5 rappen, or by a difference no line or discount can take. It is listed by
   bexio id in `<private>/bexio-sales-differences.txt` and in the loader's output.
@@ -276,7 +280,10 @@ The chart's EUR and USD accounts (1101, 2001) stay unused, as bexio did not use 
 
 `import_files.py` plans the attachment of the bexio files (receipts, PDFs) to the
 Purchase Invoices they belong to, so the books keep their vouchers (GeBüV, see
-`finance/docs/archiving.md`). A bill or an expense lists its files by bexio id
+`finance/docs/archiving.md`). A file that no record lists (outcome `archive`) goes into the File folder
+`Home/bexio Archive` on no document, with its bexio id; `--apply` creates the folder once and a second run finds
+the file there (`archived`). A file with no metadata stays `unlinked`, and a file without content or of another
+size is a problem, not archived. A bill or an expense lists its files by bexio id
 (`attachment_ids`); the file becomes a private ERPNext File on the Purchase Invoice with
 the same `bexio_id`. The live run is erp-a2ma's. The dry run reads ERPNext and writes nothing:
 
@@ -421,8 +428,8 @@ second run; the dry run of each step is the rerun check (it reads ERPNext and wr
 1. Master data: `import_master.py` (see the master-data pipeline above).
 2. Documents: `import_sales.py --apply` (invoices as drafts), `import_credit_note.py --write FILE` (the one
    credit voucher), `import_purchase.py --apply` (bills as drafts). Then submit the drafts:
-   `finance/scripts/bexio-drafts.sh FILE submit`. Orders and offers are not part of the history and are not applied
-   (see the sales section).
+   `finance/scripts/bexio-drafts.sh FILE submit`. Orders and offers are written as drafts by the same run and
+   not submitted (see the sales section).
 3. Payments: `import_payments_in.py --write FILE` and `import_payments_out.py --write FILE`, then submit. The
    VAT moved on payment is a Journal Entry per bexio journal line, in the same plan.
 4. VAT on the transitory accounts: `import_vat_fix.py --write FILE`, then submit (see its section).

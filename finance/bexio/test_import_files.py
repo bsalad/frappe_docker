@@ -68,6 +68,14 @@ class LookupsTest(unittest.TestCase):
         self.assertEqual(lookups.attached, {"PINV-1": [
             {"name": "FILE-1", "attached_to_name": "PINV-1", "file_name": "a.pdf", "file_size": 3, "bexio_id": "f-1"}]})
 
+    def test_files_in_the_archive_folder_are_read_by_their_bexio_id(self):
+        erp = erp_with([], [
+            {"name": "FILE-2", "folder": imf.ARCHIVE_FOLDER, "bexio_id": "f-9"},
+            {"name": "FILE-3", "folder": imf.ARCHIVE_FOLDER, "bexio_id": None},
+            {"name": "FILE-4", "folder": "Home", "bexio_id": "f-8"},
+        ])
+        self.assertEqual(imf.Lookups.from_erp(erp).archived, {"f-9"})
+
 
 class LoadFilesTest(unittest.TestCase):
     def test_files_and_bill_attachments_are_keyed_by_uuid(self):
@@ -173,8 +181,27 @@ class ClassifyTest(unittest.TestCase):
         lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "a.pdf", "file_size": 1, "bexio_id": "f-12"}]})
         self.assertEqual(self.outcome("f-1", ["10"], meta("f-1", "a.pdf", data), lookups), imf.ATTACH)
 
-    def test_no_owner_is_unlinked(self):
-        self.assertEqual(self.outcome("f-9", [], meta("f-9", "a.pdf", b"x"), imf.Lookups({}, {})), "unlinked")
+    def test_no_owner_and_no_metadata_is_unlinked(self):
+        self.assertEqual(self.outcome("f-9", [], None, imf.Lookups({}, {})), "unlinked")
+
+    def test_no_owner_with_content_goes_to_the_archive(self):
+        # no record lists it: its own File in the archive folder, not a document's attachment
+        data = b"%PDF-invented"
+        write_export(self.root, contents={"f-9": ("a.pdf", data)})
+        self.assertEqual(imf.classify("f-9", meta("f-9", "a.pdf", data), [], imf.Lookups({}, {}), self.root),
+                         (imf.ARCHIVE, None))
+
+    def test_no_owner_already_in_the_archive_folder_is_archived(self):
+        data = b"x"
+        write_export(self.root, contents={"f-9": ("a.pdf", data)})
+        lookups = imf.Lookups({}, {}, archived={"f-9"})
+        self.assertEqual(imf.classify("f-9", meta("f-9", "a.pdf", data), [], lookups, self.root), (imf.ARCHIVED, None))
+
+    def test_no_owner_without_content_or_of_another_size_is_a_problem_not_archived(self):
+        lookups = imf.Lookups({}, {})
+        self.assertEqual(self.outcome("f-9", [], meta("f-9", "a.pdf", b"x"), lookups), "no content")
+        write_export(self.root, contents={"f-8": ("b.pdf", b"four")})
+        self.assertEqual(self.outcome("f-8", [], meta("f-8", "b.pdf", b"x"), lookups), "size differs")
 
     def test_two_owners_is_shared(self):
         self.assertEqual(self.outcome("f-1", ["10", "11"], meta("f-1", "a.pdf", b"x"), imf.Lookups({}, {})), "shared")
@@ -230,9 +257,9 @@ class PlanTest(unittest.TestCase):
             rows = {r["file"]: r for r in imf.plan(files, owners, lookups, root)}
         self.assertEqual(sorted(rows), ["f-1", "f-2", "f-3", "f-4"])
         self.assertEqual((rows["f-1"]["outcome"], rows["f-1"]["doctype"], rows["f-1"]["size"]), ("attach", "Purchase Invoice", 2))
-        self.assertEqual(rows["f-2"]["outcome"], "unlinked")
+        self.assertEqual(rows["f-2"]["outcome"], "archive")
         self.assertEqual(rows["f-2"]["doctype"], "-")
-        self.assertEqual(rows["f-3"]["outcome"], "unlinked")
+        self.assertEqual(rows["f-3"]["outcome"], "no content")
         self.assertEqual(rows["f-4"]["outcome"], "no metadata")
 
 
@@ -422,6 +449,46 @@ class UploadRequestTest(unittest.TestCase):
         erp = im.Erp("https://erp.test/api", "key", "secret")
         req = imf.upload_request(erp, "PINV-1", "a\r\nX-Evil: 1.pdf", b"x")
         self.assertIn(b'filename="a__X-Evil: 1.pdf"', req.data)
+
+
+class ArchiveTest(unittest.TestCase):
+    def test_archive_request_names_the_folder_and_no_document(self):
+        erp = im.Erp("https://erp.test/api", "key", "secret")
+        req = imf.archive_request(erp, "Scan.pdf", b"%PDF-invented")
+        self.assertIn(b'name="folder"\r\n\r\nHome/bexio Archive\r\n', req.data)
+        self.assertIn(b'name="is_private"\r\n\r\n1\r\n', req.data)
+        self.assertNotIn(b'name="doctype"', req.data)
+        self.assertNotIn(b'name="docname"', req.data)
+        self.assertIn(b"%PDF-invented", req.data)
+
+    def test_an_archived_upload_carries_its_bexio_id(self):
+        erp = im.Erp("https://erp.test/api", "key", "secret")
+        response = io.BytesIO(json.dumps({"message": {"name": "FILE-2"}}).encode("utf-8"))
+        with mock.patch("urllib.request.urlopen", return_value=response), mock.patch.object(erp, "update") as update:
+            name = imf.upload_archive(erp, "f-9", "a.pdf", b"xx")
+        self.assertEqual(name, "FILE-2")
+        update.assert_called_once_with("File", "FILE-2", {"bexio_id": "f-9"})
+
+    def test_the_archive_folder_is_created_once_under_home(self):
+        erp = mock.Mock()
+        erp.list.return_value = []
+        imf.ensure_archive_folder(erp)
+        erp.insert.assert_called_once_with("File", {"file_name": "bexio Archive", "is_folder": 1, "folder": "Home"})
+        erp.list.return_value = [{"name": imf.ARCHIVE_FOLDER}]
+        imf.ensure_archive_folder(erp)
+        erp.insert.assert_called_once()
+
+    def test_apply_archives_each_unlinked_file_once_and_creates_the_folder_first(self):
+        with tempfile.TemporaryDirectory() as root:
+            write_export(root, files=[raw("f-2", "b.pdf", b"yyy")], contents={"2": ("b.pdf", b"yyy")})
+            rows = [{"file": "f-2", "outcome": "archive", "document": None, "doctype": "-", "size": 3}]
+            calls, folders = [], []
+            with mock.patch.object(imf, "ensure_archive_folder", lambda erp: folders.append(erp)), \
+                    mock.patch.object(imf, "upload_archive", lambda erp, file_id, name, content: calls.append((file_id, name, content))):
+                uploaded = imf.apply(rows, root, "erp")
+        self.assertEqual(uploaded, 1)
+        self.assertEqual(folders, ["erp"])
+        self.assertEqual(calls, [("f-2", "b.pdf", b"yyy")])
 
 
 class UploadErrorTest(unittest.TestCase):

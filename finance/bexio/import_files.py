@@ -21,8 +21,9 @@ the backfill cannot match, go to <private>/bexio-files-dry-run.txt, never to the
 
 Idempotent: a file is already attached when its Purchase Invoice has a File with its bexio_id, or,
 for a File without one, with the same name and size. The live run skips those. A file that no
-document lists is listed, not attached; so is a file that two documents list, since a File has one
-document.
+record lists (outcome archive) is uploaded into the File folder "bexio Archive" under Home, on no
+document, keyed by its bexio id; a second run finds it there and skips it. A file that two documents
+list is listed, not attached, since a File has one document.
 
 Standard library only, apart from import_master.py and import_purchase.py.
 """
@@ -44,18 +45,24 @@ FILES_FILE = "files.json"
 BILL_ATTACHMENTS_FILE = "bill_attachments.json"
 CONTENT_DIR = "files"
 PROBLEMS_FILE = "bexio-files-dry-run.txt"
+# a file no record lists (file_links has no document for it) goes into this File folder, not onto a document
+ARCHIVE_FOLDER_NAME = "bexio Archive"
+ARCHIVE_FOLDER = "Home/" + ARCHIVE_FOLDER_NAME
 
 ATTACH, ATTACHED, REENCODED = "attach", "attached", "re-encoded"
+ARCHIVE, ARCHIVED = "archive", "archived"
 PROBLEMS = ("unlinked", "shared", "no metadata", "no document", "no content", "size differs")
 IMAGES = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 
 
 class Lookups:
-    """What the plan reads from ERPNext: the Purchase Invoices by bexio_id, and the Files already on them."""
+    """What the plan reads from ERPNext: the Purchase Invoices by bexio_id, the Files already on them, and the
+    bexio ids of the Files already in the archive folder."""
 
-    def __init__(self, documents, attached):
+    def __init__(self, documents, attached, archived=frozenset()):
         self.documents = documents  # bexio id -> Purchase Invoice name
         self.attached = attached    # Purchase Invoice name -> [File rows]
+        self.archived = archived    # bexio ids of the Files in ARCHIVE_FOLDER
 
     @classmethod
     def from_erp(cls, erp):
@@ -64,7 +71,8 @@ class Lookups:
         for f in erp.list("File", [["attached_to_doctype", "=", DOCTYPE]],
                           ["name", "attached_to_name", "file_name", "file_size", "bexio_id"]):
             attached.setdefault(f["attached_to_name"], []).append(f)
-        return cls(documents, attached)
+        archived = {f["bexio_id"] for f in erp.list("File", [["folder", "=", ARCHIVE_FOLDER], ["bexio_id", "is", "set"]], ["bexio_id"])}
+        return cls(documents, attached, archived)
 
 
 def attachment_owners(bills, expenses):
@@ -163,7 +171,17 @@ def reencoded(meta, files):
 def classify(file_id, meta, holders, lookups, export_dir):
     """What the live run does with one file: its outcome, and the Purchase Invoice it goes to."""
     if not holders:
-        return "unlinked", None
+        # no record lists it: it goes to the archive folder, with the same content checks as an attachment
+        if meta is None:
+            return "unlinked", None
+        if file_id in lookups.archived:
+            return ARCHIVED, None
+        path = content_path(export_dir, meta)
+        if not os.path.isfile(path):
+            return "no content", None
+        if os.path.getsize(path) != meta.get("size_in_bytes"):
+            return "size differs", None
+        return ARCHIVE, None
     if len(holders) > 1:
         return "shared", None
     # the document is checked before the metadata, so the dry run counts the documents even without files.json
@@ -223,7 +241,7 @@ def report(rows, export_dir, has_files, applied=False, backfills=None):
     counts = {}
     for r in rows:
         counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1
-    for outcome in (ATTACH, ATTACHED, REENCODED) + PROBLEMS:
+    for outcome in (ATTACH, ATTACHED, REENCODED, ARCHIVE, ARCHIVED) + PROBLEMS:
         if counts.get(outcome):
             lines.append("  {:<14}{:>6}".format(outcome, counts[outcome]))
     if backfills is not None:
@@ -231,7 +249,7 @@ def report(rows, export_dir, has_files, applied=False, backfills=None):
         lines.append("  {:<14}{:>6}".format("to backfill", len(writes)))
         if listed:
             lines.append("  {:<14}{:>6}".format("unmatched", len(listed)))
-    lines.append("applied: the files marked attach are uploaded and the Files to backfill get their bexio_id" if applied
+    lines.append("applied: the files marked attach or archive are uploaded and the Files to backfill get their bexio_id" if applied
                  else "dry run: nothing was written")
     return "\n".join(lines)
 
@@ -245,12 +263,12 @@ def _header_safe(name):
     return "".join("_" if c in '"\r\n' else c for c in name)
 
 
-def upload_request(erp, document, file_name, content):
-    """The multipart request for Frappe's upload_file: one private File on the Purchase Invoice. Built here, sent by upload() in the live run only."""
+def _multipart(erp, fields, file_name, content):
+    """The multipart request for Frappe's upload_file with these form fields and the file. Built here, sent by upload() in the live run only."""
     boundary = uuid.uuid4().hex
     sep = "--{}\r\n".format(boundary)
     body = b""
-    for key, value in (("doctype", DOCTYPE), ("docname", document), ("is_private", "1")):
+    for key, value in fields:
         body += (sep + 'Content-Disposition: form-data; name="{}"\r\n\r\n{}\r\n'.format(key, value)).encode("utf-8")
     body += (sep + 'Content-Disposition: form-data; name="file"; filename="{}"\r\n'
              'Content-Type: application/octet-stream\r\n\r\n'.format(_header_safe(file_name))).encode("utf-8")
@@ -260,6 +278,16 @@ def upload_request(erp, document, file_name, content):
     req.add_header("Authorization", erp._auth)  # the Erp object keeps its secret; it is only read here
     req.add_header("Content-Type", "multipart/form-data; boundary=" + boundary)
     return req
+
+
+def upload_request(erp, document, file_name, content):
+    """The multipart request for one private File on the Purchase Invoice."""
+    return _multipart(erp, (("doctype", DOCTYPE), ("docname", document), ("is_private", "1")), file_name, content)
+
+
+def archive_request(erp, file_name, content):
+    """The multipart request for one private File in the archive folder, on no document."""
+    return _multipart(erp, (("folder", ARCHIVE_FOLDER), ("is_private", "1")), file_name, content)
 
 
 def upload(erp, document, file_id, file_name, content):
@@ -273,16 +301,40 @@ def upload(erp, document, file_id, file_name, content):
     return name
 
 
+def upload_archive(erp, file_id, file_name, content):
+    """Upload one unlinked file into the archive folder, marked with its bexio id."""
+    try:
+        with urllib.request.urlopen(archive_request(erp, file_name, content), timeout=300) as resp:
+            name = json.loads(resp.read().decode("utf-8"))["message"]["name"]
+    except urllib.error.HTTPError as err:
+        raise im.ErpError(err.code, "upload_file into {}".format(ARCHIVE_FOLDER) + im._reason(err)) from None
+    erp.update("File", name, {"bexio_id": file_id})
+    return name
+
+
+def ensure_archive_folder(erp):
+    """Create the archive folder under Home, once: a File folder is named by its path, so the uploads find it by ARCHIVE_FOLDER."""
+    if not erp.list("File", [["name", "=", ARCHIVE_FOLDER]], ["name"]):
+        erp.insert("File", {"file_name": ARCHIVE_FOLDER_NAME, "is_folder": 1, "folder": "Home"})
+
+
 def apply(rows, export_dir, erp):
-    """Upload every file the plan marks to attach. Returns how many were uploaded."""
+    """Upload every file the plan marks to attach, and every unlinked one to the archive folder. Returns how many were uploaded."""
     files = load_files(export_dir)
     uploaded = 0
+    if any(row["outcome"] == ARCHIVE for row in rows):
+        ensure_archive_folder(erp)
     for row in rows:
-        if row["outcome"] != ATTACH:
+        if row["outcome"] == ATTACH:
+            meta = files[row["file"]]
+            with open(content_path(export_dir, meta), "rb") as f:
+                upload(erp, row["document"], row["file"], meta["name"], f.read())
+        elif row["outcome"] == ARCHIVE:
+            meta = files[row["file"]]
+            with open(content_path(export_dir, meta), "rb") as f:
+                upload_archive(erp, row["file"], meta["name"], f.read())
+        else:
             continue
-        meta = files[row["file"]]
-        with open(content_path(export_dir, meta), "rb") as f:
-            upload(erp, row["document"], row["file"], meta["name"], f.read())
         uploaded += 1
     return uploaded
 

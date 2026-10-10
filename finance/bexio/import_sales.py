@@ -51,8 +51,9 @@ BASE_CURRENCY = "CHF"
 # the ECB's rate of a currency on a day, from the service ERPNext's own exchange-rate fetch uses; a day
 # without a rate (a weekend, a holiday) gets the last one before it, and the response names that day
 RATE_URL = "https://api.frankfurter.app/{day}?from={code}&to=CHF"
-# the documents --apply writes, by export file: the invoices and credit notes; orders and offers are later beads
-APPLY_FILES = ("invoices", "credit_vouchers")
+# the documents --apply writes, by export file: the invoices, credit notes, orders and offers, all as drafts
+# (the submit of the invoices is bexio-drafts.sh's; orders and offers are never submitted here)
+APPLY_FILES = ("invoices", "credit_vouchers", "orders", "offers")
 DRAFTS_FILE = "bexio-sales-drafts.json"
 LOADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "bexio-drafts.sh")
 # free-text positions and text lines: one service item, the description keeps the bexio text
