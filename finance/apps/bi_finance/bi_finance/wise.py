@@ -5,9 +5,11 @@ A dry run writes nothing: it reports what each account would get. The token is r
 logged or returned to the page.
 """
 
+import collections
 import datetime
 
 import frappe
+from erpnext.setup.utils import get_exchange_rate
 from frappe import _
 
 from bi_finance import bank_feed, wise_client
@@ -50,7 +52,8 @@ def sync_now(dry_run=True):
     """Sync every balance now. dry_run, the default, reports what would be written; a live run writes it."""
     dry_run = frappe.parse_json(dry_run) if isinstance(dry_run, str) else bool(dry_run)
     report = run(dry_run=dry_run)
-    frappe.msgprint(_("{0} account(s) {1}.").format(len(report), _("planned") if dry_run else _("synced")))
+    frappe.msgprint(_("{0} account(s) {1}.").format(len(report["accounts"]), _("planned") if dry_run else _("synced")))
+    frappe.msgprint("<br>".join(_summary_lines(report)))
     return report
 
 
@@ -63,11 +66,16 @@ def sync_scheduled():
 
 
 def run(dry_run):
-    """One pass over the profile's balances. Returns one report row per currency; nothing is written when dry_run."""
+    """One pass over the profile's balances. Returns {"accounts": one row per currency, "total": the CHF totals}.
+
+    Every amount is shown in its own currency and in CHF, at the rate of the day it falls on. Nothing is written when
+    dry_run.
+    """
     settings, token = _settings()
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     start = _start(settings, now)
-    report = []
+    rates = {}
+    accounts = []
     for balance in wise_client.balances(token, settings.profile_id):
         currency = balance["currency"]
         # the balance id is needed for the statement; the account name is planned before it exists on a dry run
@@ -81,21 +89,108 @@ def run(dry_run):
             ensure_bank_account(currency)
             bank_feed.write(bank_account, create)
             frappe.db.commit()
-        report.append(
-            {
-                "currency": currency,
-                "bank_account": bank_account,
-                "create": len(create),
-                **summary,
-                "wise_balance": _amount(balance),
-                "erp_net": _erp_net(bank_account),
-            }
-        )
+        accounts.append(_account_report(currency, bank_account, create, summary, _amount(balance), now, rates))
     if not dry_run:
         settings.last_sync = now
         settings.save(ignore_permissions=True)
         frappe.db.commit()
-    return report
+    return {"accounts": accounts, "total": _total(accounts)}
+
+
+def _account_report(currency, bank_account, create, summary, balance, now, rates):
+    """One currency's row: the counts, the Wise balance and ERPNext's net, each in the currency and in CHF."""
+    create_chf, create_gap = _chf_sum(_net_by_day(create), currency, rates)
+    erp_by_day = _erp_net_by_day(bank_account)
+    erp_chf, erp_gap = _chf_sum(erp_by_day, currency, rates)
+    rate = _rate(currency, str(now.date()), rates)
+    return {
+        "currency": currency,
+        "bank_account": bank_account,
+        "create": len(create),
+        "create_by_month": _by_month(create),
+        **summary,
+        "wise_balance": balance,
+        "wise_balance_chf": round(balance * rate, 2) if rate else None,
+        "erp_net": round(sum(erp_by_day.values()), 2),
+        "erp_net_chf": erp_chf,
+        "create_chf": create_chf,
+        "no_rate_days": create_gap + erp_gap + (0 if rate else 1),
+    }
+
+
+def _total(accounts):
+    """The CHF totals over the currencies. A balance or a day with no rate is left out and counted in no_rate_days."""
+    return {
+        "wise_balance_chf": round(sum(a["wise_balance_chf"] or 0 for a in accounts), 2),
+        "erp_net_chf": round(sum(a["erp_net_chf"] for a in accounts), 2),
+        "create_chf": round(sum(a["create_chf"] for a in accounts), 2),
+        "no_rate_days": sum(a["no_rate_days"] for a in accounts),
+    }
+
+
+def _summary_lines(report):
+    """One line per currency for the message: the counts, then the amounts in the currency and in CHF."""
+    lines = []
+    for a in report["accounts"]:
+        months = ", ".join("{} {}".format(month, n) for month, n in sorted(a["create_by_month"].items()))
+        lines.append(
+            "{}: {} to create ({} CHF) [{}]; Wise {} ({} CHF); ERPNext {} ({} CHF); {} already fed, {} already imported".format(
+                a["currency"],
+                a["create"],
+                a["create_chf"],
+                months or "none",
+                a["wise_balance"],
+                a["wise_balance_chf"],
+                a["erp_net"],
+                a["erp_net_chf"],
+                a["already_fed"],
+                a["already_imported"],
+            )
+        )
+    total = report["total"]
+    lines.append(
+        "Total CHF: create {}, Wise {}, ERPNext {}; days without a rate: {}".format(
+            total["create_chf"], total["wise_balance_chf"], total["erp_net_chf"], total["no_rate_days"]
+        )
+    )
+    return lines
+
+
+def _rate(currency, day, rates):
+    """The rate of a currency to CHF on a day (a string), from ERPNext's Currency Exchange rates. 0.0 when none is known.
+
+    Cached per run: a backfill covers many days, and ERPNext's fallback may fetch a rate from its configured source.
+    """
+    key = (currency, day)
+    if key not in rates:
+        rates[key] = get_exchange_rate(currency, "CHF", day) or 0.0
+    return rates[key]
+
+
+def _chf_sum(net_by_day, currency, rates):
+    """The sum of per-day amounts in CHF, each day at its own rate, and the count of days with no rate (left out)."""
+    total = 0.0
+    no_rate = 0
+    for day, net in net_by_day.items():
+        rate = _rate(currency, day, rates)
+        if rate:
+            total += net * rate
+        else:
+            no_rate += 1
+    return round(total, 2), no_rate
+
+
+def _net_by_day(rows):
+    """The feed rows' deposits less withdrawals, per day."""
+    net = collections.defaultdict(float)
+    for row in rows:
+        net[row["date"]] += row["deposit"] - row["withdrawal"]
+    return net
+
+
+def _by_month(rows):
+    """The count of feed rows per month (YYYY-MM)."""
+    return dict(collections.Counter(row["date"][:7] for row in rows))
 
 
 def ensure_bank_account(currency):
@@ -157,15 +252,16 @@ def _amount(balance):
     return float((balance.get("amount") or {}).get("value") or 0)
 
 
-def _erp_net(bank_account):
-    """The sum of the account's submitted or draft Bank Transactions, deposits less withdrawals. Opening balances are not in it."""
+def _erp_net_by_day(bank_account):
+    """The account's submitted or draft Bank Transactions, deposits less withdrawals, per day. Opening balances are not in it."""
     if not frappe.db.exists("Bank Account", bank_account):
-        return 0.0
-    net = frappe.db.sql(
-        "select coalesce(sum(deposit - withdrawal), 0) from `tabBank Transaction` where bank_account = %s and docstatus < 2",
+        return {}
+    days = frappe.db.sql(
+        "select date, coalesce(sum(deposit - withdrawal), 0) from `tabBank Transaction`"
+        " where bank_account = %s and docstatus < 2 group by date",
         bank_account,
-    )[0][0]
-    return float(net)
+    )
+    return {str(day): float(net) for day, net in days}
 
 
 def _unseen(rows):

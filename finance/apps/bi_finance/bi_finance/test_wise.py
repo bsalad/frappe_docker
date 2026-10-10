@@ -15,7 +15,7 @@ import json
 import unittest
 import urllib.error
 
-from bi_finance import bank_feed, wise_client
+from bi_finance import bank_feed, wise, wise_client
 
 TOKEN = "invented-token-0000"
 
@@ -181,6 +181,45 @@ class Dedupe(unittest.TestCase):
         second, summary = bank_feed.new_rows(rows, fed, self.imported())
         self.assertEqual(second, [])
         self.assertEqual(summary["already_fed"], 2)
+
+
+class Chf(unittest.TestCase):
+    # the rates are given, so no ERPNext lookup runs: a currency and a day with no entry in rates would ask ERPNext
+    def test_each_day_is_converted_at_its_own_rate(self):
+        rates = {("EUR", "2026-03-04"): 0.9, ("EUR", "2026-03-05"): 0.5}
+        net = collections.Counter({"2026-03-04": 100.0, "2026-03-05": -20.0})
+        self.assertEqual(wise._chf_sum(net, "EUR", rates), (80.0, 0))
+
+    def test_a_day_with_no_rate_is_left_out_and_counted(self):
+        rates = {("PLN", "2026-03-04"): 0.25, ("PLN", "2026-03-05"): 0.0}
+        net = {"2026-03-04": 40.0, "2026-03-05": 99.0}
+        self.assertEqual(wise._chf_sum(net, "PLN", rates), (10.0, 1))
+
+    def test_chf_needs_no_rate(self):
+        rates = {("CHF", "2026-03-04"): 1.0}
+        self.assertEqual(wise._chf_sum({"2026-03-04": 12.5}, "CHF", rates), (12.5, 0))
+
+    def test_net_by_day_adds_deposits_and_takes_withdrawals(self):
+        rows = [
+            {"date": "2026-03-04", "deposit": 10.0, "withdrawal": 0.0},
+            {"date": "2026-03-04", "deposit": 0.0, "withdrawal": 3.5},
+            {"date": "2026-03-05", "deposit": 0.0, "withdrawal": 1.0},
+        ]
+        self.assertEqual(dict(wise._net_by_day(rows)), {"2026-03-04": 6.5, "2026-03-05": -1.0})
+
+    def test_counts_per_month(self):
+        rows = [{"date": "2026-02-27"}, {"date": "2026-03-01"}, {"date": "2026-03-31"}]
+        self.assertEqual(wise._by_month(rows), {"2026-02": 1, "2026-03": 2})
+
+    def test_total_leaves_out_a_balance_with_no_rate(self):
+        accounts = [
+            {"wise_balance_chf": 100.0, "erp_net_chf": 90.0, "create_chf": 5.0, "no_rate_days": 0},
+            {"wise_balance_chf": None, "erp_net_chf": 2.0, "create_chf": 1.0, "no_rate_days": 1},
+        ]
+        self.assertEqual(
+            wise._total(accounts),
+            {"wise_balance_chf": 100.0, "erp_net_chf": 92.0, "create_chf": 6.0, "no_rate_days": 1},
+        )
 
 
 if __name__ == "__main__":
