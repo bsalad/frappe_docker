@@ -20,7 +20,7 @@ def line(date, amount, debit, credit, base=None, description="Invented posting")
 
 
 class BexioSideTest(unittest.TestCase):
-    NUMBERS = {127: "2200", 95: "1170", 96: "1171", 130: "2203", 200: "2202", 201: "1172"}
+    NUMBERS = {127: "2200", 95: "1170", 96: "1171", 130: "2203", 200: "2202", 201: "1172", 202: "2201"}
 
     def test_journal_lines_net_debit_minus_credit_per_quarter_and_gross_per_side(self):
         journal = [
@@ -32,8 +32,10 @@ class BexioSideTest(unittest.TestCase):
         self.assertEqual(balances, {
             ("2026Q1", "2200", "net"): Decimal("-60"),
             ("2026Q1", "2200", "gross"): Decimal("100"),
+            ("2026Q1", "2200", "flow"): Decimal("-60"),
             ("2026Q2", "1171", "net"): Decimal("7.5"),
             ("2026Q2", "1171", "gross"): Decimal("7.5"),
+            ("2026Q2", "1171", "flow"): Decimal("7.5"),
         })
 
     def test_lines_on_other_accounts_are_left_out(self):
@@ -48,9 +50,26 @@ class BexioSideTest(unittest.TestCase):
         ]
         self.assertEqual(mc.bexio_balances(journal, self.NUMBERS), {
             ("2026Q1", "2202", "gross"): Decimal("30"),
+            ("2026Q1", "2202", "flow"): Decimal("0"),
             ("2026Q1", "1171", "net"): Decimal("12"),
             ("2026Q1", "1171", "gross"): Decimal("12"),
+            ("2026Q1", "1171", "flow"): Decimal("12"),
             ("2026Q1", "1172", "gross"): Decimal("12"),
+            ("2026Q1", "1172", "flow"): Decimal("-12"),
+        })
+
+    def test_a_debit_and_a_credit_on_one_account_are_one_flow(self):
+        journal = [line("2026-02-10", 50, 96, 1), line("2026-02-10", 20, 1, 96)]
+        self.assertEqual(mc.bexio_balances(journal, self.NUMBERS), {
+            ("2026Q1", "1171", "net"): Decimal("30"),
+            ("2026Q1", "1171", "gross"): Decimal("50"),
+            ("2026Q1", "1171", "flow"): Decimal("30"),
+        })
+
+    def test_a_settlement_line_counts_in_the_net_but_not_in_the_flow(self):
+        journal = [line("2026-03-31", 500, 127, 202)]
+        self.assertEqual(mc.bexio_balances(journal, self.NUMBERS), {
+            ("2026Q1", "2200", "net"): Decimal("500"),
         })
 
     def test_a_foreign_currency_line_counts_in_chf(self):
@@ -58,6 +77,7 @@ class BexioSideTest(unittest.TestCase):
         self.assertEqual(mc.bexio_balances(journal, self.NUMBERS), {
             ("2025Q4", "1171", "net"): Decimal("204.17"),
             ("2025Q4", "1171", "gross"): Decimal("204.17"),
+            ("2025Q4", "1171", "flow"): Decimal("204.17"),
         })
 
     def test_each_line_is_rounded_to_the_rappen_as_erpnext_posts_it(self):
@@ -65,6 +85,7 @@ class BexioSideTest(unittest.TestCase):
         self.assertEqual(mc.bexio_balances(journal, self.NUMBERS), {
             ("2021Q2", "1171", "net"): Decimal("15.56"),
             ("2021Q2", "1171", "gross"): Decimal("15.56"),
+            ("2021Q2", "1171", "flow"): Decimal("15.56"),
         })
 
     def test_a_carry_forward_on_1_january_is_left_out(self):
@@ -76,6 +97,7 @@ class BexioSideTest(unittest.TestCase):
         self.assertEqual(mc.bexio_balances(journal, self.NUMBERS), {
             ("2021Q1", "1171", "net"): Decimal("10"),
             ("2021Q1", "1171", "gross"): Decimal("10"),
+            ("2021Q1", "1171", "flow"): Decimal("10"),
         })
 
 
@@ -110,12 +132,41 @@ class ErpSideTest(unittest.TestCase):
         self.assertEqual(balances, {
             ("2026Q1", "2200", "net"): Decimal("-120"),
             ("2026Q1", "2200", "gross"): Decimal("40"),
+            ("2026Q1", "2200", "flow"): Decimal("-40"),
             ("2026Q1", "2200", "erpnext_only"): Decimal("-80"),
             ("2026Q3", "1170", "net"): Decimal("8"),
             ("2026Q3", "1170", "erpnext_only"): Decimal("8"),
             ("2026Q1", "2202", "gross"): Decimal("30"),
+            ("2026Q1", "2202", "flow"): Decimal("30"),
             ("2026Q1", "2202", "erpnext_only"): Decimal("30"),
         })
+
+    def test_a_settlement_voucher_counts_in_the_net_but_not_in_the_flow(self):
+        names = dict(self.NAMES, **{"2201 - Settlement - bic": "2201"})
+        entries = [
+            {"account": "2200 - Geschuldete MWST - bic", "voucher_type": "Journal Entry", "voucher_no": "JE-7",
+             "posting_date": "2026-03-31", "debit": 60, "credit": 0},
+            {"account": "2201 - Settlement - bic", "voucher_type": "Journal Entry", "voucher_no": "JE-7",
+             "posting_date": "2026-03-31", "debit": 0, "credit": 60},
+        ]
+        keys = {**self.KEYS, ("Journal Entry", "JE-7"): "journal-30"}
+        balances = mc.erp_balances(entries, names, keys)
+        self.assertEqual(balances[("2026Q1", "2200", "net")], Decimal("60"))
+        self.assertNotIn(("2026Q1", "2200", "flow"), balances)
+
+    def test_a_carry_forward_voucher_counts_in_the_net_but_not_in_the_flow(self):
+        names = dict(self.NAMES, **{"1170 - Vorsteuer - bic": "1170", "9100 - Closing - bic": "9100"})
+        entries = [
+            {"account": "1170 - Vorsteuer - bic", "voucher_type": "Journal Entry", "voucher_no": "JE-8",
+             "posting_date": "2026-01-01", "debit": 88, "credit": 0},
+            {"account": "9100 - Closing - bic", "voucher_type": "Journal Entry", "voucher_no": "JE-8",
+             "posting_date": "2026-01-01", "debit": 0, "credit": 88},
+        ]
+        keys = {**self.KEYS, ("Journal Entry", "JE-8"): "journal-31"}
+        balances = mc.erp_balances(entries, names, keys)
+        self.assertEqual(balances[("2026Q1", "1170", "net")], Decimal("88"))
+        self.assertNotIn(("2026Q1", "1170", "flow"), balances)
+        self.assertNotIn(("2026Q1", "9100", "net"), balances)
 
     def test_a_manual_entry_transit_line_is_erpnext_only_but_its_sales_tax_is_bexios(self):
         self.assertFalse(mc.bexio_keyed({"voucher_type": "Journal Entry", "voucher_no": "JE-3"}, "2202", self.KEYS))
@@ -145,19 +196,38 @@ class CompareTest(unittest.TestCase):
 
     def test_a_missing_side_is_a_difference_on_its_quarter(self):
         bexio = {("2026Q1", "2200", "net"): Decimal("-80")}
-        erp = {("2026Q2", "1170", "gross"): Decimal("5")}
+        erp = {("2026Q2", "1170", "flow"): Decimal("5")}
         rows = mc.compare(bexio, erp)
         self.assertEqual(rows, [
             ("2026Q1", "2200", "net", Decimal("-80.00"), Decimal("0.00"), Decimal("80.00")),
-            ("2026Q2", "1170", "gross", Decimal("0.00"), Decimal("5.00"), Decimal("5.00")),
+            ("2026Q2", "1170", "flow", Decimal("0.00"), Decimal("5.00"), Decimal("5.00")),
         ])
         self.assertEqual(len(mc.differences(rows)), 2)
 
     def test_a_rappen_is_a_difference(self):
-        rows = mc.compare({("2026Q1", "2200", "gross"): Decimal("-80.00")},
-                          {("2026Q1", "2200", "gross"): Decimal("-80.01")})
+        rows = mc.compare({("2026Q1", "2200", "flow"): Decimal("-80.00")},
+                          {("2026Q1", "2200", "flow"): Decimal("-80.01")})
         self.assertEqual(mc.differences(rows), [
-            ("2026Q1", "2200", "gross", Decimal("-80.00"), Decimal("-80.01"), Decimal("-0.01")),
+            ("2026Q1", "2200", "flow", Decimal("-80.00"), Decimal("-80.01"), Decimal("-0.01")),
+        ])
+
+    def test_a_gross_difference_is_information_and_not_counted(self):
+        rows = mc.compare({("2026Q1", "1171", "gross"): Decimal("50")},
+                          {("2026Q1", "1171", "gross"): Decimal("30")})
+        self.assertEqual(mc.differences(rows), [])
+        self.assertIn("gross comparisons with a difference (information, not counted): 1",
+                      mc.summary_lines(rows))
+
+    def test_a_bexio_debit_and_credit_against_one_erpnext_net_row_is_no_flow_difference(self):
+        journal = [line("2026-02-10", 50, 96, 1), line("2026-02-10", 20, 1, 96)]
+        entries = [{"account": "1171 - Vorsteuer - bic", "voucher_type": "Journal Entry", "voucher_no": "JE-10",
+                    "posting_date": "2026-02-10", "debit": 30, "credit": 0}]
+        numbers = {"1171 - Vorsteuer - bic": "1171"}
+        keys = {("Journal Entry", "JE-10"): "vatfix-manual-9"}
+        rows = mc.compare(mc.bexio_balances(journal, BexioSideTest.NUMBERS), mc.erp_balances(entries, numbers, keys))
+        self.assertEqual(mc.differences(rows), [])
+        self.assertEqual([r for r in rows if r[2] == "gross"], [
+            ("2026Q1", "1171", "gross", Decimal("50.00"), Decimal("30.00"), Decimal("-20.00")),
         ])
 
     def test_summary_names_no_amounts(self):

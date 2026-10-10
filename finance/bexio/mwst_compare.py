@@ -10,6 +10,11 @@ bexio key (bexio_keyed); the other lines on the gross accounts are ERPNext-only 
 account, which shows that ERPNext's own pairs (invoices and their vatfix mirrors, a manual line and its correction)
 cancel. 2203 (Bezugsteuer) is compared on the net only.
 
+The difference count goes by the net, by the flow and by the ERPNext-only measure. The flow is the net of both sides of
+the lines on the gross accounts, without the settlement and the carry-forward: bexio books a manual entry's correction
+as a debit and a credit on one account where ERPNext holds one net row (import_manual_fix), so the gross debits differ
+while the flow agrees. The gross stays in the CSV as information.
+
 The per-rate Ziffern (302 to 343, 200) are not in the journal: bexio's invoices carry them, and they are not compared
 here. See the docs of erp-agpf's report for what remains.
 
@@ -44,8 +49,17 @@ ALL = COMPARED + ("2202", "1172")
 # The gross side per account: the flows that bexio's journal holds in full. 2200 is credited by the receipt's move from
 # 2202, 1170 and 1171 are debited by the move from 1172 and by the direct and manual input tax; 2202 and 1172 (transit)
 # are debited and credited by those moves only. Their other side is left out: bexio books it at the invoice and bill
-# date, and the export's journal holds only the manual part of it.
+# date, and the export's journal holds only the manual part of it. The gross is information; the difference count goes
+# by the flow, which is the net of both sides of the same lines (so one net row against a debit and a credit in bexio
+# is no difference), on the same accounts.
 GROSS = {"2200": "credit", "1170": "debit", "1171": "debit", "2202": "debit", "1172": "credit"}
+
+# The settlement account: bexio's quarterly settlement and ERPNext's are the vouchers that post against it, and their
+# lines are left out of the flow. CLOSING is the account of the year-start carry-forward: ERPNext's copies of those
+# entries are the vouchers with a leg on it, as check_trial_balance has them.
+SETTLEMENT = "2201"
+CLOSING = "9100"
+COUNTED = ("net", "flow", "erpnext_only")
 
 # The vouchers that carry a bexio key (bexio_id): the import made them from bexio's journal and documents. Their lines
 # on the gross accounts are the ERPNext side of the gross; every other line is ERPNext-only, see bexio_keyed().
@@ -64,8 +78,8 @@ def quarter_of(day):
 
 
 def numbers_by_id(accounts):
-    """bexio account id -> account number, for the accounts this check compares (net or gross)."""
-    return {a["id"]: str(a["account_no"]) for a in accounts if str(a["account_no"]) in ALL}
+    """bexio account id -> account number, for the accounts this check compares (net or gross) and the settlement's."""
+    return {a["id"]: str(a["account_no"]) for a in accounts if str(a["account_no"]) in ALL + (SETTLEMENT,)}
 
 
 def is_carry_forward(line):
@@ -84,19 +98,27 @@ def post(out, quarter, number, side, amount):
 
 def bexio_balances(journal, numbers):
     """Per (quarter, account number, measure) of the journal lines on the compared accounts, in CHF; the measure is
-    'net' or 'gross'. A foreign-currency line gives its CHF in base_currency_amount, as ERPNext books it; each line is
-    rounded to the rappen, as ERPNext posts it. A carry-forward line is left out: ERPNext holds the closing balance it
-    repeats."""
+    'net', 'gross' or 'flow'. A foreign-currency line gives its CHF in base_currency_amount, as ERPNext books it; each
+    line is rounded to the rappen, as ERPNext posts it. A carry-forward line is left out: ERPNext holds the closing
+    balance it repeats. The flow is the net of both sides of a line on a gross account, left out when the line is a
+    settlement (its other side is 2201)."""
     out = defaultdict(lambda: ZERO)
     for line in journal:
         if is_carry_forward(line):
             continue
         quarter = quarter_of(line["date"][:10])
         amount = Decimal(str(line["base_currency_amount"])).quantize(CENT, rounding=ROUND_HALF_UP)
-        if line["debit_account_id"] in numbers:
-            post(out, quarter, numbers[line["debit_account_id"]], "debit", amount)
-        if line["credit_account_id"] in numbers:
-            post(out, quarter, numbers[line["credit_account_id"]], "credit", amount)
+        debit = numbers.get(line["debit_account_id"])
+        credit = numbers.get(line["credit_account_id"])
+        if debit is not None:
+            post(out, quarter, debit, "debit", amount)
+        if credit is not None:
+            post(out, quarter, credit, "credit", amount)
+        if SETTLEMENT not in (debit, credit):
+            if debit in GROSS:
+                out[(quarter, debit, "flow")] += amount
+            if credit in GROSS:
+                out[(quarter, credit, "flow")] -= amount
     return dict(out)
 
 
@@ -121,7 +143,11 @@ def erp_balances(entries, numbers_by_name, keys):
     """Per (quarter, account number, measure) of the GL entries on the compared accounts. keys: (voucher type, voucher
     no) -> bexio_id. The net keeps all entries. The gross keeps the bexio-keyed ones; the erpnext_only measure is the
     net of the others, on the gross accounts, which must come to zero per quarter and account: the ERPNext-made pairs
-    (an invoice and its vatfix mirror, a wrong manual line and its correction) cancel in the quarter they are made."""
+    (an invoice and its vatfix mirror, a wrong manual line and its correction) cancel in the quarter they are made.
+    The flow is the net of the bexio-keyed lines on the gross accounts, left out for the vouchers that carry a leg on
+    the settlement account or on the closing account (the carry-forward): bexio's side leaves those lines out too."""
+    settled = {(e["voucher_type"], e["voucher_no"]) for e in entries if numbers_by_name.get(e["account"]) == SETTLEMENT}
+    carried = {(e["voucher_type"], e["voucher_no"]) for e in entries if numbers_by_name.get(e["account"]) == CLOSING}
     out = defaultdict(lambda: ZERO)
     for e in entries:
         number = numbers_by_name.get(e["account"])
@@ -135,6 +161,8 @@ def erp_balances(entries, numbers_by_name, keys):
         if number in GROSS:
             if bexio_keyed(e, number, keys):
                 out[(quarter, number, "gross")] += debit if GROSS[number] == "debit" else credit
+                if (e["voucher_type"], e["voucher_no"]) not in settled | carried:
+                    out[(quarter, number, "flow")] += debit - credit
             else:
                 out[(quarter, number, "erpnext_only")] += debit - credit
     return dict(out)
@@ -152,8 +180,9 @@ def compare(bexio, erp):
 
 
 def differences(rows):
-    """The rows whose two sides differ by at least a rappen."""
-    return [r for r in rows if r[5] != ZERO]
+    """The rows whose two sides differ by at least a rappen, on the counted measures (net, flow, ERPNext-only). The
+    gross rows are information: bexio books a netted pair in one voucher differently from ERPNext's one net row."""
+    return [r for r in rows if r[2] in COUNTED and r[5] != ZERO]
 
 
 def write_csv(path, rows):
@@ -169,14 +198,16 @@ def summary_lines(rows):
     """Counts only: the stdout names no amounts and no accounts' balances."""
     quarters = {r[0] for r in rows}
     bad = differences(rows)
+    gross_bad = [r for r in rows if r[2] == "gross" and r[5] != ZERO]
     return [
         "quarters compared: {}".format(len(quarters)),
-        "comparisons compared: {} (net of {} accounts, gross of {}, ERPNext-only nets on the gross accounts)".format(
-            len(rows), len(COMPARED), len(GROSS)),
+        "comparisons compared: {} (net of {} accounts, flow and gross of {}, ERPNext-only nets on the gross "
+        "accounts)".format(len(rows), len(COMPARED), len(GROSS)),
         "comparisons with a difference: {}".format(len(bad)),
-        "  by measure: net {}, gross {}, ERPNext-only {}".format(
-            *[len([r for r in bad if r[2] == m]) for m in ("net", "gross", "erpnext_only")]),
+        "  by measure: net {}, flow {}, ERPNext-only {}".format(
+            *[len([r for r in bad if r[2] == m]) for m in ("net", "flow", "erpnext_only")]),
         "quarters with a difference: {}".format(len({r[0] for r in bad})),
+        "gross comparisons with a difference (information, not counted): {}".format(len(gross_bad)),
     ]
 
 
@@ -196,7 +227,8 @@ def main(argv):
 
     erp = im.Erp.from_file(args.token_file)
     try:
-        accounts = erp.list("Account", [["company", "=", COMPANY], ["account_number", "in", list(ALL)]],
+        accounts = erp.list("Account",
+                            [["company", "=", COMPANY], ["account_number", "in", list(ALL + (SETTLEMENT, CLOSING))]],
                             ["name", "account_number"])
         names = {a["name"]: str(a["account_number"]) for a in accounts}
         entries = erp.list("GL Entry", [["account", "in", list(names)], ["is_cancelled", "=", 0]],

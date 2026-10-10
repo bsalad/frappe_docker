@@ -68,17 +68,21 @@ quarter of its payment. ERPNext books the same moves on the same dates
 (`erpnext-setup.md`, "Method"). `finance/bexio/mwst_compare.py` compares the
 payment-basis accounts per quarter, bexio's journal against the ERPNext General
 Ledger, read only: 2200 (Ziffer 399), 1170 and 1171 (Vorsteuer, Ziffer 400 to 420)
-and 2203 (Bezugsteuer), net per quarter; and the gross flows of 2200, 1170, 1171,
-2202 and 1172 per quarter. On ERPNext's side the gross keeps the lines whose voucher
+and 2203 (Bezugsteuer), net per quarter; and the flows of 2200, 1170, 1171, 2202 and
+1172 per quarter. The flow is the net of both sides of the lines on those accounts,
+without the settlement (the lines against 2201) and the 1 January carry-forward, so a
+debit and a credit of one account in one voucher count as one movement; the gross
+debits and credits are printed as information and are not counted. On ERPNext's side
+the gross, and so the flow, keeps the lines whose voucher
 carries bexio's key (`bexio_keyed()`): bexio's journal lines and manual entries, the
 direct card and bank entries the import made from bexio, the credit notes, and the
 vatfix-manual lines that book manual VAT on 1171 and 2203. The other lines of those
 accounts are ERPNext-only: the invoices with their invoice-date reversals, and the
 vatfix-invoice and vatfix-bill mirrors on 2200, 1170 and 1171. They must net to zero
 per quarter and account, which the check prints as its own measure. Result for 27
-quarters (2020 Q2 to 2026 Q4): 230 comparisons; net 0 differences; ERPNext-only 0;
-gross 5 differences, all on 1171, in 5 quarters (2023 Q4, 2024 Q2, 2025 Q1, 2026 Q1,
-2026 Q2).
+quarters (2020 Q2 to 2026 Q4): 338 comparisons; net 0 differences; flow 0; ERPNext-only
+0. The gross, which is information, differs in 5 quarters (2023 Q4, 2024 Q2, 2025 Q1,
+2026 Q1, 2026 Q2), all on 1171; see the paragraph on the gross below.
 
 bexio settles in three steps, and the two GL checks of `mwst_report.py` measure its
 moves, not the net. On receipt, the sales VAT moves 2202 -> 2200; on the bill's payment,
@@ -110,13 +114,19 @@ credit notes, which post their transit VAT to 2202 directly, as bexio does; thei
 every quarter. The invoice-date mirrors (vatfix-invoice, vatfix-bill) are ERPNext-only
 on 2200, 1170 and 1171 and net against the invoices.
 
-Not explained yet (the gross differences, 5 in 5 quarters, all on 1171): bexio's direct
-card and bank input tax is in ERPNext and matches bexio per day in every quarter. The
-differences sit on 12 days (2023 Q4 1, 2024 Q2 6, 2025 Q1 2, 2026 Q1 2, 2026 Q2 1), and
-on each of them the ERPNext line is a `vatfix-manual-<id>` entry whose 1171 debit differs
-from bexio's 1171 debits of that day; other `vatfix-manual` days match. So the gap is in
-those correction entries (erp-f6ab), not in the direct input tax and not in the
-comparison. The settlement's input leg differs from the ERPNext input sum in 13 of 21
+Explained: the gross differences (5 in 5 quarters, all on 1171) are netting inside a
+voucher, not a difference in the books. bexio's direct card and bank input tax is in
+ERPNext and matches bexio per day in every quarter. The differences sit on 12 days (2023
+Q4 1, 2024 Q2 6, 2025 Q1 2, 2026 Q1 2, 2026 Q2 1), and on each of them the ERPNext line
+is a `vatfix-manual-<id>` entry. `import_manual_fix` books the correction of a bexio
+manual entry as one row per account of the difference, so a manual entry that bexio
+posts as a debit and a credit on 1171 becomes one net debit in ERPNext. On the three 2026
+Q1 days, bexio's 1171 debits minus its credits of the day, the settlement left aside,
+equal the `vatfix-manual` debits of that day to the rappen. The nets agree in every
+quarter; only the gross debits differ, which is why the difference count goes by the
+flow.
+
+Not explained yet: the settlement's input leg differs from the ERPNext input sum in 13 of 21
 settled quarters, which the first run attributed to the direct input tax; that is not
 proven (the payment-mode report reads the direct input tax since erp-9fkd). The settlement's
 sales leg differs in 3, two of them by the same amount in adjacent quarters (2022 Q2 and Q3).
