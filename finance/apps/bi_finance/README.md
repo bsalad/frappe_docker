@@ -53,3 +53,11 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   on the Treasury workspace (`workspace/treasury`); `test_treasury.py` checks them.
 - `bi_finance/test_cash_forecast.py`: offline tests of `cash_forecast.py` with invented data:
   `python3 -m unittest bi_finance.test_cash_forecast` from this directory.
+- `bi_finance/cash_conversion.py`: the Cash Conversion Cycle arithmetic, pure Python: DSO, DPO and DIO per month
+  (balance at month end over the month's flow, times its days; DIO 0 with no stock), CCC = DSO + DIO - DPO, the
+  rolling 12-month values, and the actual days to pay from the Payment Entry references. Account groups too.
+- `bi_finance/bi_finance/bi_finance/report/cash_conversion_cycle/`: the report "Cash Conversion Cycle" (GL and Payment
+  Entries, since 2019), with the number cards `bi_finance/bi_finance/bi_finance/number_card/cash_conversion_*` and the
+  dashboard chart `bi_finance/bi_finance/bi_finance/dashboard_chart/cash_conversion_trend` (the module folder, where migrate syncs them).
+- `bi_finance/test_cash_conversion.py`: offline tests with invented numbers: `python3 -m unittest bi_finance.test_cash_conversion`
+  from this directory (no frappe needed).

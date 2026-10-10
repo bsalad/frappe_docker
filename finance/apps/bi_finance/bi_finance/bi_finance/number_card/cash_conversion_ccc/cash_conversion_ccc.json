@@ -1,0 +1,20 @@
+{
+ "doctype": "Number Card",
+ "name": "Cash Conversion CCC",
+ "label": "CCC, 12 months (days)",
+ "type": "Report",
+ "report_name": "Cash Conversion Cycle",
+ "report_field": "ccc_12",
+ "function": "Sum",
+ "report_function": "Sum",
+ "filters_json": "{\"latest_only\": 1}",
+ "is_public": 1,
+ "is_standard": 1,
+ "module": "BI Finance",
+ "creation": "2026-10-10 09:00:00.000000",
+ "modified": "2026-10-10 09:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator",
+ "docstatus": 0,
+ "idx": 0
+}

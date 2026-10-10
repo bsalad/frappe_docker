@@ -1,0 +1,26 @@
+{
+ "doctype": "Dashboard Chart",
+ "name": "Cash Conversion Trend",
+ "chart_name": "Cash Conversion Trend (12 months)",
+ "chart_type": "Report",
+ "report_name": "Cash Conversion Cycle",
+ "use_report_chart": 0,
+ "x_field": "month",
+ "y_axis": [
+  {"doctype": "Dashboard Chart Field", "y_field": "dso_12"},
+  {"doctype": "Dashboard Chart Field", "y_field": "dpo_12"},
+  {"doctype": "Dashboard Chart Field", "y_field": "dio_12"},
+  {"doctype": "Dashboard Chart Field", "y_field": "ccc_12"}
+ ],
+ "type": "Line",
+ "filters_json": "{}",
+ "is_public": 1,
+ "is_standard": 1,
+ "module": "BI Finance",
+ "creation": "2026-10-10 09:00:00.000000",
+ "modified": "2026-10-10 09:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator",
+ "docstatus": 0,
+ "idx": 0
+}
