@@ -49,6 +49,9 @@ KINDS = {
     "delivery": ("Delivery Note", ""),
 }
 DOCTYPES = sorted({doctype for doctype, _ in KINDS.values()})
+# the prefix of a File's bexio_id, for the kinds whose ids a Sales Invoice's id can equal: File.bexio_id is unique
+# across all Files, so an offer 3 and an invoice 3 would collide. Invoice Files keep their bare id (already keyed).
+FILE_KEY_PREFIX = {"order": "order-", "offer": "offer-", "delivery": "delivery-"}
 
 
 class Lookups:
@@ -89,20 +92,23 @@ def load_pdfs(export_dir):
 
 
 def plan(pdfs, lookups, export_dir):
-    """One row per PDF of the export: its outcome, the ERPNext doctype and document it goes to, and its bexio id."""
+    """One row per PDF of the export: its outcome, the ERPNext doctype and document it goes to, its bexio id and the
+    bexio_id its File is keyed by."""
     rows = []
     for row in pdfs:
         kind = row["kind"]
-        bexio_id = None
+        bexio_id, file_key = None, None
         doctype, document, outcome = None, None, None
         if kind in KINDS:
             doctype, prefix = KINDS[kind]
             bexio_id = prefix + str(row["id"])
+            file_key = FILE_KEY_PREFIX.get(kind, "") + bexio_id
             document = lookups.documents.get((doctype, bexio_id))
         if document is None:
             outcome = NO_DOCUMENT
-        elif any(key == bexio_id or (not key and name == row["file"])
+        elif any(key in (file_key, bexio_id) or (not key and name == row["file"])
                  for key, name in lookups.attached.get((doctype, document), [])):
+            # the bare key is a File uploaded before the kind prefix (offer 2 in the first run): the same document, the same PDF
             outcome = ATTACHED
         else:
             path = document_pdf_path(export_dir, row)
@@ -112,7 +118,7 @@ def plan(pdfs, lookups, export_dir):
                 outcome = "size differs"
             else:
                 outcome = ATTACH
-        rows.append({"kind": kind, "id": row["id"], "bexio_id": bexio_id, "file": row["file"],
+        rows.append({"kind": kind, "id": row["id"], "bexio_id": bexio_id, "file_key": file_key, "file": row["file"],
                      "doctype": doctype, "document": document, "outcome": outcome, "bytes": row["bytes"]})
     return rows
 
@@ -132,7 +138,7 @@ def apply(rows, export_dir, erp):
         if row["outcome"] != ATTACH:
             continue
         with open(document_pdf_path(export_dir, row), "rb") as f:
-            imf.upload(erp, row["document"], row["bexio_id"], row["file"], f.read(), doctype=row["doctype"])
+            imf.upload(erp, row["document"], row["file_key"], row["file"], f.read(), doctype=row["doctype"])
         uploaded += 1
     return uploaded
 

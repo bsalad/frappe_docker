@@ -163,7 +163,7 @@ class ApplyTest(unittest.TestCase):
                 uploaded = idp.apply(rows, root, erp)
         self.assertEqual(uploaded, 2)
         self.assertEqual(calls, [("Sales Invoice", "SINV-4", "credit-4", "credit_voucher-4.pdf", data),
-                                 ("Quotation", "QTN-3", "3", "offer-3.pdf", data)])
+                                 ("Quotation", "QTN-3", "offer-3", "offer-3.pdf", data)])
 
     def test_a_second_run_finds_the_files_the_first_one_attached(self):
         data = b"%PDF-invented"
@@ -182,6 +182,36 @@ class ApplyTest(unittest.TestCase):
             self.assertEqual(idp.apply(rows, root, erp), 0)
         self.assertEqual([r["outcome"] for r in rows], [idp.ATTACHED])
         self.assertEqual(sum(1 for f in erp.docs["File"].values() if f.get("bexio_id") == "1"), 1)
+
+    def test_an_offer_and_an_invoice_with_the_same_number_get_different_file_keys(self):
+        # File.bexio_id is unique: invoice 3 and offer 3 must not both be keyed "3"
+        data = b"%PDF-invented"
+        erp = erp_with(sales_invoices=[{"name": "SINV-3", "bexio_id": "3"}], quotations=[{"name": "QTN-3", "bexio_id": "3"}])
+
+        def fake_upload(erp, document, file_id, file_name, content, doctype=imf.DOCTYPE):
+            erp.insert("File", {"attached_to_doctype": doctype, "attached_to_name": document,
+                                "file_name": file_name, "bexio_id": file_id})
+
+        with tempfile.TemporaryDirectory() as root:
+            write_export(root, pdfs=[pdf("invoice", 3, data), pdf("offer", 3, data)],
+                         contents={"invoice-3.pdf": data, "offer-3.pdf": data})
+            with mock.patch.object(imf, "upload", fake_upload):
+                self.assertEqual(idp.apply(idp.run(root, erp), root, erp), 2)
+            rows = idp.run(root, erp)
+            self.assertEqual(idp.apply(rows, root, erp), 0)
+        self.assertEqual([r["file_key"] for r in rows], ["3", "offer-3"])
+        self.assertEqual([r["outcome"] for r in rows], [idp.ATTACHED, idp.ATTACHED])
+        self.assertEqual(sorted(f["bexio_id"] for f in erp.docs["File"].values()), ["3", "offer-3"])
+
+    def test_an_offer_file_keyed_before_the_prefix_is_attached_not_uploaded_again(self):
+        # the first run keyed offer 2 by its bare id: that File is the same PDF, so the rerun finds it
+        data = b"%PDF-invented"
+        erp = erp_with(quotations=[{"name": "QTN-2", "bexio_id": "2"}], files=[
+            {"name": "FILE-2", "attached_to_doctype": "Quotation", "attached_to_name": "QTN-2",
+             "file_name": "offer-2.pdf", "bexio_id": "2"}])
+        with tempfile.TemporaryDirectory() as root:
+            rows = idp.plan([pdf("offer", 2, data)], idp.Lookups.from_erp(erp), root)
+        self.assertEqual((rows[0]["outcome"], rows[0]["file_key"]), (idp.ATTACHED, "offer-2"))
 
     def test_an_upload_request_names_the_sales_document_not_a_purchase_invoice(self):
         erp = im.Erp("https://erp.test/api", "key", "secret")
