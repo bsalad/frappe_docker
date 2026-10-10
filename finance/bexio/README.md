@@ -180,6 +180,25 @@ paid). The differences and unmapped records, by bexio id, go to
   than 5 rappen, or by a difference no line or discount can take. It is listed by
   bexio id in `<private>/bexio-sales-differences.txt` and in the loader's output.
 
+### Credit note (import_credit_note.py)
+
+bexio's credit-voucher endpoint answers 404, so the export has no credit note
+file. The one credit note is built from the export's two `KbCreditVoucher`
+journal lines (revenue and VAT, both against the receivables), the payment row
+of the invoice it is applied to (its `kb_credit_voucher_id`) and that invoice.
+It becomes a Sales Invoice return against the invoice, with a negative item and
+a negative VAT row, named by bexio's own number from the payment row's text, and
+`update_outstanding_for_self` 0 so the return reduces the invoice's outstanding.
+The module refuses a second credit note rather than guessing.
+
+    python3 finance/bexio/import_credit_note.py [--export DIR] [--write FILE]
+
+A dry run reads ERPNext and prints the totals; `--write` also writes the draft
+plan for the loader (`sh finance/scripts/bexio-drafts.sh <plan> submit`), which
+submits it. Its customer, currency and VAT account come from the same lookups as
+the invoices. The address is not copied: the sales documents take their customer
+only, as the invoices do, so the return's address is the customer's.
+
 ## Currencies
 
 ERPNext 16 requires the party account's currency to equal the document's, and the
