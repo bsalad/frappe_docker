@@ -2,8 +2,8 @@
 
 Step four of the bexio pipeline, after import_master.py has made the Bank Accounts (keyed by bexio_id). Each
 function takes one export record and the lookups and returns the ERPNext Bank Transaction as a dict, not yet
-inserted. nothing is written to ERPNext here: --dry-run reads ERPNext and prints totals only; --write keeps the
-documents and their reconciliations in a private file for the loader (bexio-drafts.py, submit mode).
+inserted. nothing is written to ERPNext here except by --cancel --confirm: --dry-run reads ERPNext and prints totals only;
+--write keeps the documents and their reconciliations in a private file for the loader (bexio-drafts.py, submit mode).
 
 The export's bank_transactions.json has amount unsigned (always positive) and type CREDIT (money in) or DEBIT
 (money out). status says whether bexio has booked the transaction: reconciled and auto_reconciled are booked

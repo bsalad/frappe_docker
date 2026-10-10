@@ -462,6 +462,10 @@ second run; the dry run of each step is the rerun check (it reads ERPNext and wr
    else the one named in the bank title; else a combination of Payment and Journal Entries within 5 days. A voucher that
    another open line is also near, or that ERPNext holds for another transaction, is not taken. The rest stays open,
    with its reason in the `--unmatched` file.
+   `import_bank.py --cancel LIST [--confirm]` cancels the Bank Transactions named in a private list file (one name per
+   line), only where they are submitted, on the Wise CHF account and unallocated; without `--confirm` it only checks
+   and prints the count per class. A cancelled line keeps its trace and posts no GL. It was used once, for the August
+   duplicates bexio's own sync holds (erp-aapr); bexio's export holds those lines, so the importer maps them one to one.
 6. Manual entries: `import_manual_entries.py --write FILE`, then submit; `import_manual_fix.py --write FILE`, then submit.
 7. Payroll journal lines: `import_payroll.py --write FILE`, then submit, then `import_payroll.py --check`.
 8. Opening entry: `import_opening.py --dry-run` (no entry is needed when the first business year has no opening lines).
