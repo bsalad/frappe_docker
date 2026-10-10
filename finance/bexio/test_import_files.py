@@ -58,16 +58,15 @@ def invoice(name, bexio_id):
 
 
 class LookupsTest(unittest.TestCase):
-    def test_files_on_a_purchase_invoice_are_read_with_their_description(self):
-        # the list query refuses description, so the marker must come from a per-File read
+    def test_files_on_a_purchase_invoice_are_read_with_their_bexio_id(self):
         erp = erp_with([invoice("PINV-1", "10"), invoice("PINV-2", "11")], [
             {"name": "FILE-1", "attached_to_doctype": "Purchase Invoice", "attached_to_name": "PINV-1",
-             "file_name": "a.pdf", "file_size": 3, "description": "bexio file f-1"},
+             "file_name": "a.pdf", "file_size": 3, "bexio_id": "f-1"},
         ])
         lookups = imf.Lookups.from_erp(erp)
         self.assertEqual(lookups.documents, {"10": "PINV-1", "11": "PINV-2"})
         self.assertEqual(lookups.attached, {"PINV-1": [
-            {"name": "FILE-1", "attached_to_name": "PINV-1", "file_name": "a.pdf", "file_size": 3, "description": "bexio file f-1"}]})
+            {"name": "FILE-1", "attached_to_name": "PINV-1", "file_name": "a.pdf", "file_size": 3, "bexio_id": "f-1"}]})
 
 
 class LoadFilesTest(unittest.TestCase):
@@ -149,22 +148,29 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(imf.classify("f-1", meta("f-1", "Beleg.pdf", data), ["10"], lookups, self.root),
                          (imf.ATTACH, "PINV-1"))
 
-    def test_marker_in_description_means_attached(self):
+    def test_bexio_id_on_the_file_means_attached_whatever_its_name(self):
         data = b"x"
         write_export(self.root, contents={"f-1": ("a.pdf", data)})
-        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "renamed.pdf", "file_size": 99, "description": "bexio file f-1"}]})
+        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "renamed.pdf", "file_size": 99, "bexio_id": "f-1"}]})
         self.assertEqual(self.outcome("f-1", ["10"], meta("f-1", "a.pdf", data), lookups), imf.ATTACHED)
 
-    def test_same_name_and_size_means_attached(self):
+    def test_same_name_and_size_means_attached_for_a_file_without_bexio_id(self):
         data = b"xyz"
         write_export(self.root, contents={"f-1": ("a.pdf", data)})
-        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "a.pdf", "file_size": 3, "description": ""}]})
+        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "a.pdf", "file_size": 3, "bexio_id": None}]})
         self.assertEqual(self.outcome("f-1", ["10"], meta("f-1", "a.pdf", data), lookups), imf.ATTACHED)
 
-    def test_marker_matches_whole_so_file_1_does_not_match_file_12(self):
+    def test_bexio_id_matches_whole_so_file_1_does_not_match_file_12(self):
         data = b"x"
         write_export(self.root, contents={"f-1": ("a.pdf", data)})
-        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "b.pdf", "file_size": 7, "description": "bexio file f-12"}]})
+        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "b.pdf", "file_size": 7, "bexio_id": "f-12"}]})
+        self.assertEqual(self.outcome("f-1", ["10"], meta("f-1", "a.pdf", data), lookups), imf.ATTACH)
+
+    def test_a_file_keyed_by_another_bexio_id_does_not_match_by_name_and_size(self):
+        # two bexio files of one name and size: the File keyed for f-12 is not f-1, so f-1 is still to attach
+        data = b"x"
+        write_export(self.root, contents={"f-1": ("a.pdf", data)})
+        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "a.pdf", "file_size": 1, "bexio_id": "f-12"}]})
         self.assertEqual(self.outcome("f-1", ["10"], meta("f-1", "a.pdf", data), lookups), imf.ATTACH)
 
     def test_no_owner_is_unlinked(self):
@@ -187,7 +193,7 @@ class ClassifyTest(unittest.TestCase):
 
     def test_a_row_without_name_or_size_is_no_content_even_next_to_other_files(self):
         # a bill attachment whose download failed (export.py) has neither; the other files of the document must not matter
-        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": None, "file_size": None, "description": ""}]})
+        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": None, "file_size": None, "bexio_id": None}]})
         row = {"id": "u-1", "uuid": "u-1", "bill_id": "10"}
         self.assertEqual(self.outcome("u-1", ["10"], row, lookups), "no content")
 
@@ -203,14 +209,14 @@ class ClassifyTest(unittest.TestCase):
     def test_image_re_encoded_by_frappe_is_attached_not_attached_again(self):
         # Frappe strips the EXIF of an uploaded image: the File keeps the name, not the size
         write_export(self.root, contents={"f-1": ("a.jpg", b"exif-invented-bytes")})
-        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "a.jpg", "file_size": 10, "description": ""}]})
+        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "a.jpg", "file_size": 10, "bexio_id": None}]})
         self.assertEqual(imf.classify("f-1", meta("f-1", "a.jpg", b"exif-invented-bytes"), ["10"], lookups, self.root),
                          (imf.REENCODED, "PINV-1"))
 
     def test_a_pdf_of_another_size_under_the_same_name_is_still_a_difference(self):
         # the content on disk is two bytes, the metadata says four: a PDF is not re-encoded, so this is a difference
         write_export(self.root, contents={"f-1": ("a.pdf", b"xx")})
-        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "a.pdf", "file_size": 10, "description": ""}]})
+        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "a.pdf", "file_size": 10, "bexio_id": None}]})
         self.assertEqual(self.outcome("f-1", ["10"], meta("f-1", "a.pdf", b"four"), lookups), "size differs")
 
 
@@ -276,9 +282,10 @@ class RunTest(unittest.TestCase):
             write_export(root, bills=[{"id": 10, "attachment_ids": ["f-1"], "bill_date": "2026-01-01",
                                        "currency_code": "CHF", "gross": 1, "net": 1, "positions": []}])
             erp = erp_with([invoice("PINV-1", "10")])
-            rows, has_files = imf.run(root, erp)
+            rows, has_files, backfills = imf.run(root, erp)
         self.assertFalse(has_files)
         self.assertEqual([(r["file"], r["outcome"]) for r in rows], [("f-1", "no metadata")])
+        self.assertEqual(backfills, ([], []))
         self.assertEqual(erp.writes, 0)
 
     def test_run_attaches_nothing_and_reads_only(self):
@@ -287,10 +294,84 @@ class RunTest(unittest.TestCase):
                                        "currency_code": "CHF", "gross": 1, "net": 1, "positions": []}],
                          files=[meta("f-1", "a.pdf", b"xx")], contents={"f-1": ("a.pdf", b"xx")})
             erp = erp_with([invoice("PINV-1", "10")])
-            rows, has_files = imf.run(root, erp)
+            rows, has_files, backfills = imf.run(root, erp)
         self.assertTrue(has_files)
         self.assertEqual([(r["file"], r["outcome"], r["size"]) for r in rows], [("f-1", "attach", 2)])
         self.assertEqual(erp.writes, 0)
+
+
+class BackfillPlanTest(unittest.TestCase):
+    """Invented data: Purchase Invoice PINV-1 (bexio id 10) with planned files f-1 and f-2."""
+
+    def plan_for(self, files, attached):
+        rows = [{"file": "f-1", "document": "PINV-1", "outcome": "attached"},
+                {"file": "f-2", "document": "PINV-1", "outcome": "attached"}]
+        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": attached})
+        return imf.backfill_plan(rows, files, lookups)
+
+    def files(self):
+        return {"f-1": meta("f-1", "a.pdf", b"xx"), "f-2": meta("f-2", "b.pdf", b"yyy")}
+
+    def test_a_file_without_bexio_id_matching_one_planned_file_is_written(self):
+        writes, listed = self.plan_for(self.files(), [{"name": "FILE-1", "file_name": "a.pdf", "file_size": 2, "bexio_id": None}])
+        self.assertEqual((writes, listed), ([("FILE-1", "f-1")], []))
+
+    def test_a_file_with_bexio_id_is_left_alone(self):
+        writes, listed = self.plan_for(self.files(), [{"name": "FILE-1", "file_name": "a.pdf", "file_size": 2, "bexio_id": "f-1"}])
+        self.assertEqual((writes, listed), ([], []))
+
+    def test_a_file_matching_no_planned_file_is_listed_by_name(self):
+        writes, listed = self.plan_for(self.files(), [{"name": "FILE-1", "file_name": "other.pdf", "file_size": 2, "bexio_id": None}])
+        self.assertEqual((writes, listed), ([], ["other.pdf"]))
+
+    def test_a_file_matching_two_planned_files_is_listed(self):
+        files = {"f-1": meta("f-1", "a.pdf", b"xx"), "f-2": meta("f-2", "a.pdf", b"yy")}
+        writes, listed = self.plan_for(files, [{"name": "FILE-1", "file_name": "a.pdf", "file_size": 2, "bexio_id": None}])
+        self.assertEqual((writes, listed), ([], ["a.pdf"]))
+
+    def test_two_files_claiming_one_planned_file_are_both_listed(self):
+        attached = [{"name": "FILE-1", "file_name": "a.pdf", "file_size": 2, "bexio_id": None},
+                    {"name": "FILE-2", "file_name": "a.pdf", "file_size": 2, "bexio_id": None}]
+        writes, listed = self.plan_for({"f-1": meta("f-1", "a.pdf", b"xx")}, attached)
+        self.assertEqual((writes, listed), ([], ["a.pdf", "a.pdf"]))
+
+    def test_a_planned_file_already_keyed_on_another_file_is_not_claimed_again(self):
+        attached = [{"name": "FILE-1", "file_name": "a.pdf", "file_size": 2, "bexio_id": "f-1"},
+                    {"name": "FILE-2", "file_name": "a.pdf", "file_size": 2, "bexio_id": None}]
+        writes, listed = self.plan_for({"f-1": meta("f-1", "a.pdf", b"xx")}, attached)
+        self.assertEqual((writes, listed), ([], ["a.pdf"]))
+
+    def test_a_re_encoded_image_matches_by_name(self):
+        # Frappe strips the EXIF of an image: the size differs, the name stays
+        files = {"f-1": meta("f-1", "a.jpg", b"exif-invented-bytes")}
+        writes, listed = self.plan_for(files, [{"name": "FILE-1", "file_name": "a.jpg", "file_size": 10, "bexio_id": None}])
+        self.assertEqual((writes, listed), ([("FILE-1", "f-1")], []))
+
+    def test_a_pdf_of_another_size_under_the_same_name_is_listed(self):
+        writes, listed = self.plan_for(self.files(), [{"name": "FILE-1", "file_name": "a.pdf", "file_size": 99, "bexio_id": None}])
+        self.assertEqual((writes, listed), ([], ["a.pdf"]))
+
+    def test_no_export_metadata_means_nothing_matches(self):
+        writes, listed = self.plan_for({}, [{"name": "FILE-1", "file_name": "a.pdf", "file_size": 2, "bexio_id": None}])
+        self.assertEqual((writes, listed), ([], ["a.pdf"]))
+
+
+class BackfillTest(unittest.TestCase):
+    def test_backfill_writes_the_bexio_id_on_each_file_it_is_given(self):
+        erp = erp_with([], [{"name": "FILE-1", "file_name": "a.pdf", "file_size": 2, "bexio_id": None}])
+        self.assertEqual(imf.backfill([("FILE-1", "f-1")], erp), 1)
+        self.assertEqual(erp.get("File", "FILE-1")["bexio_id"], "f-1")
+        self.assertEqual(erp.writes, 1)
+
+
+class UploadMarkTest(unittest.TestCase):
+    def test_an_uploaded_file_carries_its_bexio_id(self):
+        erp = im.Erp("https://erp.test/api", "key", "secret")
+        response = io.BytesIO(json.dumps({"message": {"name": "FILE-1"}}).encode("utf-8"))
+        with mock.patch("urllib.request.urlopen", return_value=response), mock.patch.object(erp, "update") as update:
+            name = imf.upload(erp, "PINV-1", "f-1", "a.pdf", b"xx")
+        self.assertEqual(name, "FILE-1")
+        update.assert_called_once_with("File", "FILE-1", {"bexio_id": "f-1"})
 
 
 class ApplyTest(unittest.TestCase):
@@ -305,6 +386,13 @@ class ApplyTest(unittest.TestCase):
                 uploaded = imf.apply(rows, root, None)
         self.assertEqual(uploaded, 1)
         self.assertEqual(calls, [("PINV-1", "f-1", "a.pdf", b"xx")])
+
+    def test_the_report_counts_the_files_to_backfill_and_the_unmatched_ones(self):
+        text = imf.report([], "/private/export", True, backfills=([("FILE-1", "f-1")], ["a.pdf"]))
+        self.assertIn("to backfill", text)
+        self.assertIn("unmatched", text)
+        self.assertNotIn("f-1", text)
+        self.assertNotIn("a.pdf", text)
 
     def test_applied_report_says_files_were_uploaded(self):
         text = imf.report([], "/private/export", True, applied=True)

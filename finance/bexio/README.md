@@ -214,12 +214,18 @@ It prints totals per doctype only. The bexio ids of the files it cannot place go
 `<private>/bexio-files-dry-run.txt`. Rows: `no metadata` (no `files.json` or `bill_attachments.json`
 entry), `no content` (no file under `files/`), `size differs`, `no document` (the Purchase Invoice is not in
 ERPNext yet), `unlinked` (no record lists it), `shared` (two records list it). A file already attached
-is recognised by the description `bexio file <id>` or by name and size, so a second run skips it.
+is recognised by its `bexio_id`, or, for a File that has none, by name and size, so a second run skips it.
+
+The key is `File.bexio_id` (custom field, `swiss-setup.sh fields`). `--apply` writes it on each new
+upload, and backfills the Files attached before it existed: a File without a `bexio_id` whose name and
+size match exactly one planned file of its Purchase Invoice gets that file's id (a re-encoded image
+matches by name). `to backfill` counts those; a File that matches none or several stays as it is and
+is listed by its File name in `<private>/bexio-files-dry-run.txt`.
 
 The bills list their files by uuid, and `/3.0/files` has the integer id and the same uuid. Both
 `files.json` and `bill_attachments.json` (the attachments of the bills, `export.py --only bill_attachments`,
-content from `/3.0/files/<uuid>/download`) are keyed by uuid; the marker `bexio file <uuid>` is the
-uuid, not the integer id.
+content from `/3.0/files/<uuid>/download`) are keyed by uuid; the `bexio_id` is the uuid,
+not the integer id.
 
 ## Purchase bills
 

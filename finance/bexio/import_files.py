@@ -7,7 +7,8 @@ books keep their vouchers (GeBüV, see finance/docs/archiving.md). The export ho
 metadata in files.json and the content in files/<id><ext>.
 
 --dry-run (the default) reads ERPNext and writes nothing. --apply uploads each file that
-would be attached, through the API user (upload_file, then the bexio id as its description):
+would be attached, through the API user (upload_file, then the bexio id as its File's bexio_id),
+and writes the bexio_id on each attached File that lacks one (the backfill):
 
     python3 finance/bexio/import_files.py [--dry-run] [--export DIR]
     python3 finance/bexio/import_files.py --apply [--export DIR]
@@ -15,13 +16,13 @@ would be attached, through the API user (upload_file, then the bexio id as its d
 --export defaults to the newest directory under <private>/bexio-export/. A file is found by its uuid:
 files.json (the /3.0/files list) and bill_attachments.json (the attachments of the bills, export.py)
 both hold the uuid that a bill lists in attachment_ids. The dry run prints
-totals per doctype only. The bexio ids of the files it cannot place go to
-<private>/bexio-files-dry-run.txt, never to the screen or the repository.
+totals per doctype only. The bexio ids of the files it cannot place, and the names of the Files
+the backfill cannot match, go to <private>/bexio-files-dry-run.txt, never to the screen or the repository.
 
-Idempotent: a file is already attached when its Purchase Invoice has a File with the marker
-"bexio file <id>" as its description, or with the same name and size. The live run skips
-those. A file that no document lists is listed, not attached; so is a file that two documents
-list, since a File has one document.
+Idempotent: a file is already attached when its Purchase Invoice has a File with its bexio_id, or,
+for a File without one, with the same name and size. The live run skips those. A file that no
+document lists is listed, not attached; so is a file that two documents list, since a File has one
+document.
 
 Standard library only, apart from import_master.py and import_purchase.py.
 """
@@ -43,7 +44,6 @@ FILES_FILE = "files.json"
 BILL_ATTACHMENTS_FILE = "bill_attachments.json"
 CONTENT_DIR = "files"
 PROBLEMS_FILE = "bexio-files-dry-run.txt"
-MARKER = "bexio file {}"
 
 ATTACH, ATTACHED, REENCODED = "attach", "attached", "re-encoded"
 PROBLEMS = ("unlinked", "shared", "no metadata", "no document", "no content", "size differs")
@@ -62,9 +62,7 @@ class Lookups:
         documents = {r["bexio_id"]: r["name"] for r in erp.list(DOCTYPE, [["bexio_id", "is", "set"]], ["name", "bexio_id"])}
         attached = {}
         for f in erp.list("File", [["attached_to_doctype", "=", DOCTYPE]],
-                          ["name", "attached_to_name", "file_name", "file_size"]):
-            # description is a long text field, which a list query refuses; it is read per File
-            f["description"] = erp.get("File", f["name"]).get("description")
+                          ["name", "attached_to_name", "file_name", "file_size", "bexio_id"]):
             attached.setdefault(f["attached_to_name"], []).append(f)
         return cls(documents, attached)
 
@@ -110,13 +108,49 @@ def content_path(export_dir, meta):
 
 
 def already_attached(file_id, meta, files):
-    # the marker is compared whole: "bexio file 1" must not match "bexio file 12"
+    # a File keyed by a bexio id is that file and no other, even when another file has its name and size;
+    # the name and size are compared only for a File with no bexio_id (attached before the key was written)
     return any(
-        f.get("description") == MARKER.format(file_id)
+        f.get("bexio_id") == file_id
         # a bill attachment whose download failed has no name or size: it matches nothing by them
-        or (meta.get("name") and f.get("file_name") == meta["name"] and f.get("file_size") == meta.get("size_in_bytes"))
+        or (not f.get("bexio_id") and meta.get("name") and f.get("file_name") == meta["name"]
+            and f.get("file_size") == meta.get("size_in_bytes"))
         for f in files
     )
+
+
+def same_file(meta, f):
+    # the planned file a File without a bexio_id is: the same name, and the same size or an image Frappe re-encoded
+    if not meta or not meta.get("name") or f.get("file_name") != meta["name"]:
+        return False
+    return f.get("file_size") == meta.get("size_in_bytes") or meta["name"].lower().endswith(IMAGES)
+
+
+def backfill_plan(rows, files, lookups):
+    """The attached Files that lack a bexio_id, and the planned file each one is.
+
+    Returns (writes, listed): writes are (File name, bexio id) pairs, one per File that matches exactly one planned
+    file of its Purchase Invoice; listed are the file names of the Files that match none or several, left alone.
+    A planned file is claimed by one File only, since a bexio id is unique: two Files that both match it are listed.
+    """
+    keyed = {f["bexio_id"] for group in lookups.attached.values() for f in group if f.get("bexio_id")}
+    matches = []  # (File row, the bexio ids of the planned files it matches)
+    for document, group in lookups.attached.items():
+        planned = [r["file"] for r in rows if r["document"] == document and r["file"] not in keyed]
+        for f in group:
+            if not f.get("bexio_id"):
+                matches.append((f, [file_id for file_id in planned if same_file(files.get(file_id), f)]))
+    claims = {}
+    for _, ids in matches:
+        for file_id in ids:
+            claims[file_id] = claims.get(file_id, 0) + 1
+    writes, listed = [], []
+    for f, ids in matches:
+        if len(ids) == 1 and claims[ids[0]] == 1:
+            writes.append((f["name"], ids[0]))
+        else:
+            listed.append(f["file_name"])
+    return writes, listed
 
 
 def reencoded(meta, files):
@@ -166,16 +200,16 @@ def plan(files, owners, lookups, export_dir):
 
 
 def run(export_dir, erp):
-    """Plan every file of the export against ERPNext; returns the rows and whether the export has files.json."""
+    """Plan every file of the export against ERPNext; returns the rows, whether the export has files.json, and the backfill plan."""
     bills, expenses = ip.load_records(export_dir)
-    files = load_files(export_dir)
+    files = load_files(export_dir) or {}
     lookups = Lookups.from_erp(erp)
-    rows = plan(files or {}, attachment_owners(bills, expenses), lookups, export_dir)
-    return rows, os.path.exists(os.path.join(export_dir, FILES_FILE))
+    rows = plan(files, attachment_owners(bills, expenses), lookups, export_dir)
+    return rows, os.path.exists(os.path.join(export_dir, FILES_FILE)), backfill_plan(rows, files, lookups)
 
 
-def report(rows, export_dir, has_files, applied=False):
-    """Totals only: no file ids, no names."""
+def report(rows, export_dir, has_files, applied=False, backfills=None):
+    """Totals only: no file ids, no names. backfills is the (writes, listed) pair of backfill_plan."""
     lines = ["file dry run from {}".format(export_dir),
              "files.json: {}".format("in the export" if has_files else "not in the export, so no file has its bytes or content checked yet"),
              "{:<18}{:>7}{:>14}{:>9}{:>14}{:>10}{:>10}".format("doctype", "files", "bytes", "attach", "bytes", "attached", "problems")]
@@ -192,7 +226,13 @@ def report(rows, export_dir, has_files, applied=False):
     for outcome in (ATTACH, ATTACHED, REENCODED) + PROBLEMS:
         if counts.get(outcome):
             lines.append("  {:<14}{:>6}".format(outcome, counts[outcome]))
-    lines.append("applied: the files marked attach are uploaded" if applied else "dry run: nothing was written")
+    if backfills is not None:
+        writes, listed = backfills
+        lines.append("  {:<14}{:>6}".format("to backfill", len(writes)))
+        if listed:
+            lines.append("  {:<14}{:>6}".format("unmatched", len(listed)))
+    lines.append("applied: the files marked attach are uploaded and the Files to backfill get their bexio_id" if applied
+                 else "dry run: nothing was written")
     return "\n".join(lines)
 
 
@@ -229,7 +269,7 @@ def upload(erp, document, file_id, file_name, content):
             name = json.loads(resp.read().decode("utf-8"))["message"]["name"]
     except urllib.error.HTTPError as err:
         raise im.ErpError(err.code, "upload_file for {}".format(document) + im._reason(err)) from None
-    erp.update("File", name, {"description": MARKER.format(file_id)})
+    erp.update("File", name, {"bexio_id": file_id})
     return name
 
 
@@ -247,6 +287,13 @@ def apply(rows, export_dir, erp):
     return uploaded
 
 
+def backfill(writes, erp):
+    """Write the bexio_id on each attached File that backfill_plan matched. Returns how many were written."""
+    for name, file_id in writes:
+        erp.update("File", name, {"bexio_id": file_id})
+    return len(writes)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="Attach the bexio files to the Purchase Invoices (a dry run by default).")
     parser.add_argument("--export", default=None, help="export directory (default: the newest under <private>/bexio-export/)")
@@ -259,20 +306,23 @@ def main(argv):
     export_dir = args.export or im.newest_export()
     try:
         erp = im.Erp.from_file(args.token_file)
-        rows, has_files = run(export_dir, erp)
+        rows, has_files, backfills = run(export_dir, erp)
         if args.apply:
             print("uploaded {} file(s)".format(apply(rows, export_dir, erp)))
-            rows, has_files = run(export_dir, erp)
+            print("backfilled {} File(s)".format(backfill(backfills[0], erp)))
+            rows, has_files, backfills = run(export_dir, erp)
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2
-    print(report(rows, export_dir, has_files, applied=args.apply))
+    print(report(rows, export_dir, has_files, applied=args.apply, backfills=backfills))
     problems = [r for r in rows if r["outcome"] in PROBLEMS]
     listed = [r for r in rows if r["outcome"] in PROBLEMS or r["outcome"] == REENCODED]
-    if listed:
-        ip.write_private(os.path.join(im.PRIVATE, PROBLEMS_FILE), [problem_line(r) for r in listed])
-        print("{} file(s) listed by bexio id in {}".format(len(listed), os.path.join(im.PRIVATE, PROBLEMS_FILE)), file=sys.stderr)
-    return 1 if problems else 0
+    unmatched = backfills[1]
+    if listed or unmatched:
+        lines = [problem_line(r) for r in listed] + ["File {}: no single planned file to backfill from".format(name) for name in unmatched]
+        ip.write_private(os.path.join(im.PRIVATE, PROBLEMS_FILE), lines)
+        print("{} line(s) listed in {}".format(len(lines), os.path.join(im.PRIVATE, PROBLEMS_FILE)), file=sys.stderr)
+    return 1 if problems or unmatched else 0
 
 
 def problem_line(row):

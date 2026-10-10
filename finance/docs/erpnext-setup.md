@@ -15,7 +15,7 @@ app itself: `swiss.md`.
 | Purchase Taxes and Charges Templates | 27 (bexio codes) |
 | Item Tax Templates | 42 (bexio codes) |
 | Fiscal years | 12 (2015 to 2026), each linked to BI Concepts |
-| Custom field `bexio_id` | 10 doctypes |
+| Custom field `bexio_id` | 21 doctypes |
 
 The 3+3 stock templates (`Switzerland normal/reduced/lodging VAT`) are gone.
 The QR-bill print format of erpnextswiss is not enabled (it sends invoice
@@ -141,7 +141,9 @@ and each gets a row for BI Concepts.
 **fields.** Custom field `bexio_id` (label "bexio ID", Data, unique, read
 only, in standard filter, not copied with a document) on Customer, Supplier,
 Contact, Address, Item, Account, Sales Invoice, Purchase Invoice, Journal Entry
-and Payment Entry, placed after the name or title field where the doctype has
+and Payment Entry, and the master, document and tax-template doctypes after
+them, File included (the bexio uuid of an attached file, see the Attachments
+section of `finance/bexio/README.md`), placed after the name or title field where the doctype has
 one. Read only blocks the form, not API or Data Import writes. Unique means two
 documents with an empty id are fine; a second document with the same id is
 rejected (checked, `UniqueValidationError`).

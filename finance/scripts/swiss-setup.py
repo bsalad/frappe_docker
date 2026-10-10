@@ -106,6 +106,8 @@ BEXIO_DOCTYPES = [
     ("Sales Taxes and Charges Template", "title"),
     ("Purchase Taxes and Charges Template", "title"),
     ("Item Tax Template", "title"),
+    # the bexio files attached to Purchase Invoices, keyed by their bexio uuid (import_files.py)
+    ("File", "attached_to_name"),
 ]
 
 # Currencies bexio books in, enabled by the `currencies` step. CHF is paid in
