@@ -24,6 +24,7 @@ LOOKUPS = {
         "29": {"name": "USt 2.6% Reduziert", "account": "2200 - Umsatzsteuer - bic", "rate": Decimal("2.6")},
     },
     "invoice": {"500": "SINV-0001"},
+    "vat": "2202 - Abrechnungskonto MWST - bic",
     "existing": {"Sales Invoice": set(), "Sales Order": set(), "Quotation": set()},
 }
 
@@ -80,6 +81,12 @@ class DomesticInvoice(unittest.TestCase):
         self.assertEqual(differences, [])
         self.assertEqual(totals, (Decimal("150.00"), Decimal("9.40"), Decimal("159.40")))
         self.assertEqual(rate, Decimal("1"))
+
+    def test_tax_rows_book_to_the_transitory_account_not_the_template_account(self):
+        # the templates point at 2200; the sale's VAT goes to 2202 at the invoice date, and bexio moves it to 2200 on payment
+        doc = isl.sales_invoice(INVOICE, LOOKUPS)
+        self.assertEqual([t["account_head"] for t in doc["taxes"]], ["2202 - Abrechnungskonto MWST - bic"] * 2)
+        self.assertNotIn("2200 - Umsatzsteuer - bic", [t["account_head"] for t in doc["taxes"]])
 
     def test_remarks_keep_the_bexio_number_and_terms_keep_header_and_footer(self):
         doc = isl.sales_invoice(INVOICE, LOOKUPS)

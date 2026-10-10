@@ -22,7 +22,7 @@ def lookups(taxes=TAXES):
     return ip.Lookups(
         suppliers={"901": "Lieferant Test AG"},
         accounts={"5001": "5001 - Testaufwand - bic", "5002": "5002 - Testmaterial - bic"},
-        account_by_number={"1170": "1170 - Vorsteuer Material/DL - bic", "1171": "1171 - Vorsteuer Invest. - bic",
+        account_by_number={"1170": "1170 - Vorsteuer Material/DL - bic", "1171": "1171 - Vorsteuer Invest. - bic", "1172": "1172 - Vorsteuer transitorisch - bic",
                            "2203": "2203 - Bezugsteuer - bic"},
         taxes=dict(taxes),
     )
@@ -61,9 +61,9 @@ class MapBillTest(unittest.TestCase):
         self.assertEqual([r["expense_account"] for r in doc["items"]],
                          ["5001 - Testaufwand - bic", "5002 - Testmaterial - bic", "5001 - Testaufwand - bic", "5002 - Testmaterial - bic"])
         self.assertEqual(taxes(doc), {
-            ("1170 - Vorsteuer Material/DL - bic", "Test MWST bexio 35"): 16.2,
-            ("1171 - Vorsteuer Invest. - bic", "Test MWST bexio 38"): 4.05,
-            ("1171 - Vorsteuer Invest. - bic", "Test MWST bexio 37"): 2.6,
+            ("1172 - Vorsteuer transitorisch - bic", "Test MWST bexio 35"): 16.2,
+            ("1172 - Vorsteuer transitorisch - bic", "Test MWST bexio 38"): 4.05,
+            ("1172 - Vorsteuer transitorisch - bic", "Test MWST bexio 37"): 2.6,
         })
         self.assertEqual(ip.document_totals(doc), (Decimal("380.00"), Decimal("22.85"), Decimal("402.85")))
 
@@ -76,7 +76,7 @@ class MapBillTest(unittest.TestCase):
         self.assertEqual((doc["currency"], doc["conversion_rate"]), ("CHF", 1.0))
         self.assertEqual(doc["remarks"], "bexio: EUR 216.20 @ 0.93")
         self.assertEqual(ip.document_totals(doc), (Decimal("186.00"), Decimal("15.07"), Decimal("201.07")))
-        self.assertEqual(taxes(doc), {("1170 - Vorsteuer Material/DL - bic", "Test MWST bexio 35"): 15.07})
+        self.assertEqual(taxes(doc), {("1172 - Vorsteuer transitorisch - bic", "Test MWST bexio 35"): 15.07})
 
     def test_chf_bill_has_no_remarks(self):
         self.assertNotIn("remarks", ip.map_bill(bill(), lookups()))
@@ -89,7 +89,7 @@ class MapBillTest(unittest.TestCase):
     def test_tax_is_worked_out_per_line_to_the_rappen(self):
         # 0.333 x 8.1 % = 0.027 per line, which is 0.03 when rounded per line
         doc = ip.map_bill(bill(positions=[pos("0.333", 1, 35), pos("0.333", 1, 35)]), lookups())
-        self.assertEqual(taxes(doc), {("1170 - Vorsteuer Material/DL - bic", "Test MWST bexio 35"): 0.06})
+        self.assertEqual(taxes(doc), {("1172 - Vorsteuer transitorisch - bic", "Test MWST bexio 35"): 0.06})
 
 
 class MapBillErrorTest(unittest.TestCase):
@@ -140,7 +140,7 @@ class MapBillFromLineItemsTest(unittest.TestCase):
         doc = ip.map_bill(full_bill(), lookups())
         self.assertEqual(doc["supplier"], "Lieferant Test AG")
         self.assertEqual([r["amount"] for r in doc["items"]], [119.98])
-        self.assertEqual(taxes(doc), {("1171 - Vorsteuer Invest. - bic", "Test MWST bexio 38"): 9.72})
+        self.assertEqual(taxes(doc), {("1172 - Vorsteuer transitorisch - bic", "Test MWST bexio 38"): 9.72})
         self.assertEqual(ip.document_totals(doc), (Decimal("119.98"), Decimal("9.72"), Decimal("129.70")))
 
     def test_the_document_number_of_bexio_is_kept_and_the_vendor_ref_is_the_bill_number(self):

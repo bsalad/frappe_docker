@@ -27,9 +27,10 @@ gross when the bill's prices include the VAT (item_net false), and its VAT is
 bexio's tax_calc: the net is the gross less it. A reverse-charge bill (item_net
 true) is not mapped here. The VAT of a line is the Item Tax Template whose
 bexio_id is the line's bexio tax id, never one picked by rate; a tax id with no
-such template is reported, not guessed. The tax is booked to the Vorsteuer
-account of its kind (1170 Material/DL, 1171 Invest./Aufwand) as one tax row
-per account and template, so the tax total is bexio's to the rappen.
+such template is reported, not guessed. The tax is booked to the transitory
+Vorsteuer account 1172 as one tax row
+per account and template, so the tax total is bexio's to the rappen. The account is the transitory 1172 at the bill
+date, whatever the kind of cost; the payment moves it to 1170 or 1171 (import_payments_out).
 
 An expense with VAT is skipped: its net split is not in the export; the
 bills and the expense step of erp-a2ma take it.
@@ -73,10 +74,11 @@ TAX_TOLERANCE = Decimal("0.05")
 JOURNAL_TOLERANCE = Decimal("0.05")
 PAYABLES = "2000"
 
-# bexio purchase VAT codes: the Vorsteuer account by the kind of cost
+# bexio purchase VAT codes. bexio books the input VAT of a bill to its transitory account 1172 at the bill date and moves
+# it to 1170 or 1171 when the bill is paid (import_payments_out.VAT_MOVES), so every code books to 1172 here
 MAT_SV_IDS = (22, 35, 8, 34, 21, 36)  # VM77, VM81, VM25, VM26, VM37, VM38: Material und Dienstleistungen
 INV_BA_IDS = (24, 38, 12, 37, 23, 39)  # VB77, VB81, VB25, VB26, VB37, VB38: Investitionen und Aufwand
-VORSTEUER = dict([(i, "1170") for i in MAT_SV_IDS] + [(i, "1171") for i in INV_BA_IDS])
+VORSTEUER = dict([(i, "1172") for i in MAT_SV_IDS + INV_BA_IDS])
 # reverse charge (Bezugsteuer): the Vorsteuer account of the kind, and the rate; the deduction is on BEZUGSTEUER
 BEZUG = {19: ("1170", 7.7), 33: ("1170", 8.1), 20: ("1171", 7.7), 32: ("1171", 8.1)}  # BZM77, BZM81, BZB77, BZB81
 BEZUGSTEUER = "2203"

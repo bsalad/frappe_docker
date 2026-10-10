@@ -91,6 +91,8 @@ TOTAL_TOLERANCE = Decimal("0.05")
 # the most a foreign document's CHF total may differ from bexio's own CHF booking on the receivables account
 JOURNAL_TOLERANCE = Decimal("0.05")
 RECEIVABLES = "1100"
+# the output VAT of a sale at the invoice date (bexio's transitory account); the template's own account is not used
+VAT_ACCOUNT = "2202"
 
 
 class Unmapped(Exception):
@@ -270,14 +272,16 @@ def _document(doctype, record, lookups, credit=False):
             continue
         template = _tax(key, lookups)
         base = amount * taxable / lines if discount else amount
+        # the VAT of a sale goes to bexio's transitory account 2202 at the invoice date; bexio moves it to 2200 on
+        # payment (import_payments_in), so the template's own account (2200) would book it twice
         if included:
             # ERPNext takes the VAT out of an included price itself; an actual amount cannot be included
             tax_amount = _cents(base * template["rate"] / (100 + template["rate"]))
-            row = {"charge_type": "On Net Total", "account_head": template["account"],
+            row = {"charge_type": "On Net Total", "account_head": lookups["vat"],
                    "description": template["name"], "rate": float(template["rate"]), "included_in_print_rate": 1}
         else:
             tax_amount = _cents(base * template["rate"] / 100)
-            row = {"charge_type": "Actual", "account_head": template["account"],
+            row = {"charge_type": "Actual", "account_head": lookups["vat"],
                    "description": template["name"], "tax_amount": float(tax_amount)}
         taxes.append(row)
         computed[template["rate"]] = computed.get(template["rate"], ZERO) + tax_amount
@@ -503,7 +507,11 @@ def lookups_from_erp(erp, data):
             "account": single and single["account_head"],
             "rate": single and _dec(single["rate"]),
         }
+    vat = erp.list("Account", [["company", "=", COMPANY], ["account_number", "=", VAT_ACCOUNT]], ["name"])
+    if len(vat) != 1:
+        raise Unmapped("expected one Account {} in ERPNext, found {}".format(VAT_ACCOUNT, len(vat)))
     return {
+        "vat": vat[0]["name"],
         "currency": {str(c["id"]): c["name"] for c in data["currencies"]},
         "customer": bexio_names("Customer"),
         "item": bexio_names("Item"),
