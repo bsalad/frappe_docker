@@ -181,7 +181,7 @@ bexio books it (see Currencies below).
 
 `finance/scripts/bexio-drafts.sh <plan.json> submit` also submits each draft
 after it is loaded, in posting date order: that is the step that writes the GL.
-A plan's `keep_draft` lists the bexio ids that stay drafts. A document already
+A plan's `keep_draft` lists the bexio ids that stay drafts; a Sales Order or Quotation always stays one. A document already
 submitted is skipped, so a second run submits nothing; a draft that fails
 validation on submit is rolled back and listed by bexio id; a document that
 was new in that run is rolled back whole (not left as a draft).

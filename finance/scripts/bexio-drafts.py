@@ -27,6 +27,8 @@ from collections import Counter
 SITE = "frontend"
 DRAFT = 0
 SUBMITTED = 1
+# documents that stay drafts in submit mode: they post no GL, and bexio's orders and offers are not booked history
+NEVER_SUBMITTED = ("Sales Order", "Quotation")
 # fields the importers hand over that ERPNext's doctypes do not have: the files come with erp-a2ma
 DROP = ("bexio_attachment_ids",)
 
@@ -114,7 +116,7 @@ def apply_plan(plan, store, submit=False):
             status, name = load_document(item, store)
             after = None
             if submit and status != "skipped":
-                if str(item["bexio_id"]) in keep_draft:
+                if item["doctype"] in NEVER_SUBMITTED or str(item["bexio_id"]) in keep_draft:
                     after = "kept draft"
                 else:
                     store.submit(item["doctype"], name)
