@@ -106,6 +106,15 @@ class MappingTest(unittest.TestCase):
         self.assertNotIn("bexio_booked_with", doc)
         self.assertNotIn("booked_with", doc)
 
+    def test_the_booking_date_is_the_book_date_and_the_value_date_is_kept_as_the_date(self):
+        doc = ib.bank_transaction(record(CHF_IN, value_date="2026-03-30", book_date="2026-03-31T00:00:00+02:00"), LOOKUPS)
+        self.assertEqual(doc["date"], "2026-03-30")
+        self.assertEqual(doc["booking_date"], "2026-03-31")
+
+    def test_without_a_book_date_the_booking_date_is_the_value_date(self):
+        doc = ib.bank_transaction(record(CHF_IN, value_date="2026-03-30", book_date=None), LOOKUPS)
+        self.assertEqual(doc["booking_date"], "2026-03-30")
+
 
 class PlanTest(unittest.TestCase):
     def test_unmapped_records_are_reported_not_raised(self):
@@ -126,12 +135,14 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(results[0]["book_date"], "2026-04-01")
 
     def test_fields_the_doctype_lacks_are_named(self):
-        meta = {"doctype", "company", "bexio_id", "date", "bank_account", "currency", "deposit", "withdrawal",
+        meta = {"doctype", "company", "bexio_id", "date", "booking_date", "bank_account", "currency", "deposit", "withdrawal",
                 "description", "reference_number"}
         results = ib.plan([CHF_IN], LOOKUPS, meta)
         self.assertEqual(results[0]["unknown"], [])
         results = ib.plan([CHF_IN], LOOKUPS, meta - {"reference_number"})
         self.assertEqual(results[0]["unknown"], ["Bank Transaction.reference_number"])
+        results = ib.plan([CHF_IN], LOOKUPS, meta - {"booking_date"})
+        self.assertEqual(results[0]["unknown"], ["Bank Transaction.booking_date"])
 
 
 class SummaryTest(unittest.TestCase):

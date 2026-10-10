@@ -1,0 +1,17 @@
+[
+ {
+  "docstatus": 0,
+  "doctype": "Custom Field",
+  "name": "Bank Transaction-booking_date",
+  "dt": "Bank Transaction",
+  "module": "BI Finance",
+  "fieldname": "booking_date",
+  "label": "Booking Date",
+  "fieldtype": "Date",
+  "insert_after": "date",
+  "in_list_view": 1,
+  "in_standard_filter": 1,
+  "is_system_generated": 0,
+  "description": "The day the bank booked the line. Date keeps each source's own date (bexio: value date)."
+ }
+]

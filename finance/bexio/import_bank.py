@@ -115,6 +115,8 @@ def bank_transaction(record, lookups):
     return {
         "doctype": "Bank Transaction", "company": COMPANY, "bexio_id": str(record["id"]),
         "date": record["value_date"], "bank_account": account["name"], "currency": currency,
+        # the day the bank booked it; without one in the export, the value date (Desk lists by Booking Date)
+        "booking_date": (record.get("book_date") or "")[:10] or record["value_date"],
         "deposit": float(deposit), "withdrawal": float(withdrawal),
         "description": record.get("title") or "", "reference_number": "",
     }

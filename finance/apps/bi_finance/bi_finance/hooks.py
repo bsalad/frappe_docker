@@ -27,6 +27,14 @@ jinja = {
     ]
 }
 
+# Bank lines in Desk: the Booking Date field, its place in the Bank Transaction list (sorted by it, newest first)
+# and the list's columns. Frappe applies the files in fixtures/ on migrate.
+fixtures = [
+    {"dt": "Custom Field", "filters": [["dt", "=", "Bank Transaction"], ["fieldname", "=", "booking_date"]]},
+    {"dt": "Property Setter", "filters": [["doc_type", "=", "Bank Transaction"], ["property", "in", ["sort_field", "sort_order"]]]},
+    {"dt": "List View Settings", "filters": [["name", "=", "Bank Transaction"]]},
+]
+
 # Bank API syncs: a live run each hour when the settings have sync on (each sync_scheduled checks it)
 scheduler_events = {
     "hourly": ["bi_finance.wise.sync_scheduled", "bi_finance.paypal.sync_scheduled"],

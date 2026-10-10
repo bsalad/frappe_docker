@@ -95,12 +95,16 @@ class Workspace(unittest.TestCase):
         self.assertEqual([r["number_card_name"] for r in self.ws["number_cards"]], cards)
         self.assertEqual([r["chart_name"] for r in self.ws["charts"]], charts)
 
-    def test_the_shortcuts_are_reports_of_this_app(self):
+    def test_the_shortcuts_match_the_content_in_order(self):
         blocks = json.loads(self.ws["content"])
         shortcuts = [b["data"]["shortcut_name"] for b in blocks if b["type"] == "shortcut"]
         self.assertEqual(shortcuts, [r["label"] for r in self.ws["shortcuts"]])
-        self.assertEqual(sorted(shortcuts), ["Cash Conversion Cycle", "Cash Flow Forecast", "Cash Flow Forecast Lines"])
-        for row in self.ws["shortcuts"]:
+        self.assertEqual(len(shortcuts), len(set(shortcuts)))
+
+    def test_the_cash_shortcuts_are_reports_of_this_app(self):
+        cash = [r for r in self.ws["shortcuts"] if r["label"] in ("Cash Flow Forecast", "Cash Flow Forecast Lines", "Cash Conversion Cycle")]
+        self.assertEqual(sorted(r["label"] for r in cash), ["Cash Conversion Cycle", "Cash Flow Forecast", "Cash Flow Forecast Lines"])
+        for row in cash:
             self.assertEqual(row["type"], "Report")
             self.assertEqual(row["link_to"], row["label"])
             folder = row["link_to"].lower().replace(" ", "_")

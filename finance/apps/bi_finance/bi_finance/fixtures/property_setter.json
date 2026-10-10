@@ -1,0 +1,26 @@
+[
+ {
+  "docstatus": 0,
+  "doctype": "Property Setter",
+  "name": "Bank Transaction-main-sort_field",
+  "doc_type": "Bank Transaction",
+  "doctype_or_field": "DocType",
+  "property": "sort_field",
+  "property_type": "Data",
+  "value": "booking_date",
+  "module": "BI Finance",
+  "is_system_generated": 0
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Property Setter",
+  "name": "Bank Transaction-main-sort_order",
+  "doc_type": "Bank Transaction",
+  "doctype_or_field": "DocType",
+  "property": "sort_order",
+  "property_type": "Select",
+  "value": "DESC",
+  "module": "BI Finance",
+  "is_system_generated": 0
+ }
+]
