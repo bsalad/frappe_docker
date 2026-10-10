@@ -514,6 +514,5 @@ class JournalRun(unittest.TestCase):
             self.assertIn("405,journal entries (by account),0.00,8.10", report)
 
 
-
 if __name__ == "__main__":
     unittest.main()
