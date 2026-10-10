@@ -33,6 +33,10 @@ goes to files/<id>.<extension>; files.json holds the metadata of all of them.
 bill_attachments.json holds the attachments of the bills, one row per file uuid (the
 bills list the uuids in attachment_ids; their content is on /3.0/files/<uuid>/download).
 Their content goes to files/<uuid>.pdf, the same folder as files.json's.
+
+--payroll exports the payroll module instead (employees, absences per year, payslip PDFs
+per month) to <private>/bexio-payroll/, with its own manifest. It is not part of the
+default run: it needs payroll scopes that the read-only login does not have yet.
 """
 
 import argparse
@@ -277,6 +281,111 @@ def export(client, out, entities=None, only=None, export_client=None):
     return manifest
 
 
+# The payroll export (--payroll), for the move of payroll into ERPNext HRMS. Names, AHV numbers,
+# salaries, absences and payslips: it goes to its own folder, apart from the export above, and is
+# read with the read-only login, so its scopes must be in that login's consent (oauth.SCOPE).
+# The paths are from a third-party description of the 4.0 payroll API, not yet checked against the
+# live API: a 403 means a scope is missing, a 404 on a payslip means none for that month.
+PAYROLL = "/Users/bsaladin/ws_yardr_finance/private/bexio-payroll"
+PAYSTUBS = "paystubs"
+PAYROLL_EMPLOYEES = "/4.0/payroll/employees"
+PAYROLL_ABSENCES = "/4.0/payroll/employees/{id}/absences"
+PAYROLL_PAYSTUB = "/4.0/payroll/employees/{id}/paystubs/{year}/{month}/pdf"
+
+
+def payroll_rows(body, path):
+    """The records of a payroll answer: a bare list, or the list under "data"."""
+    rows = body.get("data") if isinstance(body, dict) else body
+    if not isinstance(rows, list):
+        raise BexioError("unexpected body", path)
+    return rows
+
+
+def payroll_absences(client, employees, years):
+    """The absences of each employee for each year, one row each with the employee and year added."""
+    rows = []
+    for employee in employees:
+        path = PAYROLL_ABSENCES.format(id=employee["id"])
+        for year in sorted(years):
+            for absence in payroll_rows(client.get(path, {"year": year}), path):
+                rows.append(dict(absence, employee_id=employee["id"], year=year))
+    return rows
+
+
+def payroll_paystubs(client, out, employees, years, today):
+    """One PDF per employee and month up to today, in paystubs/; returns the index of them (no names).
+
+    A 404 is a month without a payslip. Any other refusal raises, so the entity is recorded as failed.
+    """
+    index = []
+    for employee in employees:
+        for year in sorted(years):
+            for month in range(1, 13):
+                if (year, month) > (today.year, today.month):
+                    continue
+                path = PAYROLL_PAYSTUB.format(id=employee["id"], year=year, month=month)
+                try:
+                    content = client.get(path, raw=True)
+                except BexioError as err:
+                    if err.status == 404:
+                        continue
+                    raise
+                name = "{}-{}-{:02d}.pdf".format(employee["id"], year, month)
+                write_private_bytes(os.path.join(out, PAYSTUBS, name), content)
+                index.append({"employee_id": employee["id"], "year": year, "month": month,
+                              "file": name, "bytes": len(content)})
+    return index
+
+
+def by_month(index):
+    """The number of payslips per month, as "YYYY-MM": counts only."""
+    counts = {}
+    for row in index:
+        key = "{}-{:02d}".format(row["year"], row["month"])
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _payroll_entity(out, manifest, name, required, produce):
+    """Run produce() for one payroll entity, write its rows to name.json and record it in the manifest."""
+    entry = {"file": name + ".json", "required": required}
+    manifest["entities"][name] = entry
+    try:
+        rows = produce()
+    except BexioError as err:
+        # A stale file from an earlier run must not pass for this run's data.
+        stale = os.path.join(out, entry["file"])
+        if os.path.exists(stale):
+            os.remove(stale)
+        entry.update(status="error", error="HTTP {} on {}".format(err.status, err.path), count=0)
+        return []
+    write_private(os.path.join(out, entry["file"]), rows)
+    entry.update(status="ok", count=len(rows))
+    return rows
+
+
+def export_payroll(client, out, years, today=None):
+    """Write the payroll to `out` and return the manifest (also written there). Idempotent: a rerun rewrites the same files.
+
+    Without the employees (the first entity) nothing else can be asked, so the run stops there.
+    """
+    today = today or datetime.date.today()
+    os.makedirs(os.path.join(out, PAYSTUBS), mode=0o700, exist_ok=True)
+    os.chmod(out, 0o700)
+    os.chmod(os.path.join(out, PAYSTUBS), 0o700)
+    manifest = {"exported_on": today.isoformat(), "years": sorted(years), "entities": {}}
+    employees = _payroll_entity(out, manifest, "employees", True,
+                                lambda: payroll_rows(client.get(PAYROLL_EMPLOYEES), PAYROLL_EMPLOYEES))
+    if manifest["entities"]["employees"]["status"] == "ok":
+        _payroll_entity(out, manifest, "absences", False, lambda: payroll_absences(client, employees, years))
+        paystubs = _payroll_entity(out, manifest, "paystubs", False,
+                                   lambda: payroll_paystubs(client, out, employees, years, today))
+        if manifest["entities"]["paystubs"]["status"] == "ok":
+            manifest["entities"]["paystubs"]["by_month"] = by_month(paystubs)
+    write_private(os.path.join(out, "manifest.json"), manifest)
+    return manifest
+
+
 def failed_required(manifest):
     return [n for n, e in manifest["entities"].items() if e["required"] and e["status"] != "ok"]
 
@@ -286,7 +395,28 @@ def main(argv):
     parser.add_argument("--out", default=None, help="target directory (default: <private>/bexio-export/<today>/)")
     parser.add_argument("--only", action="append", choices=sorted(ENTITIES), metavar="ENTITY",
                         help="export only this entity (repeatable); the manifest keeps the others")
+    parser.add_argument("--payroll", action="store_true",
+                        help="export the payroll instead, to <private>/bexio-payroll/ (employees, absences, payslips)")
+    parser.add_argument("--year", action="append", type=int, metavar="YEAR",
+                        help="payroll year for absences and payslips (repeatable; default: this year)")
     args = parser.parse_args(argv)
+    if args.payroll:
+        if args.only or args.out:
+            parser.error("--payroll takes neither --only nor --out")
+        manifest = export_payroll(Client(), PAYROLL, args.year or [datetime.date.today().year])
+        print("exported payroll to {}".format(PAYROLL))
+        for name, entry in manifest["entities"].items():
+            if entry["status"] != "ok":
+                print("  {:<18} {}".format(name, entry["error"]))
+            else:
+                print("  {:<18} {}".format(name, entry["count"]))
+        missing = failed_required(manifest)
+        if missing:
+            print("missing required entities: {}".format(", ".join(missing)), file=sys.stderr)
+            return 2
+        return 0
+    if args.year:
+        parser.error("--year goes with --payroll")
     out = args.out or default_out()
     names = list(args.only or ENTITIES)
     # Each login is only opened when a requested entity needs it: the export login

@@ -3,6 +3,7 @@
 Run with: python3 -m unittest discover -s finance/bexio -p 'test_*.py'
 """
 
+import datetime
 import json
 import os
 import stat
@@ -260,6 +261,113 @@ class ExportTest(unittest.TestCase):
         resp.__enter__.return_value.read.return_value = b'{"id": 1}'
         with mock.patch("urllib.request.urlopen", return_value=resp):
             self.assertEqual(c.get("/2.0/contact/1"), {"id": 1})
+
+
+# Invented payroll: two employees, absences and payslips of January and February 2026 only.
+PAYROLL_EMPLOYEES = [{"id": 101, "first_name": "Invented"}, {"id": 102, "first_name": "Testperson"}]
+PAYROLL_PAYSLIPS = {
+    (101, 2026, 1): b"%PDF-invented-1",
+    (101, 2026, 2): b"%PDF-invented-2",
+    (102, 2026, 1): b"%PDF-invented-3",
+}
+PAYROLL_TODAY = datetime.date(2026, 2, 15)
+
+
+def payroll_client(missing=()):
+    """A Client whose payroll GETs answer from the invented fixtures; 404 for a payslip not in PAYROLL_PAYSLIPS."""
+    c = Client(token="test-token-not-real")
+
+    def fake_get(path, params=None, raw=False):
+        if path in missing:
+            raise BexioError(403, path)
+        if path == export.PAYROLL_EMPLOYEES:
+            return {"data": PAYROLL_EMPLOYEES}
+        if path.endswith("/absences"):
+            return {"data": [{"reason": "Vacation", "days": 5, "year": params["year"]}]}
+        _, _, _, _, employee, _, year, month, _ = path.split("/")
+        key = (int(employee), int(year), int(month))
+        if not raw or key not in PAYROLL_PAYSLIPS:
+            raise BexioError(404, path)
+        return PAYROLL_PAYSLIPS[key]
+
+    c.get = fake_get
+    return c
+
+
+class PayrollExportTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.out = os.path.join(self._tmp.name, "payroll")
+
+    def load(self, name):
+        with open(os.path.join(self.out, name), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_employees_absences_and_payslips_are_written(self):
+        export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
+        self.assertEqual(self.load("employees.json"), PAYROLL_EMPLOYEES)
+        self.assertEqual(len(self.load("absences.json")), 2)
+        self.assertEqual(self.load("absences.json")[0]["year"], 2026)
+        with open(os.path.join(self.out, "paystubs", "101-2026-01.pdf"), "rb") as f:
+            self.assertEqual(f.read(), PAYROLL_PAYSLIPS[(101, 2026, 1)])
+        self.assertEqual([row["file"] for row in self.load("paystubs.json")],
+                         ["101-2026-01.pdf", "101-2026-02.pdf", "102-2026-01.pdf"])
+
+    def test_manifest_has_counts_per_entity_and_per_month_of_payslips(self):
+        manifest = export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
+        self.assertEqual(manifest["entities"]["employees"]["count"], 2)
+        self.assertEqual(manifest["entities"]["absences"]["count"], 2)
+        self.assertEqual(manifest["entities"]["paystubs"]["count"], 3)
+        self.assertEqual(manifest["entities"]["paystubs"]["by_month"], {"2026-01": 2, "2026-02": 1})
+        self.assertEqual(self.load("manifest.json"), manifest)
+
+    def test_no_payslip_is_asked_for_after_today(self):
+        # Months after February 2026 are not asked for at all: a 404 there would hide a bug.
+        seen = []
+        c = payroll_client()
+        real = c.get
+
+        def get(path, params=None, raw=False):
+            seen.append(path)
+            return real(path, params, raw)
+
+        c.get = get
+        export.export_payroll(c, self.out, [2026], today=PAYROLL_TODAY)
+        self.assertFalse([p for p in seen if "/2026/3/" in p or "/2026/12/" in p])
+
+    def test_a_forbidden_employee_list_stops_the_run(self):
+        manifest = export.export_payroll(payroll_client(missing={export.PAYROLL_EMPLOYEES}), self.out, [2026],
+                                         today=PAYROLL_TODAY)
+        entry = manifest["entities"]["employees"]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("403", entry["error"])
+        self.assertEqual(set(manifest["entities"]), {"employees"})
+        self.assertEqual(export.failed_required(manifest), ["employees"])
+
+    def test_a_forbidden_payslip_fails_its_entity_and_is_not_taken_for_no_payslip(self):
+        path = export.PAYROLL_PAYSTUB.format(id=101, year=2026, month=2)
+        manifest = export.export_payroll(payroll_client(missing={path}), self.out, [2026], today=PAYROLL_TODAY)
+        self.assertEqual(manifest["entities"]["paystubs"]["status"], "error")
+        self.assertIn("403", manifest["entities"]["paystubs"]["error"])
+        self.assertNotIn("by_month", manifest["entities"]["paystubs"])
+        self.assertEqual(export.failed_required(manifest), [])
+
+    def test_a_rerun_gives_the_same_manifest_and_files(self):
+        first = export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
+        second = export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
+        self.assertEqual(first, second)
+        self.assertEqual(len(os.listdir(os.path.join(self.out, "paystubs"))), 3)
+
+    def test_payroll_folder_is_700_and_files_are_600(self):
+        os.umask(0o022)
+        export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
+        self.assertEqual(stat.S_IMODE(os.stat(self.out).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.out, "paystubs")).st_mode), 0o700)
+        for name in ("employees.json", "absences.json", "paystubs.json", "manifest.json"):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.out, name)).st_mode), 0o600, name)
+        for name in os.listdir(os.path.join(self.out, "paystubs")):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.out, "paystubs", name)).st_mode), 0o600, name)
 
 
 if __name__ == "__main__":
