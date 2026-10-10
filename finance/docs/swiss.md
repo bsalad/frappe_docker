@@ -162,8 +162,15 @@ Build result: see the bead note.
    content edge, so for some body heights the margin overflows and wkhtmltopdf adds a blank
    last page. **Fix:** the template override `.print-format-gutter .print-format
    { margin-bottom: 0; }` (bead erp-hp26; test `test_wrapper_margin_does_not_add_a_page`),
-   which Frappe does not read as a page option. The page keeps its 1 mm margin. Not on the
-   live site until the bi6 image: erp-6ycq.
+   which Frappe does not read as a page option. The page keeps its 1 mm margin.
+   **Live on bi6 (2026-10-10, erp-6ycq):** the site runs `v16.50.0-swiss-bi6` (backup
+   `20261010_023805-frontend`, taken before the swap). Samples from invented drafts, deleted
+   afterwards, in `private/`: `qr-sample.pdf` (3 rows, 1 page, slip at the foot);
+   `qr-sample-mid.pdf` (25 rows, 2 pages, slip at the foot of page 2); `qr-sample-long.pdf`
+   (40 rows, 3 pages: 20 rows on each of pages 1 and 2, the slip alone at the foot of page 3).
+   No page is blank in any of the three. The 40-row body does not fit two pages as the bead
+   expected; the slip goes to a page of its own, as the layout rule above says it should.
+   **Open for Benchi:** whether a 40-row invoice should fit on two pages.
    **PDF host, fixed (2026-10-10):** `host_name` is the tailnet URL, set by the
    `host` step. The backend and queue containers reach it; a stock format renders.
    Mails and prints link to that URL.

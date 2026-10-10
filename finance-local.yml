@@ -3,20 +3,20 @@
 # The Swiss QR code is drawn by bi_finance on the server, from inside the image: no mounts here.
 services:
   frontend:
-    image: frappe-finance-custom:v16.50.0-swiss-bi5
+    image: frappe-finance-custom:v16.50.0-swiss-bi6
     ports: !override
       - "127.0.0.1:8080:8080"
   backend:
-    image: frappe-finance-custom:v16.50.0-swiss-bi5
+    image: frappe-finance-custom:v16.50.0-swiss-bi6
   configurator:
-    image: frappe-finance-custom:v16.50.0-swiss-bi5
+    image: frappe-finance-custom:v16.50.0-swiss-bi6
   create-site:
-    image: frappe-finance-custom:v16.50.0-swiss-bi5
+    image: frappe-finance-custom:v16.50.0-swiss-bi6
   queue-long:
-    image: frappe-finance-custom:v16.50.0-swiss-bi5
+    image: frappe-finance-custom:v16.50.0-swiss-bi6
   queue-short:
-    image: frappe-finance-custom:v16.50.0-swiss-bi5
+    image: frappe-finance-custom:v16.50.0-swiss-bi6
   scheduler:
-    image: frappe-finance-custom:v16.50.0-swiss-bi5
+    image: frappe-finance-custom:v16.50.0-swiss-bi6
   websocket:
-    image: frappe-finance-custom:v16.50.0-swiss-bi5
+    image: frappe-finance-custom:v16.50.0-swiss-bi6
