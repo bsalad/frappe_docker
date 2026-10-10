@@ -38,10 +38,7 @@ def _settings():
 @frappe.whitelist()
 def test_connection():
     """The token and the currencies the account holds, as a message. Reads only."""
-    settings = frappe.get_single("PayPal Settings")
-    secret = settings.get_password("client_secret", raise_exception=False)
-    if not secret or not settings.client_id:
-        frappe.throw(_("Enter the client id and the secret in PayPal Settings first."))
+    settings, secret = _settings()
     try:
         token = paypal_client.access_token(settings.client_id, secret)
         found = paypal_client.balances(token)
