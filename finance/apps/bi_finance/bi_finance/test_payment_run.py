@@ -25,6 +25,11 @@ def setUpModule():
     patcher = mock.patch.object(frappe, "get_system_settings", return_value=None)
     patcher.start()
     unittest.addModuleCleanup(patcher.stop)
+    # Every message is wrapped in _() before frappe.throw sees it, and _() loads the site's translations.
+    # With no site they are empty, so the message stays as written.
+    patcher = mock.patch("frappe.translate.get_all_translations", return_value={})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
 
 
 FAR_FUTURE = datetime.date(2099, 1, 1)

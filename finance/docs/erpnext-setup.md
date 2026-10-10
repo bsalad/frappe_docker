@@ -240,6 +240,14 @@ docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro"
 ```
 
 The Cash Position report has its own offline tests, in the same way (`bi_finance.test_cash_position`).
+The whole package runs with one command, the one to run before a test line (0 errors, 0 failures):
+
+```sh
+docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro" \
+    frappe-finance-custom:v16.50.0-swiss-bi9 \
+    sh -c 'cd /home/frappe/bi_finance_src && ../frappe-bench/env/bin/python -m unittest discover -s bi_finance -t .'
+```
+
 The setup script's pure parts are tested without a container:
 `python3 -m unittest discover -s finance/scripts -p 'test_*.py'`.
 
