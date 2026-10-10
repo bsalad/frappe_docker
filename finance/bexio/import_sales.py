@@ -1,4 +1,4 @@
-"""Map the exported bexio sales documents to ERPNext: invoices, credit notes, orders, offers.
+"""Map the exported bexio sales documents to ERPNext: invoices, credit notes, orders, offers, deliveries.
 
 Step three of the bexio pipeline, after import_master.py: the customers, items
 and accounts it imported are looked up here by their bexio_id. Each function
@@ -20,7 +20,7 @@ item line or a grand-total discount, so that the grand total is bexio's to the r
 
 The export directory holds the documents with their positions (the
 single-document calls), next to the entity files of export.py:
-invoices.json, orders.json, offers.json and credit_vouchers.json when bexio
+invoices.json, orders.json, offers.json, deliveries.json and credit_vouchers.json when bexio
 has credit notes. Amounts are in the document currency; the CHF figures are
 the document amounts times the exchange rate bexio gives for the document.
 
@@ -51,9 +51,9 @@ BASE_CURRENCY = "CHF"
 # the ECB's rate of a currency on a day, from the service ERPNext's own exchange-rate fetch uses; a day
 # without a rate (a weekend, a holiday) gets the last one before it, and the response names that day
 RATE_URL = "https://api.frankfurter.app/{day}?from={code}&to=CHF"
-# the documents --apply writes, by export file: the invoices, credit notes, orders and offers, all as drafts
-# (the submit of the invoices is bexio-drafts.sh's; orders and offers are never submitted here)
-APPLY_FILES = ("invoices", "credit_vouchers", "orders", "offers")
+# the documents --apply writes, by export file: the invoices, credit notes, orders, offers and deliveries, all as drafts
+# (the submit of the invoices is bexio-drafts.sh's; orders, offers and delivery notes are never submitted here)
+APPLY_FILES = ("invoices", "credit_vouchers", "orders", "offers", "deliveries")
 DRAFTS_FILE = "bexio-sales-drafts.json"
 LOADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "bexio-drafts.sh")
 # free-text positions and text lines: one service item, the description keeps the bexio text
@@ -70,6 +70,7 @@ DOCUMENTS = (
     ("credit_vouchers", "Sales Invoice", True),
     ("orders", "Sales Order", False),
     ("offers", "Quotation", False),
+    ("deliveries", "Delivery Note", False),
 )
 
 # bexio position type -> how it maps. A type not listed here is refused, not guessed.
@@ -315,10 +316,10 @@ def _document(doctype, record, lookups, credit=False):
         raise Unmapped("total differs from bexio's by {:+}".format(absorb))
     # no VAT row takes the difference (prices with the VAT in them, or no VAT at all): bexio's total is the booked
     # amount, so a rounding line or a grand-total discount makes ERPNext's total bexio's. Invoices, orders and offers
-    # take it; a credit note's sign would be the wrong way round, so it is refused
+    # take it; a credit note's sign would be the wrong way round, and delivery notes keep their refusal
     grand_discount = ZERO
     if absorb and (included or last_rate is None):
-        if credit:
+        if credit or doctype == "Delivery Note":
             raise Unmapped("nothing to take a total difference of {:+} in".format(absorb))
         rappen = int(absorb * 100)
         if absorb > 0:
@@ -380,6 +381,9 @@ def _document(doctype, record, lookups, credit=False):
         doc["transaction_date"] = record["is_valid_from"]
         for row in rows:
             row["delivery_date"] = record["is_valid_from"]
+    if doctype == "Delivery Note":
+        # its date is the posting date; without one ERPNext would take today
+        doc.update(posting_date=record["is_valid_from"], set_posting_time=1)
 
     sign = -1 if credit else 1
     if credit:
@@ -414,6 +418,11 @@ def sales_order(record, lookups):
 def quotation(record, lookups):
     """The Quotation of a bexio offer (kb_offer)."""
     return _document("Quotation", record, lookups)[0]
+
+
+def delivery_note(record, lookups):
+    """The Delivery Note of a bexio delivery (kb_delivery with its positions); a draft, so it moves no stock and posts no GL."""
+    return _document("Delivery Note", record, lookups)[0]
 
 
 def unknown_fields(doc, metas):
@@ -519,7 +528,7 @@ def lookups_from_erp(erp, data):
         "account": bexio_names("Account"),
         "tax": tax,
         "invoice": invoices,
-        "existing": {dt: set(bexio_names(dt)) for dt in ("Sales Invoice", "Sales Order", "Quotation")},
+        "existing": {dt: set(bexio_names(dt)) for dt in ("Sales Invoice", "Sales Order", "Quotation", "Delivery Note")},
         "rate_at": ecb_rate,
     }
 
@@ -618,7 +627,7 @@ def main(argv):
         lookups = lookups_from_erp(erp, data)
         metas = {dt: doctype_fields(erp, dt) for dt in (
             "Sales Invoice", "Sales Invoice Item", "Sales Order", "Sales Order Item",
-            "Quotation", "Quotation Item", "Sales Taxes and Charges")}
+            "Quotation", "Quotation Item", "Delivery Note", "Delivery Note Item", "Sales Taxes and Charges")}
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2

@@ -156,11 +156,12 @@ Each record is keyed by `bexio_id`; a second run changes nothing. Take a backup
 first (`bench --site frontend backup`). The export directory is company data and
 stays under `~/ws_yardr_finance/private/`, never in the repository.
 
-## Sales documents (invoices, credit notes, orders, offers)
+## Sales documents (invoices, credit notes, orders, offers, deliveries)
 
 `import_sales.py` maps the exported sales documents to ERPNext: `invoices.json`
 to Sales Invoice, `credit_vouchers.json` to Sales Invoice with `is_return`
-against the original, `orders.json` to Sales Order, `offers.json` to Quotation.
+against the original, `orders.json` to Sales Order, `offers.json` to Quotation,
+`deliveries.json` to Delivery Note (a draft: no stock moves, no GL).
 Each record is read with its positions (the single-document call). The
 functions return the ERPNext document as a dict. Nothing is submitted, and no
 GL posts: the documents are drafts (docstatus 0). The posting plan
@@ -169,8 +170,10 @@ GL posts: the documents are drafts (docstatus 0). The posting plan
     python3 finance/bexio/import_sales.py --dry-run [--export DIR]
     python3 finance/bexio/import_sales.py --apply [--export DIR]
 
-`--apply` writes the invoices, credit notes, orders and offers as drafts (orders are Sales Orders and offers
-Quotations, named by bexio's document number; neither is ever submitted, so they post no GL). The plan goes to
+`--apply` writes the invoices, credit notes, orders, offers and deliveries as drafts (orders are Sales Orders,
+offers Quotations and deliveries Delivery Notes, named by bexio's document number; none is ever submitted, so they
+post no GL). A Delivery Note needs the `bexio_id` custom field on its doctype, which `swiss-setup.py` adds: run it
+before the first `--apply` that carries deliveries. The plan goes to
 `<private>/bexio-sales-drafts.json`, and the loader
 (`finance/scripts/bexio-drafts.sh`, `bexio-drafts.py`) inserts it inside the
 backend container as Administrator. Each draft is named by bexio's
@@ -181,7 +184,7 @@ bexio books it (see Currencies below).
 
 `finance/scripts/bexio-drafts.sh <plan.json> submit` also submits each draft
 after it is loaded, in posting date order: that is the step that writes the GL.
-A plan's `keep_draft` lists the bexio ids that stay drafts; a Sales Order or Quotation always stays one. A document already
+A plan's `keep_draft` lists the bexio ids that stay drafts; a Sales Order, Quotation or Delivery Note always stays one. A document already
 submitted is skipped, so a second run submits nothing; a draft that fails
 validation on submit is rolled back and listed by bexio id; a document that
 was new in that run is rolled back whole (not left as a draft).

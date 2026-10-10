@@ -101,6 +101,7 @@ BEXIO_DOCTYPES = [
     # keys for the document import (finance-3qsp)
     ("Sales Order", "title"),
     ("Quotation", "title"),
+    ("Delivery Note", "title"),
     ("Bank Transaction", "date"),
     # the bexio VAT codes, mapped by bexio id (erp-7rbc)
     ("Sales Taxes and Charges Template", "title"),

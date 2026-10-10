@@ -25,7 +25,7 @@ Without the broker they are read with the export login (oauth.py login --export-
 its own keychain item), and everything else with the read-only login. Once the
 run is done, `oauth.py logout --export-scope` removes the export login again.
 
-Documents come with their positions: invoices, orders, offers and purchase bills
+Documents come with their positions: invoices, orders, offers, deliveries and purchase bills
 are read as a list, then one call per record adds the positions to it. The
 payments of each invoice go to invoice_payments.json. The content of each file
 goes to files/<id>.<extension>; files.json holds the metadata of all of them.
@@ -155,7 +155,7 @@ ENTITIES = {
                                  "/2.0/kb_credit_voucher/{id}"), False),
     "orders": (detailed(offset("/2.0/kb_order"), "/2.0/kb_order/{id}"), False),
     "offers": (detailed(offset("/2.0/kb_offer"), "/2.0/kb_offer/{id}"), False),
-    "deliveries": (offset("/2.0/kb_delivery"), False),
+    "deliveries": (detailed(offset("/2.0/kb_delivery"), "/2.0/kb_delivery/{id}"), False),
     "notes": (offset("/2.0/note"), False),
     "bills": (detailed(pages("/4.0/purchase/bills", "page_size", "data"), "/4.0/purchase/bills/{id}"), True),
     "expenses": (detailed(pages("/4.0/expenses", "page_size", "data"), "/4.0/expenses/{id}"), False),

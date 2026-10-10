@@ -236,6 +236,24 @@ class SalesOrderAndQuotation(unittest.TestCase):
         self.assertNotIn("customer", doc)
 
 
+class DeliveryNote(unittest.TestCase):
+    def test_delivery_is_a_delivery_note_dated_by_its_day(self):
+        delivery = record(INVOICE, id=800, document_nr="LI-1", is_valid_from="2024-03-05")
+        doc = isl.delivery_note(delivery, LOOKUPS)
+        self.assertEqual(doc["doctype"], "Delivery Note")
+        self.assertEqual((doc["posting_date"], doc["set_posting_time"]), ("2024-03-05", 1))
+        self.assertEqual(doc["customer"], "Beispiel AG")
+        self.assertEqual(doc["bexio_id"], "800")
+        self.assertNotIn("transaction_date", doc)
+        self.assertTrue(all("income_account" not in r and "delivery_date" not in r for r in doc["items"]))
+
+    def test_its_positions_and_taxes_map_as_on_an_invoice(self):
+        doc, differences, totals, _rate = isl._document("Delivery Note", record(INVOICE, id=801), LOOKUPS)
+        self.assertEqual(differences, [])
+        self.assertEqual(totals, (Decimal("150.00"), Decimal("9.40"), Decimal("159.40")))
+        self.assertEqual(len(doc["taxes"]), 2)
+
+
 class Differences(unittest.TestCase):
     def test_a_bexio_tax_that_differs_is_reported_and_not_adjusted(self):
         off = record(INVOICE, taxs=[{"percentage": "8.1", "value": "8.11"}, {"percentage": "2.6", "value": "1.30"}])
@@ -643,6 +661,10 @@ class RundungAndGrandTotalDiscount(unittest.TestCase):
         with self.assertRaisesRegex(isl.Unmapped, "total differs from bexio's by \\+0.06"):
             isl._document("Sales Order", self.untaxed("150.06"), LOOKUPS)
 
+    def test_a_delivery_note_with_the_same_difference_stays_unmapped(self):
+        with self.assertRaisesRegex(isl.Unmapped, "nothing to take a total difference"):
+            isl._document("Delivery Note", self.untaxed("149.98"), LOOKUPS)
+
     def test_an_exact_untaxed_total_has_no_rundung_line_and_no_discount(self):
         doc, differences, _totals, _rate = isl._document("Sales Invoice", self.untaxed("150.00"), LOOKUPS)
         self.assertEqual(len(doc["items"]), 3)
@@ -697,6 +719,15 @@ class Drafts(unittest.TestCase):
         self.assertEqual(count, 2)
         self.assertEqual(sorted((d["doctype"], d["name"], d["bexio_id"]) for d in out["documents"]),
                          [("Quotation", "AN-1", "950"), ("Sales Order", "AB-1", "900")])
+
+    def test_a_delivery_is_a_delivery_note_draft_named_by_its_number(self):
+        delivery = record(INVOICE, id=960, document_nr="LI-1")
+        delivery_bad = record(INVOICE, id=961, document_nr="LI-2", contact_id=999)
+        count, out = self.write(self.results([], deliveries=[delivery, delivery_bad]))
+        self.assertEqual(count, 1)
+        (draft,) = out["documents"]
+        self.assertEqual((draft["doctype"], draft["name"], draft["bexio_id"]), ("Delivery Note", "LI-1", "960"))
+        self.assertEqual(draft["values"]["posting_date"], "2024-03-01")
 
 
 if __name__ == "__main__":

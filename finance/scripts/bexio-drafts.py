@@ -27,8 +27,9 @@ from collections import Counter
 SITE = "frontend"
 DRAFT = 0
 SUBMITTED = 1
-# documents that stay drafts in submit mode: they post no GL, and bexio's orders and offers are not booked history
-NEVER_SUBMITTED = ("Sales Order", "Quotation")
+# documents that stay drafts in submit mode: they post no GL, and bexio's orders, offers and deliveries are not booked
+# history (a submitted Delivery Note moves stock, and posts GL for a stock item)
+NEVER_SUBMITTED = ("Sales Order", "Quotation", "Delivery Note")
 # fields the importers hand over that ERPNext's doctypes do not have: the files come with erp-a2ma
 DROP = ("bexio_attachment_ids",)
 

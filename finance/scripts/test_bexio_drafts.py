@@ -220,6 +220,15 @@ class Submit(unittest.TestCase):
         self.assertEqual(counts[("Sales Order", "kept draft")], 1)
         self.assertEqual(counts[("Quotation", "kept draft")], 1)
 
+    def test_a_delivery_note_stays_a_draft_in_submit_mode(self):
+        store = FakeStore()
+        delivery = dict(invoice("500", "LI-1001"), doctype="Delivery Note")
+        counts, _ = loader.apply_plan(plan(invoice("500", "RE-1001"), delivery), store, submit=True)
+        self.assertEqual(store.docs[("Sales Invoice", "RE-1001")]["docstatus"], 1)
+        self.assertEqual(store.docs[("Delivery Note", "LI-1001")]["docstatus"], 0)
+        self.assertEqual(counts[("Delivery Note", "kept draft")], 1)
+        self.assertNotIn(("submit", "LI-1001"), [(call, name) for call, _, name in store.calls])
+
     def test_a_draft_that_fails_on_submit_is_rolled_back_and_listed(self):
         store = FakeStore()
         store.submit_fail = {"500"}

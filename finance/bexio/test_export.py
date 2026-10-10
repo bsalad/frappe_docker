@@ -376,6 +376,7 @@ class ExportTest(unittest.TestCase):
         c = answering(fake_client(), {
             "/2.0/note": [{"id": 1, "text": "Invented note"}],
             "/2.0/kb_delivery": [{"id": 2}],
+            "/2.0/kb_delivery/2": {"id": 2, "positions": [{"id": 20, "type": "KbPositionCustom", "text": "Invented"}]},
             "/3.0/taxes": [{"id": 3, "display_name": "Invented VAT"}],
         })
         manifest = export.export(c, self.out, only=["notes", "deliveries", "taxes"])
@@ -383,6 +384,15 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(manifest["entities"]["notes"]["count"], 1)
         self.assertEqual(manifest["entities"]["deliveries"]["count"], 1)
         self.assertEqual(manifest["entities"]["taxes"]["count"], 1)
+
+    def test_a_delivery_is_read_with_its_positions(self):
+        c = answering(fake_client(), {
+            "/2.0/kb_delivery": [{"id": 2, "document_nr": "LI-2"}],
+            "/2.0/kb_delivery/2": {"id": 2, "document_nr": "LI-2", "positions": [{"id": 20, "type": "KbPositionCustom"}]},
+        })
+        export.export(c, self.out, only=["deliveries"])
+        self.assertEqual(self.load("deliveries.json"),
+                         [{"id": 2, "document_nr": "LI-2", "positions": [{"id": 20, "type": "KbPositionCustom"}]}])
 
     def test_expenses_carry_their_details_and_their_attachments(self):
         c = answering(fake_client(), {
