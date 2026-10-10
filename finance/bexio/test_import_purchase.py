@@ -23,7 +23,7 @@ def lookups(taxes=TAXES):
         suppliers={"901": "Lieferant Test AG"},
         accounts={"5001": "5001 - Testaufwand - bic", "5002": "5002 - Testmaterial - bic"},
         account_by_number={"1170": "1170 - Vorsteuer Material/DL - bic", "1171": "1171 - Vorsteuer Invest. - bic", "1172": "1172 - Vorsteuer transitorisch - bic",
-                           "2203": "2203 - Bezugsteuer - bic"},
+                           "2202": "2202 - Umsatzsteuerausgleich - bic"},
         taxes=dict(taxes),
     )
 
@@ -170,7 +170,7 @@ class MapBillFromLineItemsTest(unittest.TestCase):
         self.assertEqual([r["amount"] for r in doc["items"]], [18000.0])
         self.assertEqual(
             [(r["account_head"], r["add_deduct_tax"], r["tax_amount"]) for r in doc["taxes"]],
-            [("1171 - Vorsteuer Invest. - bic", "Add", 1458.0), ("2203 - Bezugsteuer - bic", "Deduct", 1458.0)])
+            [("1172 - Vorsteuer transitorisch - bic", "Add", 1458.0), ("2202 - Umsatzsteuerausgleich - bic", "Deduct", 1458.0)])
         self.assertEqual(ip.document_totals(doc), (Decimal("18000"), Decimal("0"), Decimal("18000")))
 
     def test_reverse_charge_without_the_template_is_reported(self):

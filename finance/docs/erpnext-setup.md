@@ -95,9 +95,11 @@ by that id, never by its rate. The template's description keeps bexio's period
 (`bexio 28, gültig ab 2023-07`); a code that is inactive in bexio is disabled.
 
 - Sales (15): `UN77`, `UN81`, `UR25`, `UR26`, `US37`, `US38`, `UEX`, `ULA`,
-  `MEL`, `UNO`, `SUB`, `SPE`, `UO77`, `UO81`, `U00`. Booking to 2200.
-- Purchase (27): Material/DL (1170) `VM…`, `VIM`, `ZOLLM`, `BZM…`; Invest./Aufwand
-  (1171) `VB…`, `V00`, `VSF`, `ZOLLB`, `BZB…`; corrections `VES`, `VEV`, `VKÜ`
+  `MEL`, `UNO`, `SUB`, `SPE`, `UO77`, `UO81`, `U00`. Booking to 2202, bexio's
+  transitory account: the VAT is moved to 2200 when the invoice is paid.
+- Purchase (27): `VM…`, `VIM`, `ZOLLM`, `BZM…` and `VB…`, `V00`, `VSF`, `ZOLLB`,
+  `BZB…` book to the transitory Vorsteuer 1172 at the bill date (bexio's account;
+  moved to 1170 or 1171 when the bill is paid); corrections `VES`, `VEV`, `VKÜ`
   (1172, 1173, 1174), one per bexio id, for 7.7 and 8.1.
 - Item Tax (42): one per code, one row on the code's account.
 - Defaults: `UN81` (sales) and `VM81` (purchase, Material/DL).
@@ -105,17 +107,17 @@ by that id, never by its rate. The template's description keeps bexio's period
 How the special codes are modelled:
 
 - **Bezugsteuer** (`BZ…`, reverse charge): one purchase template with two rows,
-  +rate on 1170 or 1171 (Vorsteuer) and -rate on 2203 Bezugsteuer. The net is 0.
+  +rate on 1172 (Vorsteuer) and -rate on 2202 (the liability bexio books the
+  reverse charge on). The net is 0.
 - **Einfuhrsteuer** (`ZOLLM`, `ZOLLB`): rate 0. The import VAT is on the customs
   document; ERPNext does not deduct it from a percentage. Booking it is part of
   the import (open question in `bexio-mapping.md`).
 - **Corrections** (`VES`, `VEV`, `VKÜ`): inactive in bexio. Booked as journal
   entries, so the templates exist for reference only. Their accounts (1172 to
   1174, by the order of the mapping) are not verified.
-- Accounts of the other codes follow the kind (sales 2200, Material/DL 1170,
-  Invest./Aufwand 1171). The accounts of the export's taxes are not in the
-  repo; `vat --check` compares them once the full export exists.
-- Account types: 1172 to 1174 and 2203 are set to `Tax`, as 2200 is in `coa`:
+- Accounts of the other codes follow the kind (sales 2202, purchase 1172). The
+  bexio journal books them so; `vat --check` compares the export's own accounts.
+- Account types: 1172 to 1174, 2202 and 2203 are set to `Tax`, as 2200 is in `coa`:
   an Item Tax row takes only accounts of that type.
 
 Retired: the ERPNext templates `USt…`, `VSt…` and `MWST…` (the 8 %-period

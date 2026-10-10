@@ -36,8 +36,8 @@ An expense with VAT is skipped: its net split is not in the export; the
 bills and the expense step of erp-a2ma take it.
 
 A reverse-charge bill (item_net true, Bezugsteuer codes) is mapped with its
-net as the amount. Its VAT is booked twice, as input tax on the Vorsteuer
-account of its kind and taken back on 2203 (the templates BZM77, BZM81, BZB77
+net as the amount. Its VAT is booked twice, as input tax on the transitory
+Vorsteuer account 1172 and taken back on 2202 (the templates BZM77, BZM81, BZB77
 and BZB81 carry both rows), so the bill's total is its net, as bexio books it.
 
 --dry-run (the default) reads ERPNext and writes nothing. --apply hands the
@@ -80,8 +80,8 @@ MAT_SV_IDS = (22, 35, 8, 34, 21, 36)  # VM77, VM81, VM25, VM26, VM37, VM38: Mate
 INV_BA_IDS = (24, 38, 12, 37, 23, 39)  # VB77, VB81, VB25, VB26, VB37, VB38: Investitionen und Aufwand
 VORSTEUER = dict([(i, "1172") for i in MAT_SV_IDS + INV_BA_IDS])
 # reverse charge (Bezugsteuer): the Vorsteuer account of the kind, and the rate; the deduction is on BEZUGSTEUER
-BEZUG = {19: ("1170", 7.7), 33: ("1170", 8.1), 20: ("1171", 7.7), 32: ("1171", 8.1)}  # BZM77, BZM81, BZB77, BZB81
-BEZUGSTEUER = "2203"
+BEZUG = {19: ("1172", 7.7), 33: ("1172", 8.1), 20: ("1172", 7.7), 32: ("1172", 8.1)}  # BZM77, BZM81, BZB77, BZB81
+BEZUGSTEUER = "2202"  # the liability bexio books the reverse charge on, as its bill-date lines show
 # 0 % purchase code and the import taxes that carry no VAT on the bill: no tax row
 ZERO_RATE_IDS = (47, 7, 10)
 

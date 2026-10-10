@@ -233,8 +233,36 @@ not the integer id.
 `line_items`) to Purchase Invoices. `--apply` writes them as drafts, named by
 bexio's `document_no`, through the same loader. A reverse-charge bill (Bezugsteuer
 codes 19, 20, 32, 33) is mapped with its net as the amount; its VAT is booked to
-the Vorsteuer account and taken back on 2203, so the total is the net, as bexio
+the transitory Vorsteuer account 1172 and taken back on 2202, so the total is the net, as bexio
 books it. Expenses are not written. A foreign-currency bill is booked in CHF at its
 `exchange_rate`, as bexio books it, with the original in the remarks (see Currencies
 under the sales import); it is written only when its CHF total is bexio's CHF
 booking on 2000 within 5 rappen.
+
+## VAT on the transitory accounts (VAT fix)
+
+The sales and purchase loaders book the VAT of a document to its transitory account
+(2202 for a sale at the invoice date, 1172 for a bill at the bill date), as bexio does.
+Documents loaded before that booked it where bexio moves it on payment (2200, 1171, 1170).
+`import_vat_fix.py` corrects them without touching a submitted document: one Journal Entry per
+document, keyed by its bexio id, built from bexio's journal lines.
+
+- invoice: a Sales Invoice's VAT, 2200 to 2202, at the invoice date (`vatfix-invoice-<id>`).
+  A rappen that ERPNext's tax row differs from bexio's by goes to 6945, as the posting plan has it.
+- bill: a Purchase Invoice's VAT to bexio's bill-date lines, 1172 (and 2202 and 2203 on a
+  reverse-charge bill), at the bill date (`vatfix-bill-<uuid>`).
+- payment VAT: each bexio journal line that moves VAT when a bill is paid (1171 or 1170 against
+  1172, and 2202 against 2203), on the payment date, keyed by the line id. The ids are listed for erp-fd93.
+- rounding: a bill open by a rappen, or a payment unallocated by one, is closed against the
+  supplier's payable with the difference on 6940 (`rounding-bill-<uuid>`, `rounding-payment-<uuid>`).
+
+The dry run reads ERPNext and prints, per year and account, bexio's document lines, bexio's other
+lines (bank and manual entries, not in ERPNext yet), ERPNext now, the corrections and ERPNext after.
+A document whose correction does not balance is listed by bexio id, not written.
+
+    python3 finance/bexio/import_vat_fix.py --dry-run [--export DIR]
+    python3 finance/bexio/import_vat_fix.py --write FILE [--export DIR]
+    finance/scripts/bexio-drafts.sh FILE submit
+
+A second run inserts nothing: a corrected document has no difference left, and the loader finds
+each entry by its bexio id.

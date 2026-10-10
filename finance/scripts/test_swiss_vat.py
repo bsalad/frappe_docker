@@ -48,7 +48,16 @@ class BexioTable(unittest.TestCase):
         for row in ss.BEXIO_TAXES:
             self.assertIn(row[7], ss.FIXED_ACCOUNTS)
             if row[8]:
-                self.assertEqual(row[8], "2203")
+                self.assertEqual(row[8], "2202")
+
+    def test_vat_books_to_bexio_transitory_accounts(self):
+        # bexio books sales VAT at the invoice date on 2202, and purchase VAT at the bill date on 1172 (moved to
+        # 1170 or 1171 only when the bill is paid); a template on 2200 or 1170/1171 would book it where bexio does not
+        for row in ss.BEXIO_TAXES:
+            if row[0] == "S":
+                self.assertEqual(row[7], "2202", row[2])
+            elif row[2] not in ("VES", "VEV", "VKÜ"):
+                self.assertEqual(row[7], "1172", row[2])
 
     def test_reverse_charge_only_on_bezugsteuer(self):
         for row in ss.BEXIO_TAXES:

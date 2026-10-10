@@ -22,47 +22,47 @@ COA_CSV = "apps/erpnextswiss/erpnextswiss/erpnextswiss/coa_import/accounts_templ
 # rate, validity, active, account, deduction account). Kind S = sales, P =
 # purchase. Source: private/bexio-mapping.md, "VAT codes". Until the full export
 # has /3.0/taxes, the names come from the mapping's kind column and the accounts
-# from its kind (sales 2200, Mat/SV 1170, Inv/BA 1171): `vat --check` compares
+# from its kind (sales 2202, purchase 1172, bexio's transitory accounts): `vat --check` compares
 # them with bexio's own file once it exists. Accounts of the correction codes
 # (1172-1174) and their 8.1 ids are not in the mapping and are unverified.
-# Bezugsteuer books the same rate as deduction on 2203, so the net is 0.
+# Bezugsteuer books the same rate as deduction on 2202 (the liability), so the net is 0.
 BEXIO_TAXES = [
-    ("S", 16, "UN77", "Normalsatz", 7.7, "2017-10 bis 2023-12", True, "2200", None),
-    ("S", 28, "UN81", "Normalsatz", 8.1, "ab 2023-07", True, "2200", None),
-    ("S", 17, "UR25", "Reduzierter Satz", 2.5, "2017-10 bis 2023-12", True, "2200", None),
-    ("S", 29, "UR26", "Reduzierter Satz", 2.6, "ab 2023-07", True, "2200", None),
-    ("S", 18, "US37", "Sondersatz Beherbergung", 3.7, "ab 2017-10", False, "2200", None),
-    ("S", 30, "US38", "Sondersatz Beherbergung", 3.8, "ab 2023-07", False, "2200", None),
-    ("S", 3, "UEX", "Export, steuerbefreit", 0, "", True, "2200", None),
-    ("S", 4, "ULA", "Ausland", 0, "", False, "2200", None),
-    ("S", 5, "MEL", "Meldeverfahren", 0, "", False, "2200", None),
-    ("S", 6, "UNO", "nicht optimiert", 0, "", False, "2200", None),
-    ("S", 13, "SUB", "Subventionen", 0, "", False, "2200", None),
-    ("S", 14, "SPE", "Spenden", 0, "", False, "2200", None),
-    ("S", 15, "UO77", "optiert", 7.7, "2017-10", False, "2200", None),
-    ("S", 31, "UO81", "optiert", 8.1, "ab 2023-07", False, "2200", None),
-    ("S", 48, "U00", "Null-Satz", 0, "", False, "2200", None),
-    ("P", 22, "VM77", "Normalsatz Material/DL", 7.7, "2017-10 bis 2023-12", True, "1170", None),
-    ("P", 35, "VM81", "Normalsatz Material/DL", 8.1, "ab 2023-07", True, "1170", None),
-    ("P", 8, "VM25", "Reduzierter Satz Material/DL", 2.5, "2017-10 bis 2023-12", True, "1170", None),
-    ("P", 34, "VM26", "Reduzierter Satz Material/DL", 2.6, "ab 2023-07", True, "1170", None),
-    ("P", 21, "VM37", "Sondersatz Beherbergung Material/DL", 3.7, "ab 2017-10", False, "1170", None),
-    ("P", 36, "VM38", "Sondersatz Beherbergung Material/DL", 3.8, "ab 2023-07", False, "1170", None),
-    ("P", 7, "VIM", "Import Material/DL, steuerbefreit", 0, "", True, "1170", None),
-    ("P", 9, "ZOLLM", "Einfuhrsteuer Material/DL", 0, "", True, "1170", None),
-    ("P", 33, "BZM81", "Bezugsteuer Material/DL", 8.1, "ab 2023-07", True, "1170", "2203"),
-    ("P", 19, "BZM77", "Bezugsteuer Material/DL", 7.7, "ab 2017-10", False, "1170", "2203"),
-    ("P", 24, "VB77", "Normalsatz Invest./Aufwand", 7.7, "2017-10 bis 2024-12", True, "1171", None),
-    ("P", 38, "VB81", "Normalsatz Invest./Aufwand", 8.1, "ab 2023-01", True, "1171", None),
-    ("P", 12, "VB25", "Reduzierter Satz Invest./Aufwand", 2.5, "2017-10 bis 2023-12", True, "1171", None),
-    ("P", 37, "VB26", "Reduzierter Satz Invest./Aufwand", 2.6, "ab 2023-07", True, "1171", None),
-    ("P", 23, "VB37", "Sondersatz Beherbergung Invest./Aufwand", 3.7, "ab 2017-10", False, "1171", None),
-    ("P", 39, "VB38", "Sondersatz Beherbergung Invest./Aufwand", 3.8, "ab 2023-07", True, "1171", None),
-    ("P", 47, "V00", "Null-Satz Invest./Aufwand", 0, "", True, "1171", None),
-    ("P", 10, "VSF", "Import Invest./Aufwand, steuerbefreit", 0, "", True, "1171", None),
-    ("P", 11, "ZOLLB", "Einfuhrsteuer Invest./Aufwand", 0, "", True, "1171", None),
-    ("P", 32, "BZB81", "Bezugsteuer Invest./Aufwand", 8.1, "ab 2023-07", True, "1171", "2203"),
-    ("P", 20, "BZB77", "Bezugsteuer Invest./Aufwand", 7.7, "2017-10 bis 2023-12", True, "1171", "2203"),
+    ("S", 16, "UN77", "Normalsatz", 7.7, "2017-10 bis 2023-12", True, "2202", None),
+    ("S", 28, "UN81", "Normalsatz", 8.1, "ab 2023-07", True, "2202", None),
+    ("S", 17, "UR25", "Reduzierter Satz", 2.5, "2017-10 bis 2023-12", True, "2202", None),
+    ("S", 29, "UR26", "Reduzierter Satz", 2.6, "ab 2023-07", True, "2202", None),
+    ("S", 18, "US37", "Sondersatz Beherbergung", 3.7, "ab 2017-10", False, "2202", None),
+    ("S", 30, "US38", "Sondersatz Beherbergung", 3.8, "ab 2023-07", False, "2202", None),
+    ("S", 3, "UEX", "Export, steuerbefreit", 0, "", True, "2202", None),
+    ("S", 4, "ULA", "Ausland", 0, "", False, "2202", None),
+    ("S", 5, "MEL", "Meldeverfahren", 0, "", False, "2202", None),
+    ("S", 6, "UNO", "nicht optimiert", 0, "", False, "2202", None),
+    ("S", 13, "SUB", "Subventionen", 0, "", False, "2202", None),
+    ("S", 14, "SPE", "Spenden", 0, "", False, "2202", None),
+    ("S", 15, "UO77", "optiert", 7.7, "2017-10", False, "2202", None),
+    ("S", 31, "UO81", "optiert", 8.1, "ab 2023-07", False, "2202", None),
+    ("S", 48, "U00", "Null-Satz", 0, "", False, "2202", None),
+    ("P", 22, "VM77", "Normalsatz Material/DL", 7.7, "2017-10 bis 2023-12", True, "1172", None),
+    ("P", 35, "VM81", "Normalsatz Material/DL", 8.1, "ab 2023-07", True, "1172", None),
+    ("P", 8, "VM25", "Reduzierter Satz Material/DL", 2.5, "2017-10 bis 2023-12", True, "1172", None),
+    ("P", 34, "VM26", "Reduzierter Satz Material/DL", 2.6, "ab 2023-07", True, "1172", None),
+    ("P", 21, "VM37", "Sondersatz Beherbergung Material/DL", 3.7, "ab 2017-10", False, "1172", None),
+    ("P", 36, "VM38", "Sondersatz Beherbergung Material/DL", 3.8, "ab 2023-07", False, "1172", None),
+    ("P", 7, "VIM", "Import Material/DL, steuerbefreit", 0, "", True, "1172", None),
+    ("P", 9, "ZOLLM", "Einfuhrsteuer Material/DL", 0, "", True, "1172", None),
+    ("P", 33, "BZM81", "Bezugsteuer Material/DL", 8.1, "ab 2023-07", True, "1172", "2202"),
+    ("P", 19, "BZM77", "Bezugsteuer Material/DL", 7.7, "ab 2017-10", False, "1172", "2202"),
+    ("P", 24, "VB77", "Normalsatz Invest./Aufwand", 7.7, "2017-10 bis 2024-12", True, "1172", None),
+    ("P", 38, "VB81", "Normalsatz Invest./Aufwand", 8.1, "ab 2023-01", True, "1172", None),
+    ("P", 12, "VB25", "Reduzierter Satz Invest./Aufwand", 2.5, "2017-10 bis 2023-12", True, "1172", None),
+    ("P", 37, "VB26", "Reduzierter Satz Invest./Aufwand", 2.6, "ab 2023-07", True, "1172", None),
+    ("P", 23, "VB37", "Sondersatz Beherbergung Invest./Aufwand", 3.7, "ab 2017-10", False, "1172", None),
+    ("P", 39, "VB38", "Sondersatz Beherbergung Invest./Aufwand", 3.8, "ab 2023-07", True, "1172", None),
+    ("P", 47, "V00", "Null-Satz Invest./Aufwand", 0, "", True, "1172", None),
+    ("P", 10, "VSF", "Import Invest./Aufwand, steuerbefreit", 0, "", True, "1172", None),
+    ("P", 11, "ZOLLB", "Einfuhrsteuer Invest./Aufwand", 0, "", True, "1172", None),
+    ("P", 32, "BZB81", "Bezugsteuer Invest./Aufwand", 8.1, "ab 2023-07", True, "1172", "2202"),
+    ("P", 20, "BZB77", "Bezugsteuer Invest./Aufwand", 7.7, "2017-10 bis 2023-12", True, "1172", "2202"),
     ("P", 25, "VES", "Vorsteuerkorrektur nachträglich", 7.7, "2017-10 bis 2023-12", False, "1172", None),
     ("P", 26, "VEV", "Vorsteuerkorrektur Eigenverbrauch", 7.7, "2017-10 bis 2023-12", False, "1173", None),
     ("P", 27, "VKÜ", "Vorsteuerkorrektur Kürzung", 7.7, "2017-10 bis 2023-12", False, "1174", None),
@@ -75,7 +75,7 @@ DEFAULT_SALES, DEFAULT_PURCHASE = 28, 35
 TAX_DOCTYPES = ("Sales Taxes and Charges Template", "Purchase Taxes and Charges Template", "Item Tax Template")
 # ERPNext's own templates (MWST/USt/VSt, the rate per period in the name) are
 # replaced by the codes above and deleted by `vat`, once nothing refers to them.
-FIXED_ACCOUNTS = ("2200", "1170", "1171", "1172", "1173", "1174", "2203")
+FIXED_ACCOUNTS = ("2202", "1172", "1173", "1174", "2203")
 # KMU account for USt payable (coa gives it the Tax type)
 ACC_USt = "2200"
 
@@ -239,7 +239,7 @@ def tax_rows(dt, kind, account_no, deduct_no, rate):
     rows = [{"category": "Total", "add_deduct_tax": "Add", "charge_type": "On Net Total",
              "account_head": acc, "rate": rate}]
     if deduct_no:
-        # reverse charge: the same rate comes back as a deduction on 2203, net 0
+        # reverse charge: the same rate comes back as a deduction on 2202, net 0
         rows.append({"category": "Total", "add_deduct_tax": "Deduct", "charge_type": "On Net Total",
                      "account_head": account(deduct_no), "rate": rate})
     return rows
@@ -289,7 +289,7 @@ def vat():
     fields()
     # Item Tax rows only take accounts of type Tax; the KMU template leaves
     # these empty (as coa does for 2200)
-    for number in ("1172", "1173", "1174", "2203"):
+    for number in ("1172", "1173", "1174", "2202", "2203"):
         name = account(number)
         if frappe.db.get_value("Account", name, "account_type") != "Tax":
             frappe.db.set_value("Account", name, "account_type", "Tax")
