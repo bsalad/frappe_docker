@@ -431,7 +431,8 @@ class NewPurchasesRunRate(LedgerFixture):
                  for supplier in recurring]
         stubs = {
             "opening_cash": 1000.0, "open_documents": {}, "paid_history": {}, "sales_paid_in_windows": [],
-            "recurring_sources": {"bills": bills, "bank": []}, "personnel_postings": [], "vat_balances": {},
+            "recurring_sources": {"bills": bills, "bank": [], "contra": [], "contra_not_modelled": {}},
+            "personnel_postings": [], "vat_balances": {},
             "vat_paid_since": 0.0, "insurer_suppliers": set(insurers),
         }
         with contextlib.ExitStack() as stack:
@@ -467,7 +468,8 @@ class NewPurchasesRunRate(LedgerFixture):
         def run(filters):
             with contextlib.ExitStack() as stack:
                 stubs = {"opening_cash": 1000.0, "open_documents": {}, "paid_history": {}, "sales_paid_in_windows": [],
-                         "recurring_sources": {"bills": [], "bank": []}, "personnel_postings": [], "vat_balances": {},
+                         "recurring_sources": {"bills": [], "bank": [], "contra": [], "contra_not_modelled": {}},
+                         "personnel_postings": [], "vat_balances": {},
                          "vat_paid_since": 0.0, "insurer_suppliers": set()}
                 for name, value in stubs.items():
                     stack.enter_context(mock.patch.object(cff, name, return_value=value))
@@ -579,7 +581,8 @@ class OwnerAccounts(unittest.TestCase):
             for name, value in stubs.items():
                 stack.enter_context(mock.patch.object(cff, name, return_value=value))
             stack.enter_context(mock.patch.object(cff, "_", lambda text: text))  # no site, so no translations
-            return cff.compute("Test Company", AS_OF, include_run_rate=False, include_owner_accounts=include)
+            return cff.compute("Test Company", AS_OF, include_run_rate=False, include_new_purchases=False,
+                               include_owner_accounts=include)
 
     def recurring(self, result):
         return sorted({(line["party"], line["amount"]) for line in result["lines"] if line["kind"] == "recurring"})
