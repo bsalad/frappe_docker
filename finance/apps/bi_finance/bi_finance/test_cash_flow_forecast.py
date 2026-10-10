@@ -41,7 +41,7 @@ class BankOutflows(unittest.TestCase):
                  bank_line("BT-2", D(2026, 8, 5), 500.0, "Transfer Invented Savings"),
                  bank_line("BT-3", D(2026, 9, 5), 500.0, "Transfer Invented Savings")]
         with self.patched(lines, transfer_je=[("BT-1",), ("BT-2",), ("BT-3",)]):
-            kept, left_out = cff.bank_outflows("Test Company", AS_OF, [])
+            kept, left_out, _journal = cff.bank_outflows("Test Company", AS_OF, [])
         self.assertEqual(kept, [])
         self.assertEqual(left_out["transfer between own bank accounts"], 3)
         self.assertEqual(cf.recurring_costs(kept, AS_OF, strict=True), [])
@@ -52,14 +52,14 @@ class BankOutflows(unittest.TestCase):
                  bank_line("BT-3", D(2026, 8, 9), 20.0, "Subscr Invented Cloud Inv 1002"),
                  bank_line("BT-4", D(2026, 9, 9), 20.0, "Subscr Invented Cloud Inv 1003")]
         with self.patched(lines, transfer_je=[("BT-1",)]):
-            kept, left_out = cff.bank_outflows("Test Company", AS_OF, [])
+            kept, left_out, _journal = cff.bank_outflows("Test Company", AS_OF, [])
         self.assertEqual([name for _key, _day, _amount, name in kept], ["BT-2", "BT-3", "BT-4"])
         self.assertEqual(left_out, {"transfer between own bank accounts": 1})
 
     def test_a_transfer_by_an_internal_transfer_payment_entry_is_left_out(self):
         lines = [bank_line("BT-1", D(2026, 7, 5), 300.0, "Invented Own Account")]
         with self.patched(lines, transfer_pe=[("BT-1",)]):
-            kept, left_out = cff.bank_outflows("Test Company", AS_OF, [])
+            kept, left_out, _journal = cff.bank_outflows("Test Company", AS_OF, [])
         self.assertEqual(kept, [])
         self.assertEqual(left_out, {"transfer between own bank accounts": 1})
 
@@ -81,15 +81,35 @@ class BankOutflows(unittest.TestCase):
             self.assertEqual(cff.reconciled_bank_lines([]), (set(), set(), set(), set()))
         frappe.db.sql.assert_not_called()
 
-    def test_a_bank_line_a_journal_entry_reconciles_to_is_left_to_the_contra_account_source(self):
-        # the same payment is in both sources: its Journal Entry's contra account is the recurring line, counted once
+    def test_a_bank_line_a_journal_entry_reconciles_to_stays_in_its_group_and_its_median(self):
+        # the group is grouped as before: the line a Journal Entry reconciles to is in it, so its median is unchanged
         lines = [bank_line("BT-1", D(2026, 7, 5), 40.0, "Subscr Invented Card 1001"),
                  bank_line("BT-2", D(2026, 8, 5), 40.0, "Subscr Invented Card 1002"),
                  bank_line("BT-3", D(2026, 9, 5), 40.0, "Subscr Invented Card 1003")]
         with self.patched(lines, journal=["BT-2"]):
-            kept, left_out = cff.bank_outflows("Test Company", AS_OF, [])
-        self.assertEqual([name for _key, _day, _amount, name in kept], ["BT-1", "BT-3"])
-        self.assertEqual(left_out, {"journal entry, counted by its contra account": 1})
+            kept, left_out, journal = cff.bank_outflows("Test Company", AS_OF, [])
+        self.assertEqual([name for _key, _day, _amount, name in kept], ["BT-1", "BT-2", "BT-3"])
+        self.assertEqual(journal, {"BT-2"})
+        self.assertEqual(left_out, {})
+        item = cf.recurring_costs(kept, AS_OF, strict=True)[0]
+        self.assertEqual((item["count"], item["amount"], item["period"]), (3, 40.0, "monthly"))
+
+
+class CountedOnce(unittest.TestCase):
+    def line(self, key, name, day=D(2026, 7, 5)):
+        return (key, day, 40.0, name)
+
+    def test_a_group_every_line_of_which_a_journal_entry_reconciles_to_is_counted_by_the_contra_source(self):
+        bank = [self.line("subscr invented card", "BT-1"), self.line("subscr invented card", "BT-2"),
+                self.line("invented telco", "BT-3")]
+        self.assertEqual(cf.counted_by_contra(bank, {"BT-1", "BT-2"}), {"subscr invented card"})
+
+    def test_a_group_with_a_line_no_journal_entry_reconciles_to_is_kept(self):
+        bank = [self.line("subscr invented card", "BT-1"), self.line("subscr invented card", "BT-2")]
+        self.assertEqual(cf.counted_by_contra(bank, {"BT-1"}), set())
+
+    def test_nothing_reconciled_counts_nothing(self):
+        self.assertEqual(cf.counted_by_contra([self.line("subscr invented card", "BT-1")], set()), set())
 
     def test_a_journal_entry_paid_to_a_bill_is_not_a_recurring_cost(self):
         # the entry is reconciled against a purchase invoice: the bill carries it
@@ -111,11 +131,29 @@ def journal_row(number, day, debit, entry, account_type="Expense", name=None):
 
 
 class JournalSources(unittest.TestCase):
-    def contra_sources(self, rows, billed=()):
+    def contra_read(self, rows, billed=()):
         # journal_outflows, then billed_journal_entries: the two reads of the books, in that order
         with mock.patch.object(cff, "frappe", mock.Mock()) as frappe:
             frappe.db.sql.side_effect = [rows, [(entry,) for entry in billed]]
             return cff.contra_sources("Test Company", AS_OF)
+
+    def contra_sources(self, rows, billed=()):
+        items, left_out, _not_modelled = self.contra_read(rows, billed)
+        return items, left_out
+
+    def test_an_irregular_account_gets_no_line_and_is_counted_as_not_modelled(self):
+        # entries on one invented account at uneven dates: no regular series, so no line, and the count is reported
+        rows = [journal_row("6570", D(2026, month, day), 200.0, "JE-6570-%d-%d" % (month, day))
+                for month, day in ((1, 3), (1, 20), (4, 2), (9, 28))]
+        items, left_out, not_modelled = self.contra_read(rows)
+        self.assertEqual(items, [])
+        self.assertEqual(left_out, {})
+        self.assertEqual(dict(not_modelled), {"6570": 4})
+
+    def test_a_regular_account_is_modelled_and_not_counted_as_not_modelled(self):
+        items, _left_out, not_modelled = self.contra_read(self.monthly("6940", 15.0))
+        self.assertEqual(len(items), 1)
+        self.assertEqual(not_modelled, {})
 
     def monthly(self, number, amount, account_type="Expense", name=None, months=(1, 2, 3, 4, 5, 6, 7, 8, 9)):
         return [journal_row(number, D(2026, month, 8), amount, "JE-%s-%d" % (number, month), account_type, name)
@@ -208,7 +246,8 @@ class NewSalesRunRate(unittest.TestCase):
         # every read of the books stubbed to nothing but the opening cash and the new sales receipts
         stubs = {
             "opening_cash": 1000.0, "open_documents": {}, "paid_history": {},
-            "recurring_sources": {"bills": [], "bank": [], "contra": []}, "personnel_postings": [], "vat_balances": {},
+            "recurring_sources": {"bills": [], "bank": [], "contra": [], "contra_not_modelled": {}},
+            "personnel_postings": [], "vat_balances": {},
             "vat_paid_since": 0.0, "sales_paid_in_windows": payments, "purchase_paid_in_windows": [],
             "insurer_suppliers": set(),
         }
@@ -510,7 +549,8 @@ class OpenDocuments(LedgerFixture):
         item = {"supplier": "Test Supplier", "amount": 40.0, "period": "monthly", "count": 3, "last_bill": "PI-HIST"}
         stubs = {
             "opening_cash": 1000.0, "paid_history": {}, "sales_paid_in_windows": [],
-            "recurring_sources": {"bills": [item], "bank": []}, "personnel_postings": [], "vat_balances": {},
+            "recurring_sources": {"bills": [item], "bank": [], "contra": [], "contra_not_modelled": {}},
+            "personnel_postings": [], "vat_balances": {},
             "vat_paid_since": 0.0,
         }
         with contextlib.ExitStack() as stack:
@@ -528,7 +568,7 @@ class OwnerAccounts(unittest.TestCase):
             return {"supplier": number, "period": "monthly", "amount": amount, "count": 9,
                     "last_date": D(2026, 9, 5), "last_bill": "JE-" + number, "label": label}
 
-        sources = {"bills": [], "bank": [], "contra": [
+        sources = {"bills": [], "bank": [], "contra_not_modelled": {}, "contra": [
             contra("2010", "2010 Invented Card Settlement - TC", 800.0),
             contra("2100", "2100 Invented Owner Account - TC", 500.0)]}
         stubs = {

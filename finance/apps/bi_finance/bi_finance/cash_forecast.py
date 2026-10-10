@@ -175,6 +175,17 @@ def journal_occurrences(rows, billed):
     return occurrences, left_out
 
 
+def counted_by_contra(bank, journal):
+    """bank: (group key, date, amount, bank transaction name) of the bank lines the bank source groups. journal: the names a
+    Journal Entry reconciles to. The bank groups every line of which a Journal Entry reconciles to: the contra account
+    source counts those payments, so the bank source leaves the groups out. A group is a key, so the groups left in keep
+    their medians: nothing is regrouped."""
+    flags = collections.defaultdict(list)
+    for key, _day, _amount, name in bank:
+        flags[key].append(name in journal)
+    return {key for key, reconciled in flags.items() if all(reconciled)}
+
+
 def mostly_regular(dates, period):
     """True when at least REGULAR_SHARE of the gaps between the sorted dates fall in the period's band. The median
     alone labels a run of unrelated payments (a group of card settlements, say) as monthly when only half of its

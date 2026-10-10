@@ -22,11 +22,13 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
     when a purchase bill of the same amount is dated within five days of it. A group needs 80% of its gaps in its
     period, since a key can mix payees; lines of a group on one day are one occurrence, their sum; its amount
     is the median of its occurrences;
-  - the bank outflows booked by a Journal Entry, grouped by the contra account: one line per recurring account (the
-    Journal Entries that credit a bank or cash account, their debit lines), left out for the accounts another line
-    carries (payroll, insurers, VAT, bills, bank and cash accounts) and for the entries reconciled to a purchase
-    invoice; a bank line a Journal Entry reconciles to is counted here, not as a bank group. The owners' current
-    accounts (2100, 2121) are labelled "(average, discretionary)" and can be left out by a filter;
+    A bank group every line of which a Journal Entry reconciles to is left out, as the contra account source below
+    counts those payments; a group with some such lines stays, and its overlap is measured (dry_run);
+  - the bank outflows booked by a Journal Entry, grouped by the contra account: one line per account whose entries
+    repeat regularly (the Journal Entries that credit a bank or cash account, their debit lines), left out for the
+    accounts another line carries (payroll, insurers, VAT, bills, bank and cash accounts) and for the entries reconciled
+    to a purchase invoice; the other accounts are listed in the message as not modelled. The owners' current accounts
+    (2100, 2121) are labelled "(average, discretionary)" and can be left out by a filter;
 - payroll: the salary accounts 5000 to 5099 of the last year (not the 57xx social contributions nor the 58xx other
   personnel costs: those are bills or bank lines), the average of the last three months, paid on the 25th
   (the Friday before when the 25th is a weekend);
@@ -154,7 +156,8 @@ def bills_in_window(company, as_of):
 
 def bank_outflows(company, as_of, bills):
     """(group key, date, amount, bank transaction name) of the outgoing bank lines of the last year that no bill,
-    payroll or VAT payment covers, and a Counter of the lines each rule left out. bills: bills_in_window."""
+    payroll or VAT payment covers, a Counter of the lines each rule left out, and the names of the kept lines a Journal
+    Entry reconciles to (the contra account source counts those, see recurring_sources). bills: bills_in_window."""
     left_out = collections.Counter()
     accounts = frappe.get_all("Bank Account", filters={"company": company}, pluck="name")
     lines = frappe.get_all(
@@ -168,6 +171,7 @@ def bank_outflows(company, as_of, bills):
     payroll_or_vat_paid, bill_paid, transfer_paid, journal_paid = reconciled_bank_lines([line.name for line in lines])
     bill_days = [(day, amount) for _supplier, day, amount, _name in bills]
     kept = []
+    journal = set()
     for line in lines:
         amount = flt(line.withdrawal)
         if not cf.description_key(line.description):
@@ -181,14 +185,13 @@ def bank_outflows(company, as_of, bills):
         elif line.name in transfer_paid:
             # the other leg is an account in the opening cash already: the money stays in the company
             left_out["transfer between own bank accounts"] += 1
-        elif line.name in journal_paid:
-            # a journal entry is a contra account's line (contra_sources), counted there once
-            left_out["journal entry, counted by its contra account"] += 1
         elif cf.paid_by_a_bill(line.date, amount, bill_days):
             left_out["amount of a bill"] += 1
         else:
             kept.append((cf.description_key(line.description), line.date, amount, line.name))
-    return kept, left_out
+            if line.name in journal_paid:
+                journal.add(line.name)
+    return kept, left_out, journal
 
 
 def reconciled_bank_lines(names):
@@ -331,9 +334,10 @@ def billed_journal_entries(company, entries):
 
 
 def contra_sources(company, as_of):
-    """The recurring costs of the Journal Entries by their contra account, as recurring_costs finds them. The key of each
-    is the account number ("supplier" in recurring_costs' dict); "label" is the account's name in the chart as the site
-    shows it. Also the Counter of the rows each rule left out (cf.journal_occurrences)."""
+    """The recurring costs of the Journal Entries by their contra account, as recurring_costs finds them: only a regular
+    series gets a line. The key of each is the account number ("supplier" in recurring_costs' dict); "label" is the
+    account's name in the chart as the site shows it. Also the Counter of the rows each rule left out
+    (cf.journal_occurrences), and the Counter of the entries on accounts with no regular series, by account number."""
     rows = journal_outflows(company, as_of)
     names = {number: name for number, _account_type, name, _day, _amount, _entry in rows}
     billed = billed_journal_entries(company, list({row[5] for row in rows}))
@@ -342,24 +346,36 @@ def contra_sources(company, as_of):
     items = cf.recurring_costs(occurrences, as_of, strict=True)
     for item in items:
         item["label"] = names[item["supplier"]]
-    return items, left_out
+    modelled = {item["supplier"] for item in items}
+    not_modelled = collections.Counter(number for number, _day, _amount, _entry in occurrences if number not in modelled)
+    return items, left_out, not_modelled
 
 
 def recurring_sources(company, as_of):
     """The recurring costs of each source as recurring_costs finds them: "bills" from the purchase bills, "bank"
     from the bank lines, keyed by their description's group key, and "contra" from the Journal Entries, keyed by the
-    contra account. "left_out" counts the bank lines each rule left out; "kept" is the number of bank lines that remain;
-    "contra_left_out" counts the journal entry lines left out (contra_sources)."""
+    contra account. A bank group whose every line a Journal Entry reconciles to is left out: the contra source counts
+    it. "left_out" counts the bank lines each rule left out; "kept" is the number of bank lines that remain;
+    "counted_by_contra" is the number of bank lines in the bank groups that a Journal Entry reconciles to, and
+    "bank_lines_in_groups" the lines in the bank groups; "contra_left_out" counts the journal entry lines left out and
+    "contra_not_modelled" the entries on accounts with no regular series (contra_sources)."""
     bills = bills_in_window(company, as_of)
-    bank, left_out = bank_outflows(company, as_of, bills)
-    contra, contra_left_out = contra_sources(company, as_of)
+    bank, left_out, journal = bank_outflows(company, as_of, bills)
+    groups = cf.recurring_costs(bank, as_of, strict=True)
+    counted = cf.counted_by_contra(bank, journal)
+    grouped = {item["supplier"] for item in groups}
+    contra, contra_left_out, contra_not_modelled = contra_sources(company, as_of)
     return {
         "bills": cf.recurring_costs(bills, as_of),
-        "bank": cf.recurring_costs(bank, as_of, strict=True),
+        "bank": [item for item in groups if item["supplier"] not in counted],
         "contra": contra,
         "left_out": left_out,
         "contra_left_out": contra_left_out,
+        "contra_not_modelled": contra_not_modelled,
         "kept": len(bank),
+        "counted_by_contra": sum(1 for key, _day, _amount, name in bank if name in journal and key in grouped),
+        "bank_lines_in_groups": sum(item["count"] for item in groups),
+        "bank_groups_counted_by_contra": len(counted & grouped),
     }
 
 
@@ -405,11 +421,14 @@ def dry_run(company=None, as_of=None):
         "bank_lines_kept": sources["kept"],
         "bank_lines_left_out": dict(sources["left_out"]),
         "bank_groups_per_period": dict(collections.Counter(item["period"] for item in sources["bank"])),
-        "bank_lines_in_groups": sum(item["count"] for item in sources["bank"]),
+        "bank_lines_in_groups": sources["bank_lines_in_groups"],
+        "bank_groups_counted_by_contra": sources["bank_groups_counted_by_contra"],
+        "bank_lines_counted_by_contra": sources["counted_by_contra"],
         "bank_groups_with_a_bill_supplier_key": sum(1 for item in sources["bank"] if item["supplier"] in bill_keys),
         "contra_groups_per_period": dict(collections.Counter(item["period"] for item in sources["contra"])),
         "contra_lines_in_groups": sum(item["count"] for item in sources["contra"]),
         "contra_left_out": dict(sources["contra_left_out"]),
+        "contra_not_modelled": dict(sources["contra_not_modelled"]),
     }
 
 
@@ -519,6 +538,7 @@ def compute(company, as_of, include_run_rate=True, include_new_purchases=True, i
         "without_history": len(without_history),
         "run_rate": run_rate,
         "new_purchases": new_purchases,
+        "not_modelled": sources["contra_not_modelled"],
     }
 
 
@@ -570,6 +590,8 @@ def execute(filters=None):
         "them: payroll (5xxx, 1091), insurers (2270 to 2279), VAT (1170 to 1172, 2200, 2202), bill payments (2000), "
         "transfers between bank and cash accounts, and entries reconciled to a purchase invoice. The owners' current "
         "accounts (2100, 2121) are labelled average and discretionary; the filter \"Include owner accounts\" leaves them out.")]
+    for number, count in sorted(result["not_modelled"].items()):
+        messages.append(_("Not modelled, no regular series: {0} entries on account {1}.").format(count, number))
     if result["run_rate"]:
         messages.append(_("New sales are in the forecast at {0} a week: the mean of the last four 13-week windows since {1}, receipts from the invoices issued in each window.").format(
             fmt_money(result["run_rate"]["weekly"], currency=currency), result["run_rate"]["since"]))
