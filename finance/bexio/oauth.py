@@ -105,10 +105,10 @@ def _challenge(verifier):
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-def authorize_url(state, challenge, scope=SCOPE):
+def authorize_url(state, challenge, scope=SCOPE, redirect_uri=REDIRECT_URI):
     query = {
         "client_id": _client_credentials()["client_id"],
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": scope,
         "state": state,
@@ -144,12 +144,12 @@ def _error_code(err):
         return "no error code"
 
 
-def exchange_code(code, verifier):
-    """Trade the login's authorization code for tokens."""
+def exchange_code(code, verifier, redirect_uri=REDIRECT_URI):
+    """Trade the login's authorization code for tokens. redirect_uri must be the one the login started with."""
     fields = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "code_verifier": verifier,
     }
     fields.update(_client_credentials())

@@ -17,6 +17,36 @@ listener on 127.0.0.1:8765 takes the code, and the refresh token is saved in the
 macOS keychain (service `varlock`, account `finance:local:BEXIO_REFRESH_TOKEN`).
 The token itself is never printed.
 
+## Log in from the MacBook (tailnet login page)
+
+Instead of the Mac mini's desktop Terminal, the login can be started from the MacBook
+through a page on the tailnet. `finance/bexio/login_helper.py` serves it on
+127.0.0.1:8794, under varlock, so the client id and secret come from the keychain and
+never from a file. `tailscale serve` puts it on the tailnet over https. Never Funnel:
+the page starts logins and must not be public.
+
+- `/login` redirects the browser to bexio with the read-only scopes; `/login?scope=export`
+  is the export login. Each login has a one-time state.
+- `/callback` exchanges the code and saves the rotated refresh token in the same keychain
+  item as `oauth.py login`. The page shows `logged in, scopes: ...`, never a token.
+
+Install on the Mac mini (once):
+
+1. Register the callback on the bexio OAuth app, exactly as below (it is added in the
+   bexio developer portal next to `http://localhost:8765/callback`, which stays as the fallback):
+   `https://<mac-mini>.<tailnet>.ts.net:<https-port>/callback`
+2. Copy `finance/bexio/ch.bi-concepts.bexio-login.plist` to `~/Library/LaunchAgents/`, with
+   `REDIRECT_URI_PLACEHOLDER` replaced by that URL, then load it in Benchi's session:
+   `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ch.bi-concepts.bexio-login.plist`
+3. Expose it on the tailnet only, with the Homebrew tailscale (the `~/.local/bin/tailscale`
+   wrapper points at a Tailscale.app that is not installed):
+   `/opt/homebrew/bin/tailscale serve --bg --https=<https-port> http://127.0.0.1:8794`
+
+Then open `https://<mac-mini>.<tailnet>.ts.net:<https-port>/login` on the MacBook
+and approve the login at bexio. The page must say `logged in`.
+
+The desktop-Terminal login below stays the fallback.
+
 ## What the scopes allow
 
 Every scope of the read-only login is read-only: `openid offline_access` for the login and the refresh,

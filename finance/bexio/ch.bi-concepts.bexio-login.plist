@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- LaunchAgent template for the tailnet bexio login page (finance/bexio/login_helper.py).
+     Install into ~/Library/LaunchAgents on the Mac mini, see finance/bexio/README.md.
+     Replace REDIRECT_URI_PLACEHOLDER with the callback URL registered at bexio. No secret here:
+     varlock injects the client id and secret from the keychain at start. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ch.bi-concepts.bexio-login</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/varlock</string>
+        <string>run</string>
+        <string>-p</string>
+        <string>/Users/bsaladin/ws_yardr_finance/secrets</string>
+        <string>--</string>
+        <string>/usr/bin/python3</string>
+        <string>finance/bexio/login_helper.py</string>
+        <string>--port</string>
+        <string>8794</string>
+        <string>--redirect-uri</string>
+        <string>REDIRECT_URI_PLACEHOLDER</string>
+    </array>
+    <!-- The main checkout, so the helper runs the code that has landed. -->
+    <key>WorkingDirectory</key>
+    <string>/Users/bsaladin/ws_yardr_finance/frappe_docker</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
