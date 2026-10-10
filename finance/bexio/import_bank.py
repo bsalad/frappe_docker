@@ -22,6 +22,7 @@ Run it as:
     python3 finance/bexio/import_bank.py --dry-run [--export DIR] [--balances]
     python3 finance/bexio/import_bank.py --write <private>/bexio-bank-docs.json [--export DIR]
     python3 finance/bexio/import_bank.py --check [--export DIR]     (after the loader ran: ERPNext against the dry run)
+    python3 finance/bexio/import_bank.py --cancel <private list> [--confirm]   (cancel the listed submitted, unallocated lines on the Wise CHF account; without --confirm only checked)
 
 --export defaults to the newest directory under <private>/bexio-export/. The output is totals only; the unmapped
 and unmatched records go to files under <private>, never to the repository. Standard library only, plus import_master
@@ -66,6 +67,9 @@ PASS_ONE = "one voucher"
 PASS_WINDOW = "date window"
 PASS_TEXT = "text"
 PASS_COMBINED = "combined transfer"
+
+# the bexio bank account that --cancel works on: the Wise CHF account (bank_account_id 2 in the export)
+WISE_BEXIO_ID = "2"
 
 # journal entries posted under a key that is a correction, not a bank booking (erp-fd93: the bexio 1099 entry's correction)
 CORRECTION_KEYS = ("manual-1099-correction",)
@@ -519,6 +523,45 @@ def write_private(path, text):
         f.write(text + "\n")
 
 
+def read_names(path):
+    """The Bank Transaction names in a private list file, one per line; blank lines and # comments are skipped."""
+    with open(path, encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
+
+def cancel_problem(doc, account):
+    """Why a Bank Transaction on the list may not be cancelled, or None when it may: submitted, on the Wise CHF account, not allocated."""
+    if doc.get("docstatus") != 1:
+        return "docstatus {}, only a submitted line is cancelled".format(doc.get("docstatus"))
+    if doc.get("bank_account") != account:
+        return "on another bank account"
+    if doc.get("status") != "Unreconciled" or _dec(doc.get("allocated_amount") or 0) != ZERO or doc.get("payment_entries"):
+        return "allocated to a voucher"
+    return None
+
+
+def cancel_lines(erp, names, account, confirm):
+    """Check each named Bank Transaction and, with confirm, cancel the ones that pass; returns the lines to print.
+
+    Nothing is cancelled unless confirm is set: a check that finds a problem is printed and left as it is.
+    """
+    problems = collections.Counter()
+    lines = []
+    for name in names:
+        problem = cancel_problem(erp.get("Bank Transaction", name), account)
+        if problem:
+            problems[problem] += 1
+            lines.append("{}: {}".format(name, problem))
+        elif confirm:
+            erp.call("frappe.client.cancel", doctype="Bank Transaction", name=name)
+            problems["cancelled"] += 1
+        else:
+            problems["ok to cancel"] += 1
+    lines.insert(0, "{} named, per class: {}".format(len(names), ", ".join(
+        "{} {}".format(count, what) for what, count in sorted(problems.items()))))
+    return lines
+
+
 def write_documents(results, path, reconcile=()):
     """The mapped Bank Transactions and their reconciliations, as the loader takes them, into the private file; returns the number of documents.
 
@@ -529,6 +572,23 @@ def write_documents(results, path, reconcile=()):
                  for r in results if r["doc"]]
     write_private(path, json.dumps({"documents": documents, "reconcile": list(reconcile)}, indent=1))
     return len(documents)
+
+
+def cancel_main(args):
+    """--cancel: check the listed Bank Transactions on the Wise CHF account and, with --confirm, cancel them through the API."""
+    erp = im.Erp.from_file(args.token_file)
+    try:
+        accounts = erp.list("Bank Account", [["bexio_id", "=", WISE_BEXIO_ID]], ["name"])
+        if len(accounts) != 1:
+            print("aborted: {} Bank Accounts with the Wise bexio_id, want one".format(len(accounts)), file=sys.stderr)
+            return 2
+        lines = cancel_lines(erp, read_names(args.cancel), accounts[0]["name"], args.confirm)
+    except im.ErpError as err:
+        print("aborted: {}".format(err), file=sys.stderr)
+        return 2
+    print("\n".join(lines))
+    print("cancelled through the API" if args.confirm else "dry run: nothing was cancelled")
+    return 1 if len(lines) > 1 else 0
 
 
 def main(argv):
@@ -544,8 +604,12 @@ def main(argv):
                         help="private file for the booked transactions that stay unreconciled, by bexio id and reason")
     parser.add_argument("--differences", default=os.path.join(im.PRIVATE, "bexio-bank-live-differences.txt"),
                         help="private file for the --check differences, by bexio id")
+    parser.add_argument("--cancel", metavar="LIST", help="cancel the Bank Transactions named in a private list file, on the Wise CHF account, where they are submitted and unallocated; alone it only checks them")
+    parser.add_argument("--confirm", action="store_true", help="with --cancel: cancel the lines that pass the check (without it, nothing is cancelled)")
     parser.add_argument("--token-file", default=im.TOKEN_FILE)
     args = parser.parse_args(argv)
+    if args.cancel:
+        return cancel_main(args)
     if not (args.dry_run or args.write or args.balances or args.check):
         parser.error("give --dry-run, --write, --balances or --check: the write itself is the loader's (bexio-drafts.sh)")
 

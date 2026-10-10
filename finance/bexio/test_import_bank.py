@@ -557,5 +557,93 @@ class LiveCheckTest(unittest.TestCase):
                                        "Bank Transaction 9009: in ERPNext, not in the export"])
 
 
+class CancelTest(unittest.TestCase):
+    """--cancel: the named lines are checked, and only the ones that pass are cancelled. Invented names and amounts."""
+
+    WISE = "Wise CHF - Testbank AG"
+
+    def _doc(self, name, **changes):
+        doc = {"name": name, "docstatus": 1, "bank_account": self.WISE, "status": "Unreconciled",
+               "allocated_amount": 0, "payment_entries": [], "deposit": 0.0, "withdrawal": 10.0}
+        doc.update(changes)
+        return doc
+
+    class Erp:
+        def __init__(self, docs):
+            self.docs = docs
+            self.cancelled = []
+
+        def get(self, doctype, name):
+            return self.docs[name]
+
+        def call(self, method, **args):
+            self.cancelled.append((method, args["name"]))
+
+    def test_a_submitted_unallocated_line_on_the_account_passes(self):
+        self.assertIsNone(ib.cancel_problem(self._doc("BT-1"), self.WISE))
+
+    def test_a_line_that_fails_one_condition_gives_its_reason(self):
+        cases = [
+            ("docstatus 2, only a submitted line is cancelled", self._doc("BT-1", docstatus=2)),
+            ("on another bank account", self._doc("BT-1", bank_account="Other - Testbank AG")),
+            ("allocated to a voucher", self._doc("BT-1", status="Reconciled")),
+            ("allocated to a voucher", self._doc("BT-1", allocated_amount=5.0)),
+            ("allocated to a voucher", self._doc("BT-1", payment_entries=[{"payment_entry": "PE-1"}])),
+        ]
+        for reason, doc in cases:
+            with self.subTest(reason=reason, doc=doc):
+                self.assertEqual(ib.cancel_problem(doc, self.WISE), reason)
+
+    def test_dry_run_checks_and_cancels_nothing(self):
+        erp = self.Erp({"BT-1": self._doc("BT-1"), "BT-2": self._doc("BT-2", docstatus=2)})
+        lines = ib.cancel_lines(erp, ["BT-1", "BT-2"], self.WISE, confirm=False)
+        self.assertEqual(erp.cancelled, [])
+        self.assertEqual(lines[0], "2 named, per class: 1 docstatus 2, only a submitted line is cancelled, 1 ok to cancel")
+        self.assertEqual(lines[1:], ["BT-2: docstatus 2, only a submitted line is cancelled"])
+
+    def test_confirm_cancels_the_passing_lines_through_the_api_and_names_the_rest(self):
+        erp = self.Erp({"BT-1": self._doc("BT-1"), "BT-2": self._doc("BT-2", bank_account="Other - Testbank AG"),
+                        "BT-3": self._doc("BT-3")})
+        lines = ib.cancel_lines(erp, ["BT-1", "BT-2", "BT-3"], self.WISE, confirm=True)
+        self.assertEqual(erp.cancelled, [("frappe.client.cancel", "BT-1"), ("frappe.client.cancel", "BT-3")])
+        self.assertEqual(lines[0], "3 named, per class: 2 cancelled, 1 on another bank account")
+        self.assertEqual(lines[1:], ["BT-2: on another bank account"])
+
+    def test_the_list_file_skips_blank_lines_and_comments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "list.txt")
+            with open(path, "w") as f:
+                f.write("# the invented list\nBT-1\n\nBT-2\n")
+            self.assertEqual(ib.read_names(path), ["BT-1", "BT-2"])
+
+    def test_main_without_confirm_only_checks_and_cancels_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "list.txt")
+            with open(path, "w") as f:
+                f.write("BT-1\n")
+            erp = self.Erp({"BT-1": self._doc("BT-1")})
+            erp.list = lambda doctype, filters=None, fields=("name",): [{"name": self.WISE}]
+            with mock.patch.object(im.Erp, "from_file", return_value=erp), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                code = ib.main(["--cancel", path])
+        self.assertEqual(erp.cancelled, [])
+        self.assertEqual(code, 0)
+        self.assertIn("dry run: nothing was cancelled", out.getvalue())
+
+    def test_main_refuses_when_the_wise_account_is_not_the_one_bank_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "list.txt")
+            with open(path, "w") as f:
+                f.write("BT-1\n")
+            erp = self.Erp({})
+            erp.list = lambda doctype, filters=None, fields=("name",): []
+            with mock.patch.object(im.Erp, "from_file", return_value=erp), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                code = ib.main(["--cancel", path, "--confirm"])
+        self.assertEqual(code, 2)
+        self.assertIn("0 Bank Accounts with the Wise bexio_id", err.getvalue())
+        self.assertEqual(erp.cancelled, [])
+
+
 if __name__ == "__main__":
     unittest.main()
