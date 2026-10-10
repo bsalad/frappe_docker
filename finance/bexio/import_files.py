@@ -280,9 +280,9 @@ def _multipart(erp, fields, file_name, content):
     return req
 
 
-def upload_request(erp, document, file_name, content):
-    """The multipart request for one private File on the Purchase Invoice."""
-    return _multipart(erp, (("doctype", DOCTYPE), ("docname", document), ("is_private", "1")), file_name, content)
+def upload_request(erp, document, file_name, content, doctype=DOCTYPE):
+    """The multipart request for one private File on the document (a Purchase Invoice unless doctype says otherwise)."""
+    return _multipart(erp, (("doctype", doctype), ("docname", document), ("is_private", "1")), file_name, content)
 
 
 def archive_request(erp, file_name, content):
@@ -290,10 +290,10 @@ def archive_request(erp, file_name, content):
     return _multipart(erp, (("folder", ARCHIVE_FOLDER), ("is_private", "1")), file_name, content)
 
 
-def upload(erp, document, file_id, file_name, content):
+def upload(erp, document, file_id, file_name, content, doctype=DOCTYPE):
     """Upload one file and mark it with its bexio id, so a second run skips it. The live run calls this; the dry run never does."""
     try:
-        with urllib.request.urlopen(upload_request(erp, document, file_name, content), timeout=300) as resp:
+        with urllib.request.urlopen(upload_request(erp, document, file_name, content, doctype), timeout=300) as resp:
             name = json.loads(resp.read().decode("utf-8"))["message"]["name"]
     except urllib.error.HTTPError as err:
         raise im.ErpError(err.code, "upload_file for {}".format(document) + im._reason(err)) from None

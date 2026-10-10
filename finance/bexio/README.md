@@ -303,6 +303,25 @@ The bills list their files by uuid, and `/3.0/files` has the integer id and the 
 content from `/3.0/files/<uuid>/download`) are keyed by uuid; the `bexio_id` is the uuid,
 not the integer id.
 
+## Document PDFs (invoices, credit vouchers, orders, offers)
+
+`import_document_pdfs.py` attaches the PDF of each sales document to its ERPNext document, as a
+private File keyed by the document's `bexio_id` (the key `import_sales.py` gives it: `credit-<id>` for a
+credit voucher). `export.py --complete` writes the PDFs to `documents/<kind>-<id>.pdf` and lists them in
+`document_pdfs.json`. A second run finds the File on the document and skips it, so it can be rerun.
+A delivery has a PDF but no ERPNext document (`import_sales.py` does not map deliveries): it is listed as
+`no document` and never attached. The dry run reads ERPNext and writes nothing:
+
+    python3 finance/bexio/import_document_pdfs.py --dry-run [--export DIR]
+    python3 finance/bexio/import_document_pdfs.py --apply [--export DIR]
+
+Rows: `attach` (uploaded by `--apply`), `attached` (a File with the `bexio_id`, or with the file's name and no
+`bexio_id`, is on the document: a run that stopped between the upload and the key does not upload twice),
+`no document` (the document is not in ERPNext yet, or the kind has no ERPNext document), `no content` and
+`size differs` (problems: the PDF on disk is not the export's). The ids go to
+`<private>/bexio-document-pdfs-dry-run.txt`; the screen shows totals per kind only. A PDF the export could not
+download (`failed` in `document_pdfs` of the manifest) has no row and is not attached.
+
 ## Purchase bills
 
 `import_purchase.py --dry-run` maps the bills (`bills.json`, with the lines of
@@ -441,6 +460,7 @@ second run; the dry run of each step is the rerun check (it reads ERPNext and wr
 7. Payroll journal lines: `import_payroll.py --write FILE`, then submit, then `import_payroll.py --check`.
 8. Opening entry: `import_opening.py --dry-run` (no entry is needed when the first business year has no opening lines).
 9. Files: `import_files.py --apply` (attaches the bexio files to the imported documents).
+10. Document PDFs: `import_document_pdfs.py --apply` (attaches the PDF of each sales document, see its section).
 
 For the rerun, run every step's dry run (or `--write` into a private file, and check that the plan is empty
 or only holds documents the loader skips by `bexio_id`), and compare the counts of Sales Invoice, Purchase
