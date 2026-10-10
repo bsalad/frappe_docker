@@ -229,21 +229,35 @@ docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro"
 On a site with transactions the `coa` step refuses; run `vat fiscal fields`
 only.
 
-## Left for the import
+## Bexio history
 
-`finance/docs/bexio-mapping.md` (finance-b5kj) did not exist when this was
-written. Once it does:
+The bexio accounting history is in ERPNext, from the first business year to the
+current one, loaded in the order of the import chain (`finance/bexio/README.md`,
+"Import chain and the rerun"). Each record carries its bexio id in `bexio_id`,
+the key that makes a rerun skip it.
 
-- Match bexio's account numbers to the 179 KMU accounts. The template is
-  sparse (one bank account, 1020 UBS, and only a few revenue and expense
-  accounts) and has quirks to settle first: 2202 Abrechnungskonto MWST carries
-  tax rate 7.7, 6950 and 6990 (Finanzertrag, Währungsgewinne) sit under the
-  Expense root 6, and root 8 is typed Income although it holds expense. Add
-  missing accounts with numbers from bexio rather than renumbering.
-- Map a document's tax by its bexio tax id (`bexio_id` on the templates), never
-  by the rate. A tax id without a template is reported, not guessed.
-- Fill `bexio_id` on every imported record; use it as the key for re-runs.
-- Currency: the template has EUR accounts (1020, 1101, 2001); check against
-  bexio's foreign-currency accounts.
-- Company field `chart_of_accounts` still reads `Standard`; it is not used
-  after company creation.
+How it was checked: `finance/bexio/check_trial_balance.py` compares, per business
+year and account, bexio's journal with ERPNext's GL Entry rows (read only, nothing
+is written). Balance-sheet accounts compare the closing balance, profit-and-loss
+accounts the net movement of the year. The rows are kept outside the repository.
+
+Result of the check on 2026-10-10: 8 business years, 88 accounts, 308
+year-account rows compared. 24 rows differ, in 12 accounts:
+
+- 20 rows are rounding of up to 3 rappen from ERPNext's 0.05 rounding of the
+  imported invoices. Accepted, not fixed.
+- 4 rows come from one open item: a 2024 sale that bexio booked without a
+  customer. It stays open until the customer is named; then one Journal Entry
+  with the customer as party posts it, and the check runs again.
+
+The rerun of the chain changes nothing: each loader's dry run reports nothing to
+write, and the counts of Sales Invoice, Purchase Invoice, Payment Entry, Journal
+Entry, Bank Transaction and File are the same before and after. Orders and offers
+are not part of the history and are not loaded.
+
+Not reconciled, and not in the GL: 34 bank transactions in a foreign currency
+(no GL entry is made for them), and 73 bank transactions that are not reconciled
+with a voucher. Both wait for confirmation.
+
+Not done here: no period is locked or frozen. The MWST per period against bexio's
+declarations is a separate check.
