@@ -65,12 +65,14 @@ class Unmapped(Exception):
 
 
 class Lookups:
-    """What the mapping reads from ERPNext: the submitted Purchase Invoices by bexio_id, the accounts by number, the cost center."""
+    """What the mapping reads from ERPNext: the submitted Purchase Invoices by bexio_id, the accounts by number, the cost
+    center, and the bexio ids of the submitted Payment Entries already loaded (a rerun leaves them as they are)."""
 
-    def __init__(self, invoices, gl, cost_center):
+    def __init__(self, invoices, gl, cost_center, loaded=frozenset()):
         self.invoices = invoices        # bexio bill id -> the submitted Purchase Invoice (name, supplier, credit_to, currency, grand_total, outstanding)
         self.gl = gl                    # account number -> Account name of the company
         self.cost_center = cost_center  # the one Cost Center of the company; None when there is not exactly one
+        self.loaded = set(loaded)       # bexio ids (bill payment group uuids) of the submitted Payment Entries of an earlier run
 
     @classmethod
     def from_erp(cls, erp):
@@ -78,10 +80,13 @@ class Lookups:
                             ["name", "bexio_id", "supplier", "credit_to", "currency", "grand_total", "outstanding_amount"])
         accounts = erp.list("Account", [["company", "=", im.COMPANY], ["is_group", "=", 0]], ["name", "account_number"])
         centers = erp.list("Cost Center", [["company", "=", im.COMPANY], ["is_group", "=", 0]], ["name"])
+        loaded = erp.list("Payment Entry", [["company", "=", im.COMPANY], ["payment_type", "=", "Pay"], ["docstatus", "=", 1],
+                                            ["bexio_id", "is", "set"]], ["bexio_id"])
         return cls(
             invoices={r["bexio_id"]: r for r in invoices},
             gl={r["account_number"]: r["name"] for r in accounts},
             cost_center=centers[0]["name"] if len(centers) == 1 else None,
+            loaded={r["bexio_id"] for r in loaded},
         )
 
 
@@ -206,7 +211,9 @@ def payment_entry(item, bill_uuid, lookups):
             account = lookups.gl.get(number)
             if account is None:
                 raise Unmapped("no Account {} for the deduction".format(number))
-            doc["deductions"].append({"account": account, "cost_center": lookups.cost_center, "amount": float(amount)})
+            # ERPNext takes a deduction on a Pay as a debit: paid - allocated - deductions must be zero. bexio's discount
+            # is a credit on its account, so the row carries it negative
+            doc["deductions"].append({"account": account, "cost_center": lookups.cost_center, "amount": float(-amount)})
     return doc
 
 
@@ -219,7 +226,8 @@ def plan(data, lookups):
     """Settle, pair and map every bill payment of the export; one result per group, and the open bills.
 
     A result has the group's uuid, its day and year, the payable, the bank amount, the bill it is paired with, the
-    Payment Entry (doc) or the reason it is unmapped (error), and the VAT lines it moves (not booked here).
+    Payment Entry (doc) or the reason it is unmapped (error), and the VAT lines it moves (not booked here). A payment
+    whose submitted Payment Entry an earlier run loaded has no doc: it is counted as loaded, and not checked again.
     """
     numbers = {a["id"]: str(a["account_no"]) for a in data["accounts"]}
     settled, results = [], []
@@ -236,11 +244,13 @@ def plan(data, lookups):
                         "error": "no bill of this amount in bexio's journal", "vat": item["vat"]})
     for item, bill_uuid in pairs:
         result = {"uuid": item["uuid"], "day": item["day"], "bill": bill_uuid, "bill_date": bill_dates[bill_uuid],
-                  "payable": item["payable"], "bank": item["bank"], "vat": item["vat"], "doc": None, "error": None}
-        try:
-            result["doc"] = payment_entry(item, bill_uuid, lookups)
-        except Unmapped as err:
-            result["error"] = str(err)
+                  "payable": item["payable"], "bank": item["bank"], "deducted": sum((amount for _, amount in item["deductions"]), ZERO),
+                  "vat": item["vat"], "doc": None, "error": None, "loaded": item["uuid"] in lookups.loaded}
+        if not result["loaded"]:
+            try:
+                result["doc"] = payment_entry(item, bill_uuid, lookups)
+            except Unmapped as err:
+                result["error"] = str(err)
         results.append(result)
     return results, open_bills
 
@@ -257,16 +267,18 @@ def summary(results, open_bills):
     for r in sorted(results, key=lambda r: r["day"]):
         acc = per_year.setdefault(r["day"][:4], [0, 0, ZERO, ZERO])
         acc[0] += 1
-        if r.get("doc"):
+        if r.get("doc") or r.get("loaded"):
             acc[1] += 1
             acc[2] += r["bank"]
-            acc[3] += sum((_money(d["amount"]) for d in r["doc"].get("deductions", [])), ZERO)
+            acc[3] += r["deducted"]
     for year, (count, mapped, paid, deducted) in per_year.items():
         lines.append("{:<8}{:>10}{:>8}{:>10}{:>18,.2f}{:>14,.2f}".format(year, count, mapped, count - mapped, paid, deducted))
     lines.append("{:<8}{:>10}{:>8}{:>10}{:>18,.2f}{:>14,.2f}".format(
         "total", len(results), sum(a[1] for a in per_year.values()), sum(a[0] - a[1] for a in per_year.values()),
         sum(a[2] for a in per_year.values()), sum(a[3] for a in per_year.values())))
     lines.append("VAT lines moved on payment, not booked here (in the Purchase Invoices already): {}".format(len(vat_lines(results))))
+    lines.append("already submitted in ERPNext by an earlier run, not handed over again: {}".format(
+        sum(1 for r in results if r.get("loaded"))))
     lines.append("bills with no payment in bexio, left open in ERPNext: {}".format(len(open_bills)))
     unmapped = [r for r in results if r["error"]]
     if unmapped:

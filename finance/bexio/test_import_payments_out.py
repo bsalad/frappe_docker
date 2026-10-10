@@ -134,7 +134,7 @@ class PaymentEntryTest(unittest.TestCase):
     def test_a_deduction_goes_on_its_account_with_the_cost_center(self):
         item = self.item(payable=Decimal("100.00"), bank=Decimal("97.00"), deductions=[("4400", Decimal("3.00"))])
         doc = po.payment_entry(item, "b-1", lookups(invoices={"b-1": invoice(grand_total=100.00, outstanding_amount=100.00)}))
-        self.assertEqual(doc["deductions"], [{"account": "4400 - Einkauf - bic", "cost_center": "Main - Test", "amount": 3.0}])
+        self.assertEqual(doc["deductions"], [{"account": "4400 - Einkauf - bic", "cost_center": "Main - Test", "amount": -3.0}])
         self.assertEqual((doc["paid_amount"], doc["references"][0]["allocated_amount"]), (97.0, 100.0))
 
     def test_a_deduction_without_one_cost_center_is_unmapped(self):
@@ -190,6 +190,14 @@ class PlanTest(unittest.TestCase):
         reasons = {r["uuid"]: r["error"] for r in results if r["error"]}
         self.assertEqual(reasons, {"g-2": "the bill has no submitted Purchase Invoice in ERPNext",
                                    "g-3": "no bill of this amount in bexio's journal"})
+
+    def test_a_payment_an_earlier_run_loaded_is_not_mapped_again(self):
+        erp_lookups = lookups(invoices={"b-1": invoice(outstanding_amount=0)})
+        erp_lookups.loaded = {"g-1"}
+        results, _ = po.plan(self.data(), erp_lookups)
+        loaded = next(r for r in results if r["uuid"] == "g-1")
+        self.assertEqual((loaded["loaded"], loaded["doc"], loaded["error"]), (True, None, None))
+        self.assertIn("already submitted in ERPNext by an earlier run, not handed over again: 1", po.summary(results, []))
 
     def test_a_bill_with_no_payment_is_open(self):
         data = self.data()
