@@ -213,7 +213,7 @@ under a new tag, then point `finance-local.yml` at it (the base is not rebuilt):
 
 ```sh
 docker build --build-arg BASE=frappe-finance-custom:v16.50.0-swiss-bi1-base \
-    --tag frappe-finance-custom:v16.50.0-swiss-bi6 --file finance/images/bi_finance.Containerfile .
+    --tag frappe-finance-custom:v16.50.0-swiss-bi9 --file finance/images/bi_finance.Containerfile .
 ```
 
 ## Redo on a fresh site
@@ -235,7 +235,7 @@ the image. Its offline tests run in the image:
 
 ```sh
 docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro" \
-    frappe-finance-custom:v16.50.0-swiss-bi6 \
+    frappe-finance-custom:v16.50.0-swiss-bi9 \
     sh -c 'cd /home/frappe/bi_finance_src && ../frappe-bench/env/bin/python -m unittest bi_finance.test_qrbill'
 ```
 
