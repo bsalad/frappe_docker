@@ -6,10 +6,11 @@ file becomes a private ERPNext File on the Purchase Invoice with the same bexio_
 books keep their vouchers (GeBüV, see finance/docs/archiving.md). The export holds the
 metadata in files.json and the content in files/<id><ext>.
 
-The live run belongs to erp-a2ma. The command line here only runs the dry run, which reads
-ERPNext and writes nothing:
+--dry-run (the default) reads ERPNext and writes nothing. --apply uploads each file that
+would be attached, through the API user (upload_file, then the bexio id as its description):
 
-    python3 finance/bexio/import_files.py --dry-run [--export DIR]
+    python3 finance/bexio/import_files.py [--dry-run] [--export DIR]
+    python3 finance/bexio/import_files.py --apply [--export DIR]
 
 --export defaults to the newest directory under <private>/bexio-export/. A file is found by its uuid:
 files.json (the /3.0/files list) and bill_attachments.json (the attachments of the bills, export.py)
@@ -81,6 +82,8 @@ def load_files(export_dir):
 
     A bill lists its files by uuid (attachment_ids), so both are keyed by uuid, not by the integer id
     of /3.0/files. A file's content is named by its id (export.file_name), so content_path reads the id.
+    A uuid in both lists keeps its files.json row: that row has the bexio name the File was uploaded under,
+    while the bill's row is named by the uuid.
     """
     names = [n for n in (FILES_FILE, BILL_ATTACHMENTS_FILE) if os.path.exists(os.path.join(export_dir, n))]
     if not names:
@@ -88,8 +91,17 @@ def load_files(export_dir):
     files = {}
     for name in names:
         with open(os.path.join(export_dir, name), encoding="utf-8") as f:
-            files.update({str(x["uuid"]): x for x in json.load(f)})
+            for x in json.load(f):
+                files.setdefault(str(x["uuid"]), with_extension(x))
     return files
+
+
+def with_extension(row):
+    """The row with its name carrying the extension: files.json has the name without it, and the File keeps it."""
+    name, extension = row.get("name"), row.get("extension") or ""
+    if name and extension and not name.lower().endswith("." + extension.lower()):
+        return dict(row, name="{}.{}".format(name, extension))
+    return row
 
 
 def content_path(export_dir, meta):
@@ -151,7 +163,7 @@ def run(export_dir, erp):
     return rows, os.path.exists(os.path.join(export_dir, FILES_FILE))
 
 
-def report(rows, export_dir, has_files):
+def report(rows, export_dir, has_files, applied=False):
     """Totals only: no file ids, no names."""
     lines = ["file dry run from {}".format(export_dir),
              "files.json: {}".format("in the export" if has_files else "not in the export, so no file has its bytes or content checked yet"),
@@ -169,7 +181,7 @@ def report(rows, export_dir, has_files):
     for outcome in (ATTACH, ATTACHED) + PROBLEMS:
         if counts.get(outcome):
             lines.append("  {:<14}{:>6}".format(outcome, counts[outcome]))
-    lines.append("dry run: nothing was written")
+    lines.append("applied: the files marked attach are uploaded" if applied else "dry run: nothing was written")
     return "\n".join(lines)
 
 
@@ -192,7 +204,8 @@ def upload_request(erp, document, file_name, content):
     body += (sep + 'Content-Disposition: form-data; name="file"; filename="{}"\r\n'
              'Content-Type: application/octet-stream\r\n\r\n'.format(_header_safe(file_name))).encode("utf-8")
     body += content + ("\r\n--{}--\r\n".format(boundary)).encode("ascii")
-    req = urllib.request.Request(erp._url + "/api/method/upload_file", data=body, method="POST")
+    # Erp's base URL already ends in /api (its own paths are /resource/... and /method/...)
+    req = urllib.request.Request(erp._url + "/method/upload_file", data=body, method="POST")
     req.add_header("Authorization", erp._auth)  # the Erp object keeps its secret; it is only read here
     req.add_header("Content-Type", "multipart/form-data; boundary=" + boundary)
     return req
@@ -204,27 +217,45 @@ def upload(erp, document, file_id, file_name, content):
         with urllib.request.urlopen(upload_request(erp, document, file_name, content), timeout=300) as resp:
             name = json.loads(resp.read().decode("utf-8"))["message"]["name"]
     except urllib.error.HTTPError as err:
-        raise im.ErpError(err.code, "upload_file for {}".format(document)) from None
+        raise im.ErpError(err.code, "upload_file for {}".format(document) + im._reason(err)) from None
     erp.update("File", name, {"description": MARKER.format(file_id)})
     return name
 
 
+def apply(rows, export_dir, erp):
+    """Upload every file the plan marks to attach. Returns how many were uploaded."""
+    files = load_files(export_dir)
+    uploaded = 0
+    for row in rows:
+        if row["outcome"] != ATTACH:
+            continue
+        meta = files[row["file"]]
+        with open(content_path(export_dir, meta), "rb") as f:
+            upload(erp, row["document"], row["file"], meta["name"], f.read())
+        uploaded += 1
+    return uploaded
+
+
 def main(argv):
-    parser = argparse.ArgumentParser(description="Plan the attachment of the bexio files to the Purchase Invoices (dry run).")
+    parser = argparse.ArgumentParser(description="Attach the bexio files to the Purchase Invoices (a dry run by default).")
     parser.add_argument("--export", default=None, help="export directory (default: the newest under <private>/bexio-export/)")
-    parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals")
+    parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals (the default)")
+    parser.add_argument("--apply", action="store_true", help="upload the files that would be attached, as private Files")
     parser.add_argument("--token-file", default=im.TOKEN_FILE)
     args = parser.parse_args(argv)
-    if not args.dry_run:
-        print("the live run is erp-a2ma's; this command takes --dry-run only", file=sys.stderr)
-        return 2
+    if args.apply and args.dry_run:
+        parser.error("--apply and --dry-run are one or the other")
     export_dir = args.export or im.newest_export()
     try:
-        rows, has_files = run(export_dir, im.Erp.from_file(args.token_file))
+        erp = im.Erp.from_file(args.token_file)
+        rows, has_files = run(export_dir, erp)
+        if args.apply:
+            print("uploaded {} file(s)".format(apply(rows, export_dir, erp)))
+            rows, has_files = run(export_dir, erp)
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2
-    print(report(rows, export_dir, has_files))
+    print(report(rows, export_dir, has_files, applied=args.apply))
     problems = [r for r in rows if r["outcome"] in PROBLEMS]
     if problems:
         ip.write_private(os.path.join(im.PRIVATE, PROBLEMS_FILE),

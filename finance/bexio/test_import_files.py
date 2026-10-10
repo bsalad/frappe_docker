@@ -3,10 +3,13 @@
 Run with: python3 -m unittest discover -s finance/bexio -p 'test_*.py'
 """
 
+import io
 import json
 import os
 import tempfile
 import unittest
+import urllib.error
+from unittest import mock
 
 import import_files as imf
 import import_master as im
@@ -36,6 +39,13 @@ def meta(file_id, name, data):
     """A files.json row for the file with this uuid (the test id doubles as the uuid); the id is the content's name."""
     return {"id": file_id, "uuid": file_id, "name": name,
             "extension": os.path.splitext(name)[1].lstrip("."), "size_in_bytes": len(data)}
+
+
+def raw(file_id, name, data):
+    """A files.json record with the keys bexio writes: the bexio id (the content's name), the name without extension, the extension, size_in_bytes."""
+    stem, ext = os.path.splitext(name)
+    return {"id": int(file_id.split("-")[1]), "uuid": file_id, "name": stem, "extension": ext[1:],
+            "size_in_bytes": len(data), "is_referenced": True, "is_archived": False}
 
 
 def erp_with(purchase_invoices=(), files=()):
@@ -69,6 +79,15 @@ class LoadFilesTest(unittest.TestCase):
         self.assertEqual(sorted(files), ["u-1", "u-2"])
         self.assertEqual(files["u-2"]["bill_id"], 10)
 
+    def test_a_file_in_both_lists_keeps_its_files_json_row(self):
+        # the same uuid is in files.json (bexio's name) and bill_attachments.json (named by the uuid): the Files were uploaded under the first
+        with tempfile.TemporaryDirectory() as root:
+            write_export(root, files=[{"id": 9, "uuid": "u-1", "name": "Beleg", "extension": "pdf", "size_in_bytes": 3}],
+                         bill_attachments=[{"id": "u-1", "uuid": "u-1", "name": "u-1.pdf", "extension": "pdf", "size_in_bytes": 3}])
+            files = imf.load_files(root)
+        self.assertEqual(files["u-1"]["name"], "Beleg.pdf")
+        self.assertEqual(files["u-1"]["id"], 9)
+
     def test_no_export_file_means_no_metadata_at_all(self):
         with tempfile.TemporaryDirectory() as root:
             write_export(root)
@@ -82,6 +101,21 @@ class LoadFilesTest(unittest.TestCase):
             row = {"id": 9, "uuid": "u-9", "name": "Beleg.pdf", "extension": "pdf", "size_in_bytes": len(data)}
             self.assertEqual(imf.classify("u-9", row, ["10"], imf.Lookups({"10": "PINV-1"}, {}), root),
                              (imf.ATTACH, "PINV-1"))
+
+    def test_files_json_name_gets_its_extension_and_the_content_is_the_bexio_id(self):
+        # invented record with bexio's keys: the name carries no extension, the content file is named by the bexio id
+        with tempfile.TemporaryDirectory() as root:
+            write_export(root, files=[{"id": 1009, "uuid": "u-1", "name": "Beleg", "extension": "pdf",
+                                       "size_in_bytes": 3, "is_referenced": True}])
+            files = imf.load_files(root)
+        self.assertEqual(files["u-1"]["name"], "Beleg.pdf")
+        self.assertEqual(files["u-1"]["size_in_bytes"], 3)
+        self.assertEqual(os.path.basename(imf.content_path(root, files["u-1"])), "1009.pdf")
+
+    def test_a_name_that_already_has_the_extension_is_not_extended_again(self):
+        with tempfile.TemporaryDirectory() as root:
+            write_export(root, files=[{"id": 7, "uuid": "u-7", "name": "Beleg.PDF", "extension": "pdf", "size_in_bytes": 1}])
+            self.assertEqual(imf.load_files(root)["u-7"]["name"], "Beleg.PDF")
 
 
 class AttachmentOwnersTest(unittest.TestCase):
@@ -233,9 +267,28 @@ class RunTest(unittest.TestCase):
         self.assertEqual(erp.writes, 0)
 
 
+class ApplyTest(unittest.TestCase):
+    def test_apply_uploads_each_file_marked_attach_and_nothing_else(self):
+        with tempfile.TemporaryDirectory() as root:
+            write_export(root, files=[raw("f-1", "a.pdf", b"xx"), raw("f-2", "b.pdf", b"yyy")],
+                         contents={"1": ("a.pdf", b"xx"), "2": ("b.pdf", b"yyy")})
+            rows = [{"file": "f-1", "outcome": "attach", "document": "PINV-1", "doctype": "Purchase Invoice", "size": 2},
+                    {"file": "f-2", "outcome": "unlinked", "document": None, "doctype": "-", "size": 3}]
+            calls = []
+            with mock.patch.object(imf, "upload", lambda erp, doc, file_id, name, content: calls.append((doc, file_id, name, content))):
+                uploaded = imf.apply(rows, root, None)
+        self.assertEqual(uploaded, 1)
+        self.assertEqual(calls, [("PINV-1", "f-1", "a.pdf", b"xx")])
+
+    def test_applied_report_says_files_were_uploaded(self):
+        text = imf.report([], "/private/export", True, applied=True)
+        self.assertIn("uploaded", text)
+        self.assertNotIn("nothing was written", text)
+
+
 class UploadRequestTest(unittest.TestCase):
     def test_multipart_request_carries_the_document_privacy_and_content(self):
-        erp = im.Erp("https://erp.test/", "key", "secret")
+        erp = im.Erp("https://erp.test/api", "key", "secret")
         req = imf.upload_request(erp, "PINV-1", 'Beleg "1".pdf', b"%PDF-invented")
         self.assertEqual(req.get_method(), "POST")
         self.assertEqual(req.full_url, "https://erp.test/api/method/upload_file")
@@ -252,9 +305,23 @@ class UploadRequestTest(unittest.TestCase):
         self.assertIn(b"%PDF-invented", body)
 
     def test_line_breaks_in_the_file_name_cannot_end_the_header(self):
-        erp = im.Erp("https://erp.test/", "key", "secret")
+        erp = im.Erp("https://erp.test/api", "key", "secret")
         req = imf.upload_request(erp, "PINV-1", "a\r\nX-Evil: 1.pdf", b"x")
         self.assertIn(b'filename="a__X-Evil: 1.pdf"', req.data)
+
+
+class UploadErrorTest(unittest.TestCase):
+    def test_a_failed_upload_names_the_status_and_ERPNext_s_reason(self):
+        erp = im.Erp("https://erp.test/api", "key", "secret")
+        body = json.dumps({"exc_type": "PermissionError", "exception": "PermissionError: no access\nsecond line"}).encode("utf-8")
+        failure = urllib.error.HTTPError("https://erp.test/api/method/upload_file", 403, "Forbidden", {}, io.BytesIO(body))
+        with mock.patch("urllib.request.urlopen", side_effect=failure):
+            with self.assertRaises(im.ErpError) as ctx:
+                imf.upload(erp, "PINV-1", 7, "a.pdf", b"x")
+        self.assertEqual(ctx.exception.status, 403)
+        self.assertIn("HTTP 403", str(ctx.exception))
+        self.assertIn("PermissionError: no access", str(ctx.exception))
+        self.assertNotIn("second line", str(ctx.exception))
 
 
 if __name__ == "__main__":
