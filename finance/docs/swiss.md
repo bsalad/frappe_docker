@@ -170,7 +170,10 @@ Build result: see the bead note.
    (40 rows, 3 pages: 20 rows on each of pages 1 and 2, the slip alone at the foot of page 3).
    No page is blank in any of the three. The 40-row body does not fit two pages as the bead
    expected; the slip goes to a page of its own, as the layout rule above says it should.
-   **Open for Benchi:** whether a 40-row invoice should fit on two pages.
+   **Closed by design (2026-10-10, yardmaster decision on erp-6ycq):** a 40-row invoice
+   takes three pages. The bead's "two pages" expectation was wrong: when less than 105 mm
+   is left on the last body page, the slip goes alone to a page of its own, as SIX IG v2.3
+   allows. No template change.
    **PDF host, fixed (2026-10-10):** `host_name` is the tailnet URL, set by the
    `host` step. The backend and queue containers reach it; a stock format renders.
    Mails and prints link to that URL.
