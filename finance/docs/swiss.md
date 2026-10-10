@@ -160,8 +160,10 @@ Build result: see the bead note.
    page margin, and the printview page also applies it as CSS to Frappe's `.print-format`
    wrapper, so the 1 mm follows the slip. The slip's bottom sits 0.4 to 0.65 mm above the
    content edge, so for some body heights the margin overflows and wkhtmltopdf adds a blank
-   last page. **Fix:** erp-hp26 (template override `.print-format-gutter .print-format
-   { margin-bottom: 0; }`). The live samples on bi6 are erp-6ycq.
+   last page. **Fix:** the template override `.print-format-gutter .print-format
+   { margin-bottom: 0; }` (bead erp-hp26; test `test_wrapper_margin_does_not_add_a_page`),
+   which Frappe does not read as a page option. The page keeps its 1 mm margin. Not on the
+   live site until the bi6 image: erp-6ycq.
    **PDF host, fixed (2026-10-10):** `host_name` is the tailnet URL, set by the
    `host` step. The backend and queue containers reach it; a stock format renders.
    Mails and prints link to that URL.

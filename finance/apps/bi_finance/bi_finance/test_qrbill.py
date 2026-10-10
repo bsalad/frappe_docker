@@ -10,6 +10,7 @@ are installed (finance/scripts/build-image.sh builds it):
 """
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -201,6 +202,19 @@ def page_html(rows, gap=None):
     return PAGE_HTML.replace("{rows}", body).replace("{tail}", tail)
 
 
+TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bi_sales_invoice_qr.html")
+
+
+def printview_html(rows, gap=None):
+    """The same page as frappe's printview.html wraps it: the body inside .print-format-gutter > .print-format,
+    which the format's CSS styles as well. The format's first <style> (the .print-format rule) is read from the template."""
+    with open(TEMPLATE, encoding="utf-8") as f:
+        css = re.search(r"<style>(.*?)</style>", f.read(), re.S).group(1)
+    html = page_html(rows, gap).replace("</style>", css + "</style>", 1)
+    return html.replace("<body>", '<body><div class="print-format-gutter"><div class="print-format">', 1).replace(
+        "</body>", "</div></div></body>", 1)
+
+
 @unittest.skipUnless(shutil.which("wkhtmltopdf"), "needs wkhtmltopdf (the image has it)")
 class Placement(unittest.TestCase):
     def setUp(self):
@@ -215,17 +229,27 @@ class Placement(unittest.TestCase):
         with open(out, "rb") as f:
             return f.read()
 
-    def place(self, rows):
+    def place(self, rows, html=page_html):
         """Pages and body end of the first render, the gap, then pages and the slip's mark of the second."""
-        pages1, y1 = qrbill.marker_mm(self.render(page_html(rows)), qrbill.MARKER)
+        pages1, y1 = qrbill.marker_mm(self.render(html(rows)), qrbill.MARKER)
         gap = qrbill.spacer_mm(y1)
-        pages2, y2 = qrbill.marker_mm(self.render(page_html(rows, gap)), SLIP_MARK)
+        pages2, y2 = qrbill.marker_mm(self.render(html(rows, gap)), SLIP_MARK)
         return pages1, y1, pages2, y2
 
     def test_slip_foot_on_last_page(self):
         for rows in (5, 25, 40, 60, 100):
             with self.subTest(rows=rows):
                 pages1, y1, pages2, y2 = self.place(rows)
+                pushed = y1 - qrbill.BOTTOM_MM < qrbill.SLIP_MM
+                self.assertEqual(pages2, pages1 + (1 if pushed else 0))
+                self.assertTrue(1 <= y2 <= 2.5, f"slip foot {y2:.2f} mm from the bottom")
+
+    def test_wrapper_margin_does_not_add_a_page(self):
+        # The printview wrapper gets the format's .print-format margin as CSS: a margin-bottom after the slip
+        # overflows the page on some body heights and adds a blank last page.
+        for rows in (21, 23, 25, 40, 41):
+            with self.subTest(rows=rows):
+                pages1, y1, pages2, y2 = self.place(rows, printview_html)
                 pushed = y1 - qrbill.BOTTOM_MM < qrbill.SLIP_MM
                 self.assertEqual(pages2, pages1 + (1 if pushed else 0))
                 self.assertTrue(1 <= y2 <= 2.5, f"slip foot {y2:.2f} mm from the bottom")

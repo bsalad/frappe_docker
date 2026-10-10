@@ -9,6 +9,10 @@
 <style>
   /* wkhtmltopdf takes its margins from the .print-format rule, not from the format's margin fields */
   .print-format { margin-top: 15mm; margin-bottom: 1mm; margin-left: 0mm; margin-right: 0mm; }
+  /* The printview page also applies .print-format as CSS, on its wrapper: the 1 mm after the slip then
+     overflows the page on some body heights and adds a blank last page. Frappe reads only the rule above
+     as a page option, so this one changes the wrapper alone. The page's 1 mm stays (BOTTOM_MM in qrbill.py). */
+  .print-format-gutter .print-format { margin-bottom: 0; }
 </style>
 {% set cname = frappe.get_doc("Company", doc.company).company_name %}
 {% set caddr = frappe.get_doc("Address", doc.company_address) if doc.company_address else none %}
