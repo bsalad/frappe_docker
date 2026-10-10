@@ -50,7 +50,7 @@ Pinned in `finance/apps.json`:
 | --- | --- | --- |
 | QR-bill on sales invoices | Yes, with a caveat | Print format `qr_sales_invoice`, and `templates/qrr_invoice`. The QR image is rendered by an external server (see Risks). |
 | MWST declaration, effective method | Partly | `doctype/vat_declaration` with `vat_type` `effective` or `flat`, and effective-method rates on the net amount (not tested here). The VAT accounts per quarter agree with bexio, see below; the form's rows per rate do not yet. |
-| MWST figures per period (`mwst_report.py`) | Partly | `--basis posting` (default) counts invoices by posting date. `--basis payment` (vereinnahmte Entgelte) counts each Payment Entry by its posting date, and splits it over the invoices it pays by allocated / grand total: their net and each tax row times that share, so a receipt is split over the rates of its invoices; a payment with no invoice reference splits no tax. Journal Entries are not read on either basis. |
+| MWST figures per period (`mwst_report.py`) | Partly | `--basis posting` (default) counts invoices by posting date. `--basis payment` (vereinnahmte Entgelte) counts each Payment Entry by its posting date, and splits it over the invoices it pays by allocated / grand total: their net and each tax row times that share, so a receipt is split over the rates of its invoices; a payment with no invoice reference splits no tax. Journal Entries' VAT rows are read on both bases by posting date (see "What the figures read" below). |
 | MWST declaration, received | Partly | Report `kontrolle_mwst` and the Swiss MWST page (`kt_swiss_route_schweizer_mwst`). Not tested here. |
 | Swiss chart of accounts | Yes | `erpnextswiss/coa_import/accounts_template.csv`, 180 rows. Root groups follow the KMU numbering: 1 Aktiven, 2 Passiven, 3 Betriebsertrag, 4 Aufwand Material/Waren/Dienstleistungen, 5 Personalaufwand, 6 Sonstiger Betriebsaufwand, 7 Nebenerfolg, 9 Abschluss. Not tested against our data. |
 | camt.053 import | Yes | Bank import page, CAMT.053 format; a profile for Aargauische Kantonalbank. |
@@ -86,6 +86,34 @@ Ziffer, and the split of the Vorsteuer in 400 and 405. They need each receipt
 split over the VAT rates of its invoices, from bexio's invoices and receipts.
 The filed declarations (bexio's MWST-Abrechnung) are not read; they would show
 any correction made in the form itself.
+
+### What the figures read (`mwst_report.py`)
+
+- **Invoices** (Sales and Purchase Invoices, submitted), by posting date, on the
+  posting basis. The tax rows by their template (the bexio id).
+- **Payments** (Payment Entries, submitted), by posting date, on the payment
+  basis only: each invoice they pay, by the share allocated / grand total.
+- **Journal Entries** (GL rows of submitted entries), by posting date, on both
+  bases. A bank or card entry is dated by the payment, so both bases agree on it:
+  - 1170 (Ziffer 400) and 1171 (Ziffer 405): the net debit of the voucher. A direct
+    card or bank expense with input tax is here.
+  - 2200 (sales tax, Ziffer 399): the net credit, in the row of its rate (302 to
+    343). The base is the one non-VAT row of the voucher with the same sign (the
+    net revenue). A sales tax with no such row, or at a rate not in the form, is
+    counted apart and named in the report's stdout.
+  - 2203 (Bezugsteuer, Ziffer 382 or 383 by the date): the net credit. Its base is
+    not read, so the Ziffer's base stays zero.
+  - Left out, because the same tax is already counted elsewhere or is not a
+    Ziffer: a voucher with 2202 (a sales tax moved from 2202 to 2200), a voucher
+    with 1172 (the bill payment moves between 1172 and 1170/1171, counted through
+    the Payment Entries on the payment basis), and a voucher with 2201 (the
+    settlement, whose 1171 row is the period's moves and direct lines in one).
+- The CSV has, under each Ziffer that a Journal Entry touches, a line
+  `journal entries (by account)`: the part of the Ziffer that came from entries.
+
+Left out: the GL rows of other accounts, except the one net row that gives a sales
+tax its base; the Umsatz rows 220 to 299 and the Abzüge (not checked); and
+cancelled entries and other companies.
 
 ## Alternatives
 

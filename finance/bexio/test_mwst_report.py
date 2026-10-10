@@ -243,6 +243,8 @@ def _match(row, flt):
         return str(value[0]) <= str(got) <= str(value[1])
     if op == "is":
         return bool(got)
+    if op == "in":
+        return got in value
     raise ValueError(op)
 
 
@@ -404,6 +406,112 @@ class ReportRun(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("MWST 2026Q3 (2026-07-01 to 2026-09-30, payment basis): 1 payments, 0 of them pay no invoice", out)
         self.assertIn("303,Normalsatz 8.1 %,1000.00,81.00", report)
+
+
+# Invented accounts and Journal Entries (vouchers J1 to ...): the VAT accounts and the ones the net sits on.
+ACCOUNTS = [{"name": "{} - BI".format(n), "account_number": n, "company": mr.COMPANY}
+            for n in ("1020", "1100", "1170", "1171", "1172", "2200", "2201", "2202", "2203", "3200", "6570")]
+
+
+def journal(entries):
+    """The Journal Entries of the period as fetch_journal_lines() reads them. entries: (voucher, date, [(account
+    number, debit, credit)])."""
+    rows = []
+    for voucher, day, lines in entries:
+        for number, debit, credit in lines:
+            rows.append({"voucher_no": voucher, "posting_date": day, "account": "{} - BI".format(number),
+                         "debit": debit, "credit": credit, "company": mr.COMPANY, "voucher_type": "Journal Entry",
+                         "is_cancelled": 0})
+    erp = FakeErp({"Account": ACCOUNTS, "GL Entry": rows}, {})
+    return mr.fetch_journal_lines(erp, datetime.date(2026, 7, 1), datetime.date(2026, 9, 30))
+
+
+def booked(entries):
+    """The totals of the given Journal Entries, as journal_totals() adds them up."""
+    totals = mr.Totals()
+    mr.journal_totals(journal(entries), totals)
+    return totals
+
+
+class JournalEntries(unittest.TestCase):
+    def test_card_expense_with_input_tax_on_1171_is_405(self):
+        t = booked([("E1", "2026-08-03", [("1171", "8.10", "0"), ("6570", "100.00", "0"), ("1020", "0", "108.10")])])
+        self.assertEqual(t.tax_of("405"), D("8.10"))
+        self.assertEqual(t.base_of("405"), D("0"))
+        self.assertEqual(t.journal["405"], [D("0"), D("8.10")])
+
+    def test_material_input_tax_on_1170_is_400(self):
+        t = booked([("E2", "2026-08-03", [("1170", "2.50", "0"), ("6570", "0", "0"), ("1020", "0", "2.50")])])
+        self.assertEqual(t.tax_of("400"), D("2.50"))
+
+    def test_move_from_2202_to_2200_is_not_counted_twice(self):
+        t = booked([("M1", "2026-08-03", [("2202", "81.00", "0"), ("2200", "0", "81.00")])])
+        self.assertEqual(t.tax_of("303"), D("0"))
+        self.assertEqual(t.rate_unknown, D("0"))
+
+    def test_move_from_1172_to_1171_is_not_counted(self):
+        t = booked([("M2", "2026-08-03", [("1171", "50.00", "0"), ("1172", "0", "50.00")])])
+        self.assertEqual(t.tax_of("405"), D("0"))
+
+    def test_settlement_entry_is_excluded(self):
+        t = booked([("S1", "2026-09-30", [("2201", "500.00", "0"), ("1171", "0", "500.00")])])
+        self.assertEqual(t.tax_of("405"), D("0"))
+        self.assertEqual(t.journal, {})
+
+    def test_manual_sales_entry_with_net_and_tax_lands_in_303_at_its_rate(self):
+        t = booked([("SA1", "2026-08-10", [("1100", "108.10", "0"), ("3200", "0", "100.00"), ("2200", "0", "8.10")])])
+        self.assertEqual(t.tax_of("303"), D("8.10"))
+        self.assertEqual(t.base_of("303"), D("100.00"))
+
+    def test_manual_sales_entry_at_2_6_percent_lands_in_313(self):
+        t = booked([("SA2", "2026-08-10", [("1100", "102.60", "0"), ("3200", "0", "100.00"), ("2200", "0", "2.60")])])
+        self.assertEqual(t.tax_of("313"), D("2.60"))
+
+    def test_reversal_of_sales_tax_is_negative_in_its_row(self):
+        t = booked([("SA3", "2026-08-10", [("2200", "8.10", "0"), ("3200", "100.00", "0"), ("1100", "0", "108.10")])])
+        self.assertEqual(t.tax_of("303"), D("-8.10"))
+        self.assertEqual(t.base_of("303"), D("-100.00"))
+
+    def test_sales_tax_with_no_base_row_is_counted_apart(self):
+        t = booked([("SA4", "2026-08-10", [("1100", "8.10", "0"), ("2200", "0", "8.10")])])
+        self.assertEqual(t.tax_of("303"), D("0"))
+        self.assertEqual(t.rate_unknown, D("8.10"))
+
+    def test_sales_tax_at_a_rate_not_in_the_form_is_counted_apart(self):
+        t = booked([("SA5", "2026-08-10", [("1100", "103.00", "0"), ("3200", "0", "100.00"), ("2200", "0", "3.00")])])
+        self.assertEqual(t.rate_unknown, D("3.00"))
+        self.assertEqual(t.rows, {})
+
+    def test_bezugsteuer_on_2203_is_owed_in_383_for_2026(self):
+        t = booked([("B1", "2026-08-03", [("1170", "81.00", "0"), ("2203", "0", "81.00")])])
+        self.assertEqual(t.tax_of("383"), D("81.00"))
+        self.assertEqual(t.tax_of("400"), D("81.00"))
+
+    def test_csv_shows_the_entries_under_the_ziffer(self):
+        t = booked([("E1", "2026-08-03", [("1171", "8.10", "0"), ("1020", "0", "8.10")])])
+        self.assertIn(["405", "journal entries (by account)", "0.00", "8.10"], list(mr.csv_rows(t)))
+
+
+class JournalRun(unittest.TestCase):
+    """main() with Journal Entries in ERPNext: a card expense lands in 405 on the posting and on the payment basis."""
+
+    def fake(self):
+        erp = ReportRun.fake(self)
+        erp.rows["Account"] = ACCOUNTS
+        erp.rows["GL Entry"] = [
+            {"voucher_no": "E1", "posting_date": "2026-08-03", "account": "1171 - BI", "debit": "8.10", "credit": "0",
+             "company": mr.COMPANY, "voucher_type": "Journal Entry", "is_cancelled": 0},
+            {"voucher_no": "E1", "posting_date": "2026-08-03", "account": "1020 - BI", "debit": "0", "credit": "8.10",
+             "company": mr.COMPANY, "voucher_type": "Journal Entry", "is_cancelled": 0},
+        ]
+        return erp
+
+    def test_card_expense_is_405_on_both_bases(self):
+        for basis in ("posting", "payment"):
+            code, out, report = ReportRun.run_main(self, ["--basis", basis])
+            self.assertEqual(code, 0)
+            self.assertIn("405,Vorsteuer Investitionen und übriger Betriebsaufwand,0.00,8.10", report)
+            self.assertIn("405,journal entries (by account),0.00,8.10", report)
 
 
 

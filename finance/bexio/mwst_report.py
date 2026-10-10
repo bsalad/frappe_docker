@@ -17,6 +17,12 @@ invoice's net and tax rows times that share, so a receipt is split over the
 rates of the invoices it pays. Payment Entries that pay no invoice (advances,
 bank charges) split no tax and are counted apart.
 
+Journal Entries count on both bases by their posting date: the VAT rows of the
+direct bank and card entries (1170, 1171), the sales tax booked by hand (2200,
+with its base from the net row of the same voucher) and the Bezugsteuer (2203).
+The mirror and transit vouchers (2202 to 2200, 1172 to 1171/1170, the settlement
+with 2201) are not counted by their VAT rows. See journal_totals().
+
 The base of a tax row is derived from its tax (tax / rate), because the import
 does not carry the net per row. At 8.1 % one rappen of tax is about 0.06 of
 base, so the derived bases are approximate; the tax per row is exact.
@@ -156,9 +162,19 @@ class Totals:
         self.unmapped = []
         self.unchecked_tax = ZERO
         self.by_code = {}
+        self.journal = {}
+        self.rate_unknown = ZERO
 
     def add(self, row, base, tax):
         acc = self.rows.setdefault(row, [ZERO, ZERO])
+        if base is not None:
+            acc[0] += base
+        acc[1] += tax
+
+    def add_journal(self, row, base, tax):
+        """A tax from a Journal Entry: in the row like a document's, and kept apart for the CSV's entries line."""
+        self.add(row, base, tax)
+        acc = self.journal.setdefault(row, [ZERO, ZERO])
         if base is not None:
             acc[0] += base
         acc[1] += tax
@@ -219,12 +235,15 @@ def form_totals(totals):
 
 
 def csv_rows(totals):
-    """One line per form row, base and tax, for the private CSV."""
+    """One line per form row, base and tax, and under it the part that came from Journal Entries, for the private CSV."""
     rows, _saldo = form_totals(totals)
     for row in sorted(set(rows) | set(LABELS)):
         if row == "200" or row in rows:
             base, tax = rows.get(row, [ZERO, ZERO])
             yield [row, LABELS.get(row, row), "{:.2f}".format(base), "{:.2f}".format(tax)]
+            if row in totals.journal:
+                jbase, jtax = totals.journal[row]
+                yield [row, "journal entries (by account)", "{:.2f}".format(jbase), "{:.2f}".format(jtax)]
 
 
 def summary_lines(totals):
@@ -238,6 +257,7 @@ def summary_lines(totals):
     lines.append("")
     lines.append("Saldo before Ziffer 479 and Abzüge 280: {:,.2f} (positive: to pay)".format(saldo))
     lines.append("tax not in a checked Ziffer (Umsatz 220-299, zero-rate, imports): {:,.2f}".format(totals.unchecked_tax))
+    lines.append("journal entry sales tax with no base row or no known rate, counted apart: {:,.2f}".format(totals.rate_unknown))
     if totals.unmapped:
         lines.append("unmapped tax rows: {} (names in the private CSV's log, not here)".format(len(totals.unmapped)))
     return lines
@@ -347,6 +367,78 @@ def payment_documents(payments, invoices):
     return sales, purchases, unallocated
 
 
+# Journal Entries: the input tax accounts and their Ziffer; 2203 (Bezugsteuer owed) goes by owed_row().
+JOURNAL_INPUT = {"1170": "400", "1171": "405"}
+# The accounts whose rows are tax, not the base: a sales tax's base is a row of another account.
+VAT_ACCOUNTS = {"1170", "1171", "1172", "2200", "2201", "2202", "2203"}
+# The sales rates of the form rows. A rate is matched to the row within the tolerance: tax and base are rounded to the rappen.
+RATE_ROWS = {Decimal("7.7"): "302", Decimal("8.1"): "303", Decimal("2.5"): "312",
+             Decimal("2.6"): "313", Decimal("3.7"): "342", Decimal("3.8"): "343"}
+RATE_TOLERANCE = Decimal("0.05")
+
+
+def fetch_journal_lines(erp, start, end):
+    """The GL rows of the submitted Journal Entries of the period (read only): voucher, posting date, account
+    number, and debit minus credit. The rows of every account are read, the base of a sales tax is one of them.
+    A row whose account is not in the company's chart comes back with account None."""
+    numbers = {a["name"]: a["account_number"] for a in erp.list("Account", [["company", "=", COMPANY]], ["name", "account_number"])}
+    filters = [["company", "=", COMPANY], ["voucher_type", "=", "Journal Entry"], ["is_cancelled", "=", 0],
+               ["posting_date", "between", [str(start), str(end)]]]
+    lines = []
+    for e in erp.list("GL Entry", filters, ["voucher_no", "posting_date", "account", "debit", "credit"]):
+        lines.append({
+            "voucher": e["voucher_no"],
+            "posting_date": datetime.date.fromisoformat(str(e["posting_date"])),
+            "account": numbers.get(e["account"]),
+            "amount": Decimal(str(e["debit"])) - Decimal(str(e["credit"])),
+        })
+    return lines
+
+
+def _rate_row(rate):
+    for known, row in RATE_ROWS.items():
+        if abs(rate - known) <= RATE_TOLERANCE:
+            return row
+    return None
+
+
+def journal_totals(lines, totals):
+    """Journal Entries' VAT rows into the Ziffern, by posting date: the same on both bases (a bank or card entry is
+    dated by the payment). fetch_journal_lines() gives the lines.
+
+    Per voucher, by the accounts it touches. Not counted by its VAT rows: a voucher with 2201 (the settlement, whose
+    1171 row is the period's moves and direct lines in one), a 2200 row with 2202 (the sales tax moved from 2202), and
+    a 1170/1171 row with 1172 (the bill payment moves, which the payment basis counts through the Payment Entries).
+    Counted: 1170 -> 400 and 1171 -> 405 by the net debit; 2203 -> 382/383 by the Bezugsteuer rule; 2200 by the net
+    credit, in the row of its rate. The rate comes from the one non-VAT row of the voucher with the same sign (the
+    net); a sales tax without it, or at a rate not in the form, is counted apart in rate_unknown."""
+    vouchers = {}
+    for line in lines:
+        if line["account"] is not None:
+            vouchers.setdefault(line["voucher"], []).append(line)
+    for rows in vouchers.values():
+        net = {}
+        for line in rows:
+            net[line["account"]] = net.get(line["account"], ZERO) + line["amount"]
+        if "2201" in net:
+            continue
+        posting_date = rows[0]["posting_date"]
+        for account, row in JOURNAL_INPUT.items():
+            if net.get(account) and "1172" not in net:
+                totals.add_journal(row, None, net[account])
+        if net.get("2203"):
+            totals.add_journal(owed_row(posting_date), None, -net["2203"])
+        if net.get("2200") and "2202" not in net:
+            sales_tax = -net["2200"]
+            bases = [-amount for account, amount in net.items()
+                     if account not in VAT_ACCOUNTS and -amount * sales_tax > 0]
+            row = _rate_row(sales_tax * 100 / bases[0]) if len(bases) == 1 else None
+            if row is None:
+                totals.rate_unknown += sales_tax
+            else:
+                totals.add_journal(row, bases[0], sales_tax)
+
+
 def templates_by_name(erp):
     """Tax template name -> bexio id, for the templates that have one (the sales and purchase ones)."""
     names = {}
@@ -382,6 +474,7 @@ def main(argv):
         else:
             docs = fetch(erp, start, end)
         gl = gl_by_account(erp, start, end)
+        journal = fetch_journal_lines(erp, start, end)
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2
@@ -395,6 +488,7 @@ def main(argv):
         totals = plan(docs["sales"], docs["purchases"], templates)
         print("MWST {} ({} to {}): {} sales and {} purchase invoices".format(
             args.period, start, end, len(docs["sales"]), len(docs["purchases"])))
+    journal_totals(journal, totals)
     for line in summary_lines(totals):
         print(line)
     print("")
@@ -432,7 +526,7 @@ def reconcile_lines(totals, gl):
     return [
         "check against GL: 2200 credit {:,.2f} vs Ziffer 399 {:,.2f}: difference {:,.2f}".format(gl_sales, owed, gl_sales - owed),
         "check against GL: 1170+1171 debit {:,.2f} vs Ziffer 420 {:,.2f}: difference {:,.2f}".format(gl_input, vorsteuer, gl_input - vorsteuer),
-        "differences come from manual journal entries with tax and from the bases not in a checked Ziffer",
+        "differences come from the bases not in a checked Ziffer and from the rows the report does not read (swiss.md)",
     ]
 
 
