@@ -15,7 +15,8 @@ A payment that cannot be mapped raises Unmapped with a reason, and the reason is
 in the summary. A payment larger than what its invoice still owes is unmapped, not
 capped, unless the invoice owes nothing: then the excess is an advance (unallocated, on
 Erhaltene Anzahlungen, as bexio books it). What an invoice owes is counted over the
-mapped payments in date order, so an unmapped payment does not reduce it.
+mapped payments in date order, so an unmapped payment does not reduce it. A rerun maps the receipts an earlier run
+loaded (submitted Payment Entries with a bexio id) from the same start as the first run, and hands none of them over.
 
 A receipt on a foreign-currency invoice that ERPNext holds in CHF (erp-h7dj books it at
 bexio's rate) is received in the CHF bexio booked to the bank for it, from the journal.
@@ -123,11 +124,17 @@ def chf_in_erpnext(invoice, lookups):
 
 
 def starting_owing(invoice, lookups):
-    """What an invoice owes before any receipt, in the currency its receipts settle it in."""
+    """What an invoice owes before any new receipt, in the currency its receipts settle it in.
+
+    ERPNext's outstanding is what the receipts already loaded left, so their allocations go back on it: a rerun maps
+    those receipts from the same start as the first run, and the new ones see only what is really left.
+    """
     if invoice is None:
         return ZERO
     erp = chf_in_erpnext(invoice, lookups)
-    return erp["outstanding"] if erp else invoice_total(invoice)
+    if erp is None:
+        return invoice_total(invoice)
+    return erp["outstanding"] + lookups.get("loaded_allocated", {}).get(erp["name"], ZERO)
 
 
 def _entry(row, customer, bank, paid_from, currency, paid, received, rate):
@@ -299,8 +306,13 @@ def plan(data, lookups):
     """Map every payment of the export, in date order; one result per payment row."""
     invoices = {str(i["id"]): i for i in data["invoices"]}
     rows = sorted((row for p in data["payments"] for row in p["rows"]), key=lambda r: (r["date"], r["id"]))
+    row_ids = {str(row["id"]) for row in rows}
+    allocated = collections.defaultdict(lambda: ZERO)
+    for references in loaded_here(lookups, row_ids).values():
+        for name, amount in references:
+            allocated[name] += amount
+    lookups = dict(lookups, loaded_allocated=dict(allocated))
     if "journal" in data:
-        row_ids = {str(row["id"]) for row in rows}
         lookups = dict(lookups, booked_chf=bank_booked_chf(data["journal"], data["accounts"], row_ids),
                        booked_deductions=bank_booked_deductions(data["journal"], data["accounts"], row_ids))
     owing = {}  # bexio invoice id -> what it still owes, after the mapped payments
@@ -349,18 +361,19 @@ def vat_document(line, result, gl):
     }}
 
 
-def write_plan(results, submitted, vat=(), gl=None):
+def write_plan(results, submitted, vat=(), gl=None, loaded=()):
     """The mapped payments and their VAT moves as the loader takes them, and the bexio ids of those whose invoice is not submitted in ERPNext.
 
     A Payment Entry is named by ERPNext's own series (ACC-PAY-), so its name is None; it is keyed by bexio_id.
     A payment is allocated against a submitted Sales Invoice only: one whose invoice is still a draft (or not
     in ERPNext) is skipped and counted, so the loader never books against an invoice that has no GL yet. A receipt
     with no invoice to settle (an advance) is handed over with its invoice's submission as the same test.
+    A receipt whose bexio id is in `loaded` is already in ERPNext from an earlier run: it is neither handed over nor skipped.
     The VAT lines of the receipts handed over become Journal Entries (vat_document); a zero line is none.
     """
-    documents, skipped, loaded = [], [], {}
+    documents, skipped, handed = [], [], {}
     for r in results:
-        if r["doc"] is None:
+        if r["doc"] is None or r["bexio_id"] in loaded:
             continue
         if r["invoice_name"] not in submitted:
             skipped.append(r["bexio_id"])
@@ -368,9 +381,9 @@ def write_plan(results, submitted, vat=(), gl=None):
         values = dict(r["doc"])
         values.pop("doctype")
         documents.append({"doctype": "Payment Entry", "name": None, "bexio_id": r["bexio_id"], "values": values})
-        loaded[r["bexio_id"]] = r
+        handed[r["bexio_id"]] = r
     for line in vat:
-        r = loaded.get(str(line["ref_id"]))
+        r = handed.get(str(line["ref_id"]))
         if r is None or _cents(_dec(line["base_currency_amount"])) == ZERO:
             continue
         documents.append(vat_document(line, r, gl))
@@ -402,6 +415,27 @@ def unknown_fields(doc, metas):
     return sorted(set(found))
 
 
+def loaded_allocations(erp):
+    """The submitted receipts this loader made: bexio payment row id -> [(invoice name, allocated amount)], read only.
+
+    An advance has no reference, so its list is empty; it is still a receipt already loaded. One GET per entry: the
+    references are a child table of the Payment Entry.
+    """
+    entries = erp.list("Payment Entry", [["docstatus", "=", 1], ["payment_type", "=", "Receive"], ["bexio_id", "is", "set"]],
+                       ["name", "bexio_id"])
+    loaded = {}
+    for entry in entries:
+        refs = erp.get("Payment Entry", entry["name"]).get("references", [])
+        loaded[entry["bexio_id"]] = [(ref["reference_name"], _dec(ref["allocated_amount"]))
+                                     for ref in refs if ref["reference_doctype"] == "Sales Invoice"]
+    return loaded
+
+
+def loaded_here(lookups, row_ids):
+    """The receipts already loaded that are payment rows of this export: bexio payment row id -> [(invoice name, allocated)]."""
+    return {k: v for k, v in lookups.get("loaded", {}).items() if k in row_ids}
+
+
 def lookups_from_erp(erp, data):
     """What the mapping needs from ERPNext, read only: customers, bank accounts, accounts, rates, invoices."""
     def bexio_names(doctype):
@@ -426,6 +460,7 @@ def lookups_from_erp(erp, data):
     centers = [c["name"] for c in erp.list("Cost Center", [["company", "=", im.COMPANY], ["is_group", "=", 0]], ["name"])]
     return {
         "currency": currency,
+        "loaded": loaded_allocations(erp),
         "customer": bexio_names("Customer"),
         "invoice": bexio_names("Sales Invoice"),
         "invoice_erp": {r["bexio_id"]: {"name": r["name"], "currency": r["currency"], "total": _dec(r["grand_total"]),
@@ -541,18 +576,22 @@ def main(argv):
         return 1
     if args.write:
         vat = vat_lines(data["journal"], data["accounts"], row_ids)
-        documents, skipped = write_plan(results, lookups["submitted"], vat, lookups["gl"])
+        here = loaded_here(lookups, row_ids)
+        documents, skipped = write_plan(results, lookups["submitted"], vat, lookups["gl"], loaded=set(here))
         isl.write_private(args.write, json.dumps({"documents": documents, "exchange_rates": []}, indent=1))
         loaded = {d["bexio_id"] for d in documents if d["doctype"] == "Payment Entry"}
-        # the VAT lines of the receipts handed over, zero ones too: erp-fd93 must not import these again
-        ids = [line for line in vat if str(line["ref_id"]) in loaded]
+        # the VAT lines of every receipt mapped on a submitted invoice, handed over now or loaded by an earlier run, zero ones
+        # too: erp-fd93 must not import these again, and a rerun hands none over, so the file must not shrink to nothing
+        kept = {r["bexio_id"] for r in results if r["doc"] and r["invoice_name"] in lookups["submitted"]}
+        ids = [line for line in vat if str(line["ref_id"]) in kept]
         isl.write_private(os.path.join(im.PRIVATE, VAT_IDS_FILE), "\n".join(
             "journal {} receipt {}".format(line["id"], line["ref_id"]) for line in ids))
         journal_entries = sum(d["doctype"] == "Journal Entry" for d in documents)
         print("{} documents handed to the loader: {} Payment Entries, {} VAT Journal Entries; {} VAT lines of "
-              "{} receipts in {}; {} skipped: invoice not submitted in ERPNext, by bexio id: {}".format(
-                  len(documents), len(loaded), journal_entries, len(ids), len(loaded), VAT_IDS_FILE,
-                  len(skipped), ", ".join(skipped) or "none"))
+              "{} receipts in {}; {} skipped: invoice not submitted in ERPNext, by bexio id: {}; {} already loaded by an "
+              "earlier run, not handed over".format(
+                  len(documents), len(loaded), journal_entries, len(ids), len(kept), VAT_IDS_FILE,
+                  len(skipped), ", ".join(skipped) or "none", len(kept & set(here))))
         print("{} lines of unmapped payments or reconciliation in {}".format(len(lines), args.report))
     else:
         print("dry run: nothing was written; {} lines of unmapped payments or reconciliation in {}".format(len(lines), args.report))

@@ -416,5 +416,74 @@ class VatOnPayment(unittest.TestCase):
         self.assertEqual((docs, skipped), ([], ["811"]))
 
 
+class Rerun(unittest.TestCase):
+    """After a live run the invoice's outstanding is what the loaded receipts left: a rerun maps them from the first run's start."""
+    PAID = {"501": {"name": "ACC-SINV-0002", "currency": "CHF", "total": Decimal("180.00"), "outstanding": Decimal("0")}}
+    LOADED = {"811": [("ACC-SINV-0002", Decimal("180.00"))]}
+
+    def test_an_invoice_paid_by_its_loaded_receipt_maps_it_again_and_hands_nothing_over(self):
+        lk = lookups(invoice={"501": "ACC-SINV-0002"}, invoice_erp=self.PAID, booked_chf={"811": Decimal("180.00")}, loaded=self.LOADED)
+        results = ipi.plan(export([USD_PAYMENT]), lk)
+        self.assertIsNone(results[0]["error"])
+        self.assertEqual(results[0]["doc"]["references"][0]["reference_name"], "ACC-SINV-0002")
+        self.assertEqual(len(ipi.write_plan(results, {"ACC-SINV-0002"})[0]), 1)
+        self.assertEqual(ipi.write_plan(results, {"ACC-SINV-0002"}, loaded={"811"}), ([], []))
+
+    def test_a_new_receipt_on_a_paid_invoice_still_stops_as_over_allocation(self):
+        new = row(USD_PAYMENT, id=812, date="2026-02-01", value="10.000000")
+        lk = lookups(invoice={"501": "ACC-SINV-0002"}, invoice_erp=self.PAID, booked_chf={"811": Decimal("180.00"), "812": Decimal("10.00")}, loaded=self.LOADED)
+        results = ipi.plan(export([USD_PAYMENT, new]), lk)
+        self.assertIsNone(results[0]["error"])
+        self.assertEqual(results[1]["error"], ipi.OVER_ALLOCATED)
+
+    def test_a_partly_paid_invoice_lets_a_new_receipt_allocate_only_what_is_left(self):
+        partly = {"501": {"name": "ACC-SINV-0002", "currency": "CHF", "total": Decimal("180.00"), "outstanding": Decimal("80.00")}}
+        new = row(USD_PAYMENT, id=812, date="2026-02-01")
+        lk = lookups(invoice={"501": "ACC-SINV-0002"}, invoice_erp=partly, booked_chf={"811": Decimal("100.00"), "812": Decimal("80.00")},
+                     loaded={"811": [("ACC-SINV-0002", Decimal("100.00"))]})
+        results = ipi.plan(export([USD_PAYMENT, new]), lk)
+        self.assertEqual([r["error"] for r in results], [None, None])
+        self.assertEqual(results[1]["doc"]["references"][0]["allocated_amount"], 80.0)
+        self.assertEqual(results[1]["doc"]["references"][0]["outstanding_amount"], 80.0)
+        documents, _ = ipi.write_plan(results, {"ACC-SINV-0002"}, loaded={"811"})
+        self.assertEqual([d["bexio_id"] for d in documents], ["812"])
+
+    def test_a_loaded_advance_is_not_handed_over_again(self):
+        first = row(PAYMENT, id=811, date="2026-01-10", value="1081.000000")
+        again = row(PAYMENT, id=734, date="2026-01-23", value="1081.000000", title="Overpayment")
+        results = ipi.plan(export([first, again]), lookups(loaded={"734": []}))
+        self.assertEqual(results[1]["doc"]["paid_from"], "2030 - Erhaltene Anzahlungen - bic")
+        documents, _ = ipi.write_plan(results, {"ACC-SINV-0001"}, loaded={"734"})
+        self.assertEqual([d["bexio_id"] for d in documents], ["811"])
+
+    def test_the_vat_of_a_loaded_receipt_is_not_handed_over_again(self):
+        results = ipi.plan(export([row(PAYMENT)]), LOOKUPS)
+        vat = [VatOnPayment().line(5, 129, 127, "19.50")]
+        self.assertEqual(ipi.write_plan(results, {"ACC-SINV-0001"}, vat, VatOnPayment.GL, loaded={"811"}), ([], []))
+
+
+class FakeErp:
+    """Stands in for the ERPNext client: two submitted receipts, one with an invoice reference and one an advance."""
+    ENTRIES = [{"name": "ACC-PAY-0001", "bexio_id": "811"}, {"name": "ACC-PAY-0002", "bexio_id": "734"}]
+    DOCS = {"ACC-PAY-0001": {"references": [{"reference_doctype": "Sales Invoice", "reference_name": "ACC-SINV-0002",
+                                             "allocated_amount": 180.0}]},
+            "ACC-PAY-0002": {"references": []}}
+
+    def list(self, doctype, filters=None, fields=()):
+        self.filters = filters
+        return self.ENTRIES
+
+    def get(self, doctype, name):
+        return self.DOCS[name]
+
+
+class LoadedAllocations(unittest.TestCase):
+    def test_a_submitted_receipt_is_read_with_its_references_and_an_advance_has_none(self):
+        erp = FakeErp()
+        self.assertEqual(ipi.loaded_allocations(erp), {"811": [("ACC-SINV-0002", Decimal("180.0"))], "734": []})
+        self.assertIn(["docstatus", "=", 1], erp.filters)
+        self.assertIn(["payment_type", "=", "Receive"], erp.filters)
+
+
 if __name__ == "__main__":
     unittest.main()
