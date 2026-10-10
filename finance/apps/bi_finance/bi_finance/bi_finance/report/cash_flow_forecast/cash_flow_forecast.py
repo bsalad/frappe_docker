@@ -5,8 +5,14 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
 - receipts: the open Sales Invoices (Payment Ledger), on the due date moved by the customer's average days late
   over the last year, from the invoices paid in that year;
 - bills: the open Purchase Invoices, on the due date;
-- recurring costs: the suppliers whose bills repeat monthly, quarterly or yearly over the last year, unless an
-  open bill of theirs falls due within a couple of weeks of the occurrence;
+- recurring costs, from two sources, each over the last year and repeating monthly, quarterly or yearly:
+  - the suppliers whose purchase bills repeat, unless an open bill of theirs falls due within a couple of weeks of
+    the occurrence;
+  - the outgoing bank lines not covered by a bill, grouped by the first words of their description (the payee).
+    A line is left out when a payroll or VAT word is in its description, when it is reconciled to a payroll or VAT
+    Journal Entry (accounts 5xxx, 2200, 2202), when it is reconciled to a Payment Entry of a Purchase Invoice, or
+    when a purchase bill of the same amount is dated within five days of it. A group needs 80% of its gaps in its
+    period, since a key can mix payees; its amount is the median of its lines;
 - payroll: the salary accounts (group 5) of the last year, the average of the last three months, paid on the 25th
   (the Friday before when the 25th is a weekend);
 - VAT: the balance of 2200 and 2202 less 1170 to 1172, split at the start of the current quarter: the quarter closed
@@ -99,6 +105,64 @@ def bills_in_window(company, as_of):
     return [(bill.supplier, bill.posting_date, flt(bill.base_grand_total), bill.name) for bill in bills]
 
 
+def bank_outflows(company, as_of, bills):
+    """(group key, date, amount, bank transaction name) of the outgoing bank lines of the last year that no bill,
+    payroll or VAT payment covers, and a Counter of the lines each rule left out. bills: bills_in_window."""
+    left_out = collections.Counter()
+    accounts = frappe.get_all("Bank Account", filters={"company": company}, pluck="name")
+    lines = frappe.get_all(
+        "Bank Transaction",
+        filters={
+            "docstatus": 1, "bank_account": ["in", accounts], "withdrawal": [">", 0],
+            "date": ["between", [as_of - datetime.timedelta(days=LOOKBACK_DAYS), as_of]],
+        },
+        fields=["name", "date", "withdrawal", "description"],
+    ) if accounts else []
+    payroll_or_vat_paid, bill_paid = reconciled_bank_lines([line.name for line in lines])
+    bill_days = [(day, amount) for _supplier, day, amount, _name in bills]
+    kept = []
+    for line in lines:
+        amount = flt(line.withdrawal)
+        if not cf.description_key(line.description):
+            left_out["no words in the description"] += 1
+        elif cf.is_payroll_or_vat(line.description):
+            left_out["payroll or VAT words"] += 1
+        elif line.name in payroll_or_vat_paid:
+            left_out["payroll or VAT journal entry"] += 1
+        elif line.name in bill_paid:
+            left_out["paid by a bill's payment entry"] += 1
+        elif cf.paid_by_a_bill(line.date, amount, bill_days):
+            left_out["amount of a bill"] += 1
+        else:
+            kept.append((cf.description_key(line.description), line.date, amount, line.name))
+    return kept, left_out
+
+
+def reconciled_bank_lines(names):
+    """(payroll or VAT journal entry, purchase bill payment) as two sets of the bank transaction names: a Journal
+    Entry on a salary (5xxx) or VAT liability (2200, 2202) account, and a Payment Entry referencing a Purchase Invoice."""
+    if not names:
+        return set(), set()
+    payroll_or_vat = frappe.db.sql(
+        """select distinct btp.parent
+        from `tabBank Transaction Payments` btp
+        join `tabJournal Entry Account` jea on jea.parent = btp.payment_entry
+        join `tabAccount` a on a.name = jea.account
+        where btp.payment_document = 'Journal Entry' and btp.parent in %s
+          and (a.account_number like %s or a.account_number in %s)""",
+        (names, "5%", cf.VAT_LIABILITY_ACCOUNTS),
+    )
+    bill = frappe.db.sql(
+        """select distinct btp.parent
+        from `tabBank Transaction Payments` btp
+        join `tabPayment Entry Reference` per on per.parent = btp.payment_entry
+        where btp.payment_document = 'Payment Entry' and btp.parent in %s
+          and per.reference_doctype = 'Purchase Invoice'""",
+        (names,),
+    )
+    return {row[0] for row in payroll_or_vat}, {row[0] for row in bill}
+
+
 def salary_postings(company, as_of):
     """(posting date, debit minus credit) per day of the salary accounts (group 5) in the last year."""
     rows = frappe.db.sql(
@@ -149,6 +213,37 @@ def opening_cash(company, as_of):
     return flt(rows[0][0])
 
 
+def recurring_sources(company, as_of):
+    """The recurring costs of each source as recurring_costs finds them: "bills" from the purchase bills, "bank"
+    from the bank lines, keyed by their description's group key. "left_out" counts the bank lines each rule
+    left out; "kept" is the number of bank lines that remain."""
+    bills = bills_in_window(company, as_of)
+    bank, left_out = bank_outflows(company, as_of, bills)
+    return {
+        "bills": cf.recurring_costs(bills, as_of),
+        "bank": cf.recurring_costs(bank, as_of, strict=True),
+        "left_out": left_out,
+        "kept": len(bank),
+    }
+
+
+def dry_run(company=None, as_of=None):
+    """Counts only, for a read-only run of the bank source (bench execute): the groups per period, the bank lines
+    they cover, the lines each rule left out, and the bank groups whose key is a bill supplier's key (a possible
+    overlap of the two sources). No description and no amount, so the output can go in a note."""
+    company = company or frappe.defaults.get_user_default("company")
+    sources = recurring_sources(company, getdate(as_of or nowdate()))
+    bill_keys = {cf.description_key(item["supplier"]) for item in sources["bills"]}
+    return {
+        "bill_groups": len(sources["bills"]),
+        "bank_lines_kept": sources["kept"],
+        "bank_lines_left_out": dict(sources["left_out"]),
+        "bank_groups_per_period": dict(collections.Counter(item["period"] for item in sources["bank"])),
+        "bank_lines_in_groups": sum(item["count"] for item in sources["bank"]),
+        "bank_groups_with_a_bill_supplier_key": sum(1 for item in sources["bank"] if item["supplier"] in bill_keys),
+    }
+
+
 def line(kind, day, amount, party, doctype, name, note):
     return {"kind": kind, "day": day, "amount": round(amount, 2), "party": party,
             "doctype": doctype, "name": name, "note": note}
@@ -179,12 +274,18 @@ def compute(company, as_of):
     open_due = collections.defaultdict(list)
     for _name, (party, _amount, due) in payables.items():
         open_due[party].append(due)
-    for item in cf.recurring_costs(bills_in_window(company, as_of), as_of):
+    sources = recurring_sources(company, as_of)
+    for item in sources["bills"]:
         for day in cf.recurring_dates(item, as_of, horizon):
             if any(abs((day - due).days) <= cf.OPEN_BILL_MATCH_DAYS for due in open_due[item["supplier"]]):
                 continue
-            note = _("{0}, from its last bill").format(item["period"])
+            note = _("{0}, {1} bills, from the last one").format(item["period"], item["count"])
             lines.append(line("recurring", day, item["amount"], item["supplier"], "Purchase Invoice", item["last_bill"], note))
+    for item in sources["bank"]:
+        for day in cf.recurring_dates(item, as_of, horizon):
+            note = _("{0}, {1} bank lines described “{2}”, from the last one").format(
+                item["period"], item["count"], item["supplier"])
+            lines.append(line("recurring", day, item["amount"], "", "Bank Transaction", item["last_bill"], note))
 
     amount = cf.payroll_from_postings(salary_postings(company, as_of))
     if amount:

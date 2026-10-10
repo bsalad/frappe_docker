@@ -45,9 +45,13 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
 - `bi_finance/test_bank_statement_upload.py`: offline tests of the record, the stamp comment and the .json,
   with the frappe calls mocked; run in the image as `bi_finance.test_bank_statement_upload`.
 - `bi_finance/cash_forecast.py`: the 13-week cash forecast without the site: the weeks of each line, the
-  recurring costs per supplier (monthly, quarterly, yearly), the payroll run (the 25th, or the Friday before a
-  weekend), the VAT owed (due at the end of the quarter's second month; a refund 30 days after), the running
-  balance and the lowest week. Pure Python.
+  recurring costs (monthly, quarterly, yearly) from the purchase bills per supplier and from the outgoing bank
+  lines per description key (the first three words, digits, dates and months dropped), the payroll run (the 25th,
+  or the Friday before a weekend), the VAT owed (due at the end of the quarter's second month; a refund 30 days
+  after), the running balance and the lowest week. Pure Python.
+  The bank lines left out of the recurring costs: a payroll or VAT word, a payroll or VAT Journal Entry, a
+  Payment Entry of a Purchase Invoice, or a bill of the same amount dated within five days.
+  A bank group must have 80% of its gaps in its period, a bill group only its median gap in it.
 - `bi_finance/bi_finance/report/cash_flow_forecast/`: the "Cash Flow Forecast" report (weeks, chart, lowest point) and
   `bi_finance/bi_finance/report/cash_flow_forecast_lines/`: the "Cash Flow Forecast Lines" report, each line with its source document.
   Both read the books through the Payment Ledger and the GL and call `cash_forecast.py`. Both are shortcuts

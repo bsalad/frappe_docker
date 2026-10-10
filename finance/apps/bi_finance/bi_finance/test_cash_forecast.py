@@ -94,6 +94,91 @@ class RecurringCosts(unittest.TestCase):
         self.assertEqual(list(cf.recurring_dates(item, D(2026, 3, 1), D(2026, 5, 30))), [D(2026, 4, 15)])
 
 
+class BankDescriptions(unittest.TestCase):
+    def test_the_key_is_the_first_three_words_in_lower_case(self):
+        self.assertEqual(cf.description_key("Subscr Invented Cloud Plan Extra Words"), "subscr invented cloud")
+
+    def test_an_invoice_number_and_a_date_do_not_change_the_key(self):
+        self.assertEqual(cf.description_key("Invented Telco AG Rech. 4711 vom 05.03.2026"),
+                         cf.description_key("Invented Telco AG Rech. 9020 vom 05.04.2026"))
+
+    def test_a_month_in_the_text_does_not_change_the_key(self):
+        self.assertEqual(cf.description_key("Miete Oktober Invented"), cf.description_key("Miete Mai Invented"))
+        self.assertEqual(cf.description_key("Miete Oktober Invented"), "miete invented")
+
+    def test_punctuation_is_collapsed(self):
+        self.assertEqual(cf.description_key("  Invented-Shop;;  AG!!"), "invented shop ag")
+
+    def test_umlauts_are_kept(self):
+        self.assertEqual(cf.description_key("Bäckerei Über Zürich 12"), "bäckerei über zürich")
+
+    def test_no_words_no_key(self):
+        self.assertEqual(cf.description_key("12.03.2026 / 4711"), "")
+        self.assertEqual(cf.description_key(None), "")
+
+    def test_payroll_and_vat_words_start_a_word(self):
+        self.assertTrue(cf.is_payroll_or_vat("Lohnzahlung Invented"))
+        self.assertTrue(cf.is_payroll_or_vat("ESTV Mehrwertsteuer 3. Quartal"))
+        self.assertTrue(cf.is_payroll_or_vat("MWST Abrechnung"))
+
+    def test_a_word_that_only_contains_a_stem_is_not_payroll_or_vat(self):
+        self.assertFalse(cf.is_payroll_or_vat("Private Invented Shop"))
+        self.assertFalse(cf.is_payroll_or_vat("Invented Telco AG"))
+
+    def test_a_bill_of_the_same_amount_within_five_days_covers_the_line(self):
+        bills = [(D(2026, 3, 6), 149.0)]
+        self.assertTrue(cf.paid_by_a_bill(D(2026, 3, 11), 149.0, bills))
+        self.assertFalse(cf.paid_by_a_bill(D(2026, 3, 12), 149.0, bills))
+        self.assertFalse(cf.paid_by_a_bill(D(2026, 3, 6), 150.0, bills))
+
+
+class BankRecurringCosts(unittest.TestCase):
+    def test_a_monthly_subscription_with_changing_invoice_numbers_is_one_group(self):
+        texts = ["Subscr Invented Cloud Inv 1001", "Subscr Invented Cloud Inv 1002", "Subscr Invented Cloud Inv 1003"]
+        bank = [(cf.description_key(text), day, 20.0, f"BT-{n}")
+                for n, (text, day) in enumerate(zip(texts, [D(2026, 8, 5), D(2026, 9, 4), D(2026, 10, 6)]), 1)]
+        found = cf.recurring_costs(bank, AS_OF)
+        self.assertEqual([(item["supplier"], item["period"], item["count"], item["last_bill"]) for item in found],
+                         [("subscr invented cloud", "monthly", 3, "BT-3")])
+
+    def test_a_bank_group_whose_gaps_mostly_miss_the_period_is_not_one_recurring_cost(self):
+        # twelve payments of one generic description: the median gap is monthly, but only eight of eleven gaps are
+        dates = [D(2026, 1, 2), D(2026, 1, 10), D(2026, 2, 5), D(2026, 3, 3), D(2026, 3, 20), D(2026, 4, 5),
+                 D(2026, 5, 6), D(2026, 6, 4), D(2026, 7, 5), D(2026, 8, 3), D(2026, 9, 4), D(2026, 10, 5)]
+        bank = [("direct debit invented", day, 99.0, f"BT-{n}") for n, day in enumerate(dates, 1)]
+        self.assertEqual(cf.recurring_costs(bank, AS_OF, strict=True), [])
+        self.assertEqual([item["period"] for item in cf.recurring_costs(bank, AS_OF)], ["monthly"])
+
+    def test_a_bill_group_with_irregular_gaps_is_still_recurring_on_its_median(self):
+        # a supplier whose monthly bill lands on varying days, one of them twice: five of nine gaps are in the band
+        dates = [D(2026, 1, 1), D(2026, 2, 2), D(2026, 3, 9), D(2026, 4, 3), D(2026, 5, 1), D(2026, 6, 15),
+                 D(2026, 7, 11), D(2026, 8, 1), D(2026, 8, 1), D(2026, 9, 17)]
+        bills = [("Irregular Invented AG", day, 500.0, f"PI-{n}") for n, day in enumerate(dates, 1)]
+        self.assertEqual([item["period"] for item in cf.recurring_costs(bills, AS_OF)], ["monthly"])
+        self.assertEqual(cf.recurring_costs(bills, AS_OF, strict=True), [])
+
+    def test_a_monthly_cost_with_one_duplicate_payment_is_still_recurring(self):
+        dates = [D(2026, 1, 5), D(2026, 2, 4), D(2026, 3, 6), D(2026, 3, 9), D(2026, 4, 5), D(2026, 5, 5), D(2026, 6, 4)]
+        self.assertTrue(cf.mostly_regular(dates, "monthly"))
+        self.assertFalse(cf.mostly_regular(dates[:3] + [D(2026, 3, 20), D(2026, 4, 8), D(2026, 5, 1)], "monthly"))
+
+    def test_a_one_off_payment_is_not_recurring(self):
+        bank = [(cf.description_key("Furniture Invented Store"), D(2026, 4, 2), 900.0, "BT-9")]
+        self.assertEqual(cf.recurring_costs(bank, AS_OF), [])
+
+    def test_a_bill_covered_payment_is_left_out_before_the_groups_are_found(self):
+        # the same subscription paid three times; the middle payment is a bill's payment, so it is left out. The two
+        # that remain are 60 days apart, which is no period, so the group is not recurring
+        bills = [(D(2026, 9, 4), 20.0)]
+        payments = [(D(2026, 8, 5), 20.0, "BT-1"), (D(2026, 9, 4), 20.0, "BT-2"), (D(2026, 10, 6), 20.0, "BT-3")]
+        kept = [payment for payment in payments if not cf.paid_by_a_bill(payment[0], payment[1], bills)]
+        self.assertEqual([name for _day, _amount, name in kept], ["BT-1", "BT-3"])
+        key = cf.description_key("Subscr Invented Cloud")
+        self.assertEqual(cf.recurring_costs([(key, day, amount, name) for day, amount, name in kept], AS_OF), [])
+        every = [(key, day, amount, name) for day, amount, name in payments]
+        self.assertEqual([item["period"] for item in cf.recurring_costs(every, AS_OF)], ["monthly"])
+
+
 class Payroll(unittest.TestCase):
     def test_the_average_of_the_last_three_months_with_postings(self):
         postings = [

@@ -13,6 +13,7 @@ Only receipts come in; the others go out. A refund is a vat line with a negative
 
 import calendar
 import datetime
+import re
 import statistics
 
 WEEKS = 13
@@ -30,11 +31,29 @@ PERIODS = {
     "quarterly": (3, (80, 100)),
     "yearly": (12, (340, 390)),
 }
+# The share of the gaps between a recurring cost's payments that must fall in its period's band: one in five may be
+# off (a duplicate, a late run), not more.
+REGULAR_SHARE = 0.8
 RECEIPT = "receipt"
 OUTFLOW_KINDS = ("bill", "recurring", "payroll", "vat")
 # The VAT accounts by number: the liabilities (Umsatzsteuer, the transitory tax) and the input tax.
 VAT_LIABILITY_ACCOUNTS = ("2200", "2202")
 VAT_INPUT_ACCOUNTS = ("1170", "1171", "1172")
+# A bank line's description is grouped by its first words: the payee's name. Digits, dates, punctuation and
+# month names are dropped, so an invoice number or the month in the text does not split the group. Three words
+# tell apart two services of one bank or telco, and stop short of the invoice reference that follows a name.
+KEY_WORDS = 3
+MONTH_WORDS = frozenset((
+    "jan", "januar", "january", "feb", "februar", "february", "mär", "märz", "maerz", "mar", "march",
+    "apr", "april", "mai", "may", "jun", "juni", "june", "jul", "juli", "july", "aug", "august",
+    "sep", "sept", "september", "okt", "oktober", "october", "oct", "nov", "november",
+    "dez", "dezember", "dec", "december",
+))
+# Words that start a salary or VAT payment's description (prefix match, so "lohnzahlung" counts). Such a bank
+# line is left out of the recurring costs: the payroll and VAT lines already carry it.
+PAYROLL_VAT_STEMS = ("lohn", "salär", "salar", "gehalt", "ahv", "mwst", "vat", "estv", "steuerverwaltung")
+# A bank line is a purchase bill's payment when a bill of the same amount is dated this close to it.
+BILL_MATCH_DAYS = 5
 
 
 def add_months(day, months):
@@ -84,18 +103,53 @@ def detect_period(dates, amounts):
     return None
 
 
-def recurring_costs(bills, as_of):
+def description_words(text):
+    """The words of a bank line's description: lower case, without digits, dates, punctuation or month names."""
+    words = re.sub(r"[^a-zäöüéèàâêîôûçß]+", " ", (text or "").lower()).split()
+    return [word for word in words if word not in MONTH_WORDS]
+
+
+def description_key(text):
+    """The group key of a bank line: its first KEY_WORDS words. "" when the description has no words."""
+    return " ".join(description_words(text)[:KEY_WORDS])
+
+
+def is_payroll_or_vat(text):
+    """True when a word of the description starts like a salary or a VAT payment's word."""
+    return any(word.startswith(PAYROLL_VAT_STEMS) for word in description_words(text))
+
+
+def paid_by_a_bill(day, amount, bills):
+    """bills: (posting date, amount) of the purchase bills. True when one of the same amount is dated within
+    BILL_MATCH_DAYS of the bank line on day: that line is the bill's payment, and the bill source has it."""
+    return any(abs((bill_day - day).days) <= BILL_MATCH_DAYS and abs(bill_amount - amount) < 0.005
+               for bill_day, bill_amount in bills)
+
+
+def mostly_regular(dates, period):
+    """True when at least REGULAR_SHARE of the gaps between the sorted dates fall in the period's band. The median
+    alone labels a run of unrelated payments (a group of card settlements, say) as monthly when only half of its
+    gaps are; a recurring cost repeats on its period nearly every time."""
+    gaps = [(later - earlier).days for earlier, later in zip(dates, dates[1:])]
+    low, high = PERIODS[period][1]
+    return sum(low <= gap <= high for gap in gaps) >= REGULAR_SHARE * len(gaps)
+
+
+def recurring_costs(bills, as_of, strict=False):
     """bills: (supplier, posting date, amount, bill name) of the look-back window, in the company currency.
-    One dict per supplier with a fixed period: supplier, period, amount, last_date, last_bill (the name of its
-    last bill, as its source). A supplier whose last bill is older than two periods has stopped and is left out."""
+    One dict per supplier with a fixed period: supplier, period, amount, count (the bills behind it), last_date,
+    last_bill (the name of its last bill, as its source). A supplier whose last bill is older than two periods
+    has stopped and is left out. strict: the gaps must also mostly fall in the period (see mostly_regular); the
+    bank lines are passed strict, since a group of them, keyed by description, can mix several payees."""
     by_supplier = {}
     for supplier, day, amount, name in bills:
         by_supplier.setdefault(supplier, []).append((day, amount, name))
     found = []
     for supplier, rows in sorted(by_supplier.items()):
         rows.sort()
-        detected = detect_period([day for day, _, _ in rows], [amount for _, amount, _ in rows])
-        if detected is None:
+        dates = [day for day, _, _ in rows]
+        detected = detect_period(dates, [amount for _, amount, _ in rows])
+        if detected is None or (strict and not mostly_regular(dates, detected[0])):
             continue
         period, amount = detected
         months = PERIODS[period][0]
@@ -103,7 +157,7 @@ def recurring_costs(bills, as_of):
         if add_months(last_date, 2 * months) < as_of:
             continue
         found.append({
-            "supplier": supplier, "period": period, "amount": round(amount, 2),
+            "supplier": supplier, "period": period, "amount": round(amount, 2), "count": len(rows),
             "last_date": last_date, "last_bill": last_bill,
         })
     return found
