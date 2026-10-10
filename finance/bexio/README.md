@@ -129,7 +129,8 @@ bexio books it (see Currencies below).
 after it is loaded, in posting date order: that is the step that writes the GL.
 A plan's `keep_draft` lists the bexio ids that stay drafts. A document already
 submitted is skipped, so a second run submits nothing; a draft that fails
-validation on submit is rolled back and listed by bexio id.
+validation on submit is rolled back and listed by bexio id; a document that
+was new in that run is rolled back whole (not left as a draft).
 
 The dry run reads ERPNext and prints totals only: counts per export file, the
 CHF net, tax and gross per year, and the invoice status counts (8 open, 9
