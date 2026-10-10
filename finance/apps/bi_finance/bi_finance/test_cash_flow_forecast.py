@@ -114,7 +114,8 @@ class NewSalesRunRate(unittest.TestCase):
         stubs = {
             "opening_cash": 1000.0, "open_documents": {}, "paid_history": {},
             "recurring_sources": {"bills": [], "bank": []}, "personnel_postings": [], "vat_balances": {},
-            "vat_paid_since": 0.0, "sales_paid_in_windows": payments,
+            "vat_paid_since": 0.0, "sales_paid_in_windows": payments, "purchase_paid_in_windows": [],
+            "insurer_suppliers": set(),
         }
         return {name: stack.enter_context(mock.patch.object(cff, name, return_value=value))
                 for name, value in stubs.items()}
@@ -168,7 +169,7 @@ class NewSalesRunRate(unittest.TestCase):
 
     def test_the_report_filter_off_shows_the_documents_alone(self):
         _columns, rows, message, _chart, _summary = self.execute(
-            {"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0})
+            {"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0, "include_new_purchases": 0})
         self.assertEqual([row["new_sales"] for row in rows], [0.0] * 13)
         self.assertIsNone(message)
 
@@ -184,13 +185,14 @@ class NewSalesRunRate(unittest.TestCase):
             return rows
 
         rows = run({"company": "Test Company", "as_of_date": AS_OF})
-        self.assertEqual([(row["type"], row["amount"]) for row in rows], [("Expected receipts from new sales", 25.0)] * 13)
-        self.assertEqual(run({"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0}), [])
+        receipts = [row for row in rows if row["type"] == "Expected receipts from new sales"]
+        self.assertEqual([row["amount"] for row in receipts], [25.0] * 13)
+        self.assertEqual(run({"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0, "include_new_purchases": 0}), [])
 
 
-class OpenDocuments(unittest.TestCase):
-    """open_documents' SQL runs on an in-memory SQLite copy of the Payment Ledger, so the as-of date, the payments
-    and the returns are netted by the query itself. Invented names and amounts; the same sign rule for both doctypes."""
+class LedgerFixture(unittest.TestCase):
+    """The Payment Ledger and the invoices on an in-memory SQLite copy, so the queries of the report's reads run on
+    invented rows. The as-of date, the payments and the returns are netted by the query itself."""
 
     def setUp(self):
         self.db = sqlite3.connect(":memory:")
@@ -198,7 +200,7 @@ class OpenDocuments(unittest.TestCase):
             "create table `tabPayment Ledger Entry` (company, against_voucher_type, against_voucher_no, voucher_type,"
             " voucher_no, party, amount, posting_date, delinked)")
         for doctype in ("Purchase Invoice", "Sales Invoice"):
-            self.db.execute(f"create table `tab{doctype}` (name, due_date, posting_date)")
+            self.db.execute(f"create table `tab{doctype}` (name, due_date, posting_date, supplier)")
         self.frappe = mock.Mock()
         self.frappe.db.sql.side_effect = self.sql
         self.frappe.get_all.side_effect = self.get_all
@@ -218,8 +220,9 @@ class OpenDocuments(unittest.TestCase):
         return [types.SimpleNamespace(name=name, due_date=datetime.date.fromisoformat(due),
                                       posting_date=datetime.date.fromisoformat(posted)) for name, due, posted in rows]
 
-    def invoice(self, doctype, name, due, posted):
-        self.db.execute(f"insert into `tab{doctype}` values (?, ?, ?)", (name, due.isoformat(), posted.isoformat()))
+    def invoice(self, doctype, name, due, posted, supplier="Test Supplier"):
+        self.db.execute(f"insert into `tab{doctype}` values (?, ?, ?, ?)",
+                        (name, due.isoformat(), posted.isoformat(), supplier))
 
     def entry(self, doctype, name, amount, posted, party="Test Supplier", voucher=None):
         """A Payment Ledger row against an invoice: its own row when voucher is None, else a payment or return."""
@@ -227,6 +230,109 @@ class OpenDocuments(unittest.TestCase):
         self.db.execute(
             "insert into `tabPayment Ledger Entry` values ('Test Company', ?, ?, ?, ?, ?, ?, ?, 0)",
             (doctype, name, doctype if voucher == name else "Payment Entry", voucher, party, amount, posted.isoformat()))
+
+
+class NewPurchasesRunRate(LedgerFixture):
+    """The new purchases run-rate on invented rows of the Payment Ledger: a bill posted in the most recent window and
+    paid in it by a Payment Entry, 1300, is 25 a week; a recurring supplier's bill of 900 in the same window is left
+    out when its supplier is recurring. The sign and the window bounds are the query's, read here as they are."""
+
+    def setUp(self):
+        super().setUp()
+        posted, paid = AS_OF - datetime.timedelta(days=50), AS_OF - datetime.timedelta(days=20)
+        self.posted, self.paid = posted, paid
+        self.invoice("Purchase Invoice", "PI-WINDOW", posted, posted)
+        self.entry("Purchase Invoice", "PI-WINDOW", 1300.0, posted)
+        self.entry("Purchase Invoice", "PI-WINDOW", -1300.0, paid, voucher="PE-WINDOW")
+        self.invoice("Purchase Invoice", "PI-RECURRING", posted, posted, supplier="Test Recurring Supplier")
+        self.entry("Purchase Invoice", "PI-RECURRING", 900.0, posted, party="Test Recurring Supplier")
+        self.entry("Purchase Invoice", "PI-RECURRING", -900.0, paid, party="Test Recurring Supplier", voucher="PE-RECURRING")
+
+    def sql(self, query, args=()):
+        # SQLite keeps the dates as text; MariaDB returns them as dates, which the window arithmetic compares
+        return [(supplier, datetime.date.fromisoformat(issued), datetime.date.fromisoformat(paid), amount)
+                for supplier, issued, paid, amount in super().sql(query, args)]
+
+    def test_the_payments_of_the_bills_posted_in_a_window_are_read_as_positive_amounts(self):
+        self.assertEqual(sorted(cff.purchase_paid_in_windows("Test Company", AS_OF)), [
+            ("Test Recurring Supplier", self.posted, self.paid, 900.0),
+            ("Test Supplier", self.posted, self.paid, 1300.0),
+        ])
+
+    def test_a_payment_of_a_bill_from_before_the_four_windows_is_not_counted(self):
+        old = AS_OF - datetime.timedelta(days=400)
+        weekly, _since, _excluded = cf.purchase_run_rate(
+            [("Test Old Supplier", old, self.paid, 500.0), ("Test Supplier", self.posted, self.paid, 1300.0)], AS_OF, set())
+        self.assertEqual(weekly, 25.0)
+
+    def test_the_recurring_suppliers_and_the_insurers_are_left_out_and_counted(self):
+        payments = cff.purchase_paid_in_windows("Test Company", AS_OF)
+        weekly, since, excluded = cf.purchase_run_rate(payments, AS_OF, {"Test Recurring Supplier", "Test Insurer"})
+        # the recurring supplier's 900 is out: 1300 in the most recent window, a quarter of it a week
+        self.assertEqual((weekly, since, excluded), (25.0, AS_OF - datetime.timedelta(days=364), 1))
+        weekly, _since, excluded = cf.purchase_run_rate(payments, AS_OF, {"Test Supplier", "Test Recurring Supplier"})
+        self.assertEqual((weekly, excluded), (0.0, 2))
+
+    def compute(self, include, recurring=(), insurers=()):
+        bills = [{"supplier": supplier, "amount": 900.0, "period": "monthly", "count": 3, "last_bill": "PI-HIST"}
+                 for supplier in recurring]
+        stubs = {
+            "opening_cash": 1000.0, "open_documents": {}, "paid_history": {}, "sales_paid_in_windows": [],
+            "recurring_sources": {"bills": bills, "bank": []}, "personnel_postings": [], "vat_balances": {},
+            "vat_paid_since": 0.0, "insurer_suppliers": set(insurers),
+        }
+        with contextlib.ExitStack() as stack:
+            for name, value in stubs.items():
+                stack.enter_context(mock.patch.object(cff, name, return_value=value))
+            stack.enter_context(mock.patch.object(cf, "recurring_dates", return_value=[]))  # the lines of the other sources
+            stack.enter_context(mock.patch.object(cff, "_", lambda text: text))
+            return cff.compute("Test Company", AS_OF, include_run_rate=False, include_new_purchases=include)
+
+    def test_each_week_carries_the_run_rate_and_the_closing_cash_pays_it(self):
+        result = self.compute(include=True, recurring={"Test Recurring Supplier"})
+        self.assertEqual(result["new_purchases"], {"weekly": 25.0, "since": AS_OF - datetime.timedelta(days=364), "excluded": 1})
+        self.assertEqual([row["new_purchases"] for row in result["weeks"]], [25.0] * 13)
+        self.assertEqual([row["bill"] for row in result["weeks"]], [0.0] * 13)
+        self.assertEqual(result["weeks"][-1]["closing"], round(1000.0 - 25.0 * 13, 2))
+
+    def test_an_insurer_bill_is_left_out_of_the_run_rate(self):
+        # the insurer's 1300 is out; the recurring supplier's 900 is not recurring here, so it stays: 900 over 52 weeks
+        result = self.compute(include=True, insurers={"Test Supplier"})
+        self.assertEqual((result["new_purchases"]["weekly"], result["new_purchases"]["excluded"]), (17.31, 1))
+
+    def test_the_filter_off_leaves_the_line_out_and_does_not_read_the_payments(self):
+        with mock.patch.object(cff, "purchase_paid_in_windows") as paid:
+            result = self.compute(include=False)
+        paid.assert_not_called()
+        self.assertIsNone(result["new_purchases"])
+        self.assertEqual([row["new_purchases"] for row in result["weeks"]], [0.0] * 13)
+        self.assertEqual(result["weeks"][-1]["closing"], 1000.0)
+
+    def test_the_lines_report_lists_the_run_rate_as_an_outflow_and_the_filter_leaves_it_out(self):
+        from bi_finance.bi_finance.report.cash_flow_forecast_lines import cash_flow_forecast_lines as lines_report
+
+        def run(filters):
+            with contextlib.ExitStack() as stack:
+                stubs = {"opening_cash": 1000.0, "open_documents": {}, "paid_history": {}, "sales_paid_in_windows": [],
+                         "recurring_sources": {"bills": [], "bank": []}, "personnel_postings": [], "vat_balances": {},
+                         "vat_paid_since": 0.0, "insurer_suppliers": set()}
+                for name, value in stubs.items():
+                    stack.enter_context(mock.patch.object(cff, name, return_value=value))
+                stack.enter_context(mock.patch.object(cff, "_", lambda text: text))
+                stack.enter_context(mock.patch.object(lines_report, "_", lambda text: text))
+                _columns, rows = lines_report.execute(filters)
+            return rows
+
+        rows = run({"company": "Test Company", "as_of_date": AS_OF})
+        purchases = [row for row in rows if row["type"] == "Expected payments for new purchase bills"]
+        # both payments of the window, 1300 and 900, a thirteenth of the mean of four windows each week: an outflow
+        self.assertEqual([row["amount"] for row in purchases], [-round(2200 / (cf.WEEKS * cf.RUN_RATE_WINDOWS), 2)] * 13)
+        self.assertEqual([row for row in run({"company": "Test Company", "as_of_date": AS_OF, "include_new_purchases": 0})
+                          if row["type"] == "Expected payments for new purchase bills"], [])
+
+
+class OpenDocuments(LedgerFixture):
+    """open_documents' reads of the Payment Ledger: the same sign rule for both doctypes. Invented names and amounts."""
 
     def open(self, doctype):
         return cff.open_documents("Test Company", AS_OF, doctype)
@@ -298,7 +404,7 @@ class OpenDocuments(unittest.TestCase):
                 stack.enter_context(mock.patch.object(cff, name, return_value=value))
             stack.enter_context(mock.patch.object(cf, "recurring_dates", return_value=recurring))
             stack.enter_context(mock.patch.object(cff, "_", lambda text: text))
-            return cff.compute("Test Company", AS_OF, include_run_rate=False)
+            return cff.compute("Test Company", AS_OF, include_run_rate=False, include_new_purchases=False)
 
 
 if __name__ == "__main__":

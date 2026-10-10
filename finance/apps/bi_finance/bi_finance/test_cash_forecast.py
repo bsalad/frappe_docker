@@ -319,6 +319,10 @@ class Forecast(unittest.TestCase):
         self.assertEqual((weeks[1]["bill"], weeks[1]["closing"]), (200.0, 1000.0))
         self.assertEqual(beyond, 1)
 
+    def test_new_purchases_go_out_apart_from_the_bills(self):
+        weeks, _lowest, _beyond = cf.forecast(AS_OF, 1000.0, [self.line("bill", AS_OF, 300.0), self.line("new_purchases", AS_OF, 40.0)])
+        self.assertEqual((weeks[0]["bill"], weeks[0]["new_purchases"], weeks[0]["net"], weeks[0]["closing"]), (300.0, 40.0, -340.0, 660.0))
+
     def test_new_sales_come_in_apart_from_the_receipts(self):
         weeks, _lowest, _beyond = cf.forecast(AS_OF, 1000.0, [self.line("receipt", AS_OF, 500.0), self.line("new_sales", AS_OF, 40.0)])
         self.assertEqual((weeks[0]["receipt"], weeks[0]["new_sales"], weeks[0]["net"], weeks[0]["closing"]), (500.0, 40.0, 540.0, 1540.0))
@@ -376,6 +380,23 @@ class RunRate(unittest.TestCase):
         weekly, _ = cf.run_rate(payments, AS_OF)
         self.assertEqual(weekly, 75.0)
         self.assertEqual(round(weekly * cf.WEEKS, 2), 975.0)
+
+
+class PurchaseRunRate(unittest.TestCase):
+    def test_the_excluded_suppliers_are_left_out_and_counted_once_each(self):
+        day = AS_OF - datetime.timedelta(days=80)
+        paid = AS_OF - datetime.timedelta(days=20)
+        payments = [("Test Supplier A", day, paid, 1300.0), ("Test Recurring", day, paid, 900.0),
+                    ("Test Recurring", day, paid, 100.0), ("Test Insurer", day, paid, 50.0)]
+        weekly, since, excluded = cf.purchase_run_rate(payments, AS_OF, {"Test Recurring", "Test Insurer"})
+        # 1300 of the one supplier that is not excluded, in one of four windows: 25 a week; two of the excluded paid
+        self.assertEqual((weekly, excluded), (25.0, 2))
+        self.assertEqual(since, AS_OF - datetime.timedelta(days=364))
+
+    def test_no_excluded_supplier_paid_counts_zero(self):
+        day = AS_OF - datetime.timedelta(days=80)
+        weekly, _, excluded = cf.purchase_run_rate([("Test Supplier A", day, AS_OF - datetime.timedelta(days=20), 1300.0)], AS_OF, {"Test Insurer"})
+        self.assertEqual((weekly, excluded), (25.0, 0))
 
 
 if __name__ == "__main__":

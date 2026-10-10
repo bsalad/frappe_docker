@@ -8,6 +8,10 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
   the last four 13-week windows from the invoices issued in the same window, averaged and spread over the weeks.
   The report's "Include new sales run-rate" filter leaves it out, to see the forecast of the documents alone;
 - bills: the open Purchase Invoices, on the due date;
+- new purchases: payments of bills not yet posted on the as-of date, the mirror of new sales: the payments made in each
+  of the last four 13-week windows against the bills posted in the same window, averaged and spread over the weeks.
+  The suppliers the recurring costs forecast, and the insurers' bills (items on 2270-2279, their own recurring bills),
+  are left out so nothing is counted twice. The report's "Include new purchases run-rate" filter leaves it out;
 - recurring costs, from two sources, each over the last year and repeating monthly, quarterly or yearly:
   - the suppliers whose purchase bills repeat, unless an open bill of theirs falls due within a couple of weeks of
     the occurrence;
@@ -49,6 +53,7 @@ def kind_label(kind):
         cf.RECEIPT: _("Customer receipt"),
         cf.NEW_SALES: _("Expected receipts from new sales"),
         "bill": _("Supplier bill"),
+        cf.NEW_PURCHASES: _("Expected payments for new purchase bills"),
         "recurring": _("Recurring cost"),
         "payroll": _("Payroll"),
         "vat": _("VAT"),
@@ -95,6 +100,22 @@ def sales_paid_in_windows(company, as_of):
         (company, since, as_of),
     )
     return [(issued, paid, flt(amount)) for issued, paid, amount in rows]
+
+
+def purchase_paid_in_windows(company, as_of):
+    """(supplier, bill date, payment date, amount) of the Purchase Invoices paid by a Payment Entry in the last run-rate
+    windows, in the company currency. The payments the Payment Ledger shows against the bills, as sales_paid_in_windows
+    reads the receipts: a payment is negative there, so its sum is negated."""
+    since = as_of - datetime.timedelta(days=cf.WEEKS * cf.DAYS_PER_WEEK * cf.RUN_RATE_WINDOWS)
+    rows = frappe.db.sql(
+        """select pi.supplier, pi.posting_date, ple.posting_date, -sum(ple.amount)
+        from `tabPayment Ledger Entry` ple join `tabPurchase Invoice` pi on pi.name = ple.against_voucher_no
+        where ple.company = %s and ple.against_voucher_type = 'Purchase Invoice' and ple.voucher_type = 'Payment Entry'
+          and ple.delinked = 0 and ple.posting_date between %s and %s
+        group by ple.against_voucher_no, pi.supplier, pi.posting_date, ple.posting_date""",
+        (company, since, as_of),
+    )
+    return [(supplier, issued, paid, flt(amount)) for supplier, issued, paid, amount in rows]
 
 
 def paid_history(company, as_of, doctype, open_names):
@@ -329,10 +350,12 @@ def line(kind, day, amount, party, doctype, name, note):
             "doctype": doctype, "name": name, "note": note}
 
 
-def compute(company, as_of, include_run_rate=True):
+def compute(company, as_of, include_run_rate=True, include_new_purchases=True):
     """The forecast for the company as of the date: the weeks, the lowest week, the lines in the horizon, and
     the counts the messages tell. include_run_rate: the new sales run-rate's lines are in the forecast (see the
-    module's docstring); run_rate is its weekly amount and the first day of its oldest window, None when left out."""
+    module's docstring); run_rate is its weekly amount and the first day of its oldest window, None when left out.
+    include_new_purchases: the same for the new purchases run-rate, new_purchases its weekly amount, since and the
+    excluded suppliers' count."""
     horizon = cf.horizon_end(as_of)
     opening = opening_cash(company, as_of)
     receivables = open_documents(company, as_of, "Sales Invoice")
@@ -352,6 +375,7 @@ def compute(company, as_of, include_run_rate=True):
     for name, (party, amount, due) in payables.items():
         lines.append(line("bill", due, amount, party, "Purchase Invoice", name, _("due {0}").format(due)))
 
+    sources = recurring_sources(company, as_of)
     run_rate = None
     if include_run_rate:
         # the invoices not issued yet on the as-of date: a receipt every week, the mean of the recent windows
@@ -361,10 +385,21 @@ def compute(company, as_of, include_run_rate=True):
             lines.append(line(cf.NEW_SALES, cf.week_bounds(week, as_of)[0], weekly, "", "", "", note))
         run_rate = {"weekly": weekly, "since": since}
 
+    new_purchases = None
+    if include_new_purchases:
+        # the bills not posted yet on the as-of date: a payment every week, the mean of the recent windows. The suppliers
+        # the recurring costs forecast and the insurers' bills are left out: they are forecast already
+        excluded = {item["supplier"] for item in sources["bills"]} | insurer_suppliers(company)
+        weekly, since, excluded_count = cf.purchase_run_rate(purchase_paid_in_windows(company, as_of), as_of, excluded)
+        note = _("new purchases run-rate: the mean of the last four 13-week windows since {0}, the payments of the bills posted in each window, {1} suppliers left out (recurring or insurer), a thirteenth each week").format(
+            since, excluded_count)
+        for week in range(1, cf.WEEKS + 1):
+            lines.append(line(cf.NEW_PURCHASES, cf.week_bounds(week, as_of)[0], weekly, "", "", "", note))
+        new_purchases = {"weekly": weekly, "since": since, "excluded": excluded_count}
+
     open_due = collections.defaultdict(list)
     for _name, (party, _amount, due) in payables.items():
         open_due[party].append(due)
-    sources = recurring_sources(company, as_of)
     for item in sources["bills"]:
         for day in cf.recurring_dates(item, as_of, horizon):
             if any(abs((day - due).days) <= cf.OPEN_BILL_MATCH_DAYS for due in open_due[item["supplier"]]):
@@ -406,6 +441,7 @@ def compute(company, as_of, include_run_rate=True):
         "lines": sorted((l for l in lines if "week" in l), key=lambda l: (l["week"], l["day"])),
         "without_history": len(without_history),
         "run_rate": run_rate,
+        "new_purchases": new_purchases,
     }
 
 
@@ -414,13 +450,15 @@ def execute(filters=None):
     company = filters.company or frappe.defaults.get_user_default("company")
     as_of = getdate(filters.as_of_date or nowdate())
     currency = frappe.get_cached_value("Company", company, "default_currency")
-    result = compute(company, as_of, include_run_rate=cint(filters.get("include_run_rate", 1)))
+    result = compute(company, as_of, include_run_rate=cint(filters.get("include_run_rate", 1)),
+                     include_new_purchases=cint(filters.get("include_new_purchases", 1)))
     weeks, lowest, opening = result["weeks"], result["lowest"], result["opening"]
 
     rows = [
         {
             "week": row["week"], "from": row["start"], "to": row["end"],
-            "receipt": row["receipt"], "new_sales": row["new_sales"], "bill": row["bill"], "recurring": row["recurring"],
+            "receipt": row["receipt"], "new_sales": row["new_sales"], "bill": row["bill"],
+            "new_purchases": row["new_purchases"], "recurring": row["recurring"],
             "payroll": row["payroll"], "vat": row["vat"], "net": row["net"], "closing": row["closing"],
             "lowest": _("lowest") if row["week"] == lowest else None,
         }
@@ -453,6 +491,10 @@ def execute(filters=None):
     if result["run_rate"]:
         messages.append(_("New sales are in the forecast at {0} a week: the mean of the last four 13-week windows since {1}, receipts from the invoices issued in each window.").format(
             fmt_money(result["run_rate"]["weekly"], currency=currency), result["run_rate"]["since"]))
+    if result["new_purchases"]:
+        messages.append(_("New purchases are in the forecast at {0} a week: the mean of the last four 13-week windows since {1}, payments of the bills posted in each window, {2} suppliers left out.").format(
+            fmt_money(result["new_purchases"]["weekly"], currency=currency), result["new_purchases"]["since"],
+            result["new_purchases"]["excluded"]))
     if result["beyond"]:
         messages.append(_("{0} lines fall after week {1} and are not in the forecast.").format(result["beyond"], len(weeks)))
     if result["without_history"]:
@@ -469,6 +511,7 @@ def columns(currency):
         {"label": _("Receipts"), "fieldname": "receipt", "fieldtype": "Float", "precision": 2, "width": 130},
         {"label": _("New sales"), "fieldname": "new_sales", "fieldtype": "Float", "precision": 2, "width": 120},
         {"label": _("Supplier bills"), "fieldname": "bill", "fieldtype": "Float", "precision": 2, "width": 130},
+        {"label": _("New purchases"), "fieldname": "new_purchases", "fieldtype": "Float", "precision": 2, "width": 130},
         {"label": _("Recurring costs"), "fieldname": "recurring", "fieldtype": "Float", "precision": 2, "width": 130},
         {"label": _("Payroll"), "fieldname": "payroll", "fieldtype": "Float", "precision": 2, "width": 120},
         {"label": _("VAT"), "fieldname": "vat", "fieldtype": "Float", "precision": 2, "width": 120},

@@ -7,7 +7,7 @@ Weeks run from the as-of date: week 1 is the as-of day and the six after it, wee
 the horizon. A line due before the as-of date is overdue and falls in week 1: it is still owed.
 
 Kinds of line: receipt (a customer pays an open Sales Invoice), new_sales (the run-rate of receipts from invoices not
-issued yet), bill (an open Purchase Invoice), recurring
+issued yet), bill (an open Purchase Invoice), new_purchases (the run-rate of payments of bills not posted yet), recurring
 (a cost that repeats per supplier), payroll (the monthly salary run), vat (the VAT the books owe, or a refund).
 Only receipts and new sales come in; the others go out. A refund is a vat line with a negative amount, so it comes in.
 """
@@ -37,8 +37,9 @@ PERIODS = {
 REGULAR_SHARE = 0.8
 RECEIPT = "receipt"
 NEW_SALES = "new_sales"
+NEW_PURCHASES = "new_purchases"
 INFLOW_KINDS = (RECEIPT, NEW_SALES)
-OUTFLOW_KINDS = ("bill", "recurring", "payroll", "vat")
+OUTFLOW_KINDS = ("bill", NEW_PURCHASES, "recurring", "payroll", "vat")
 # The salary accounts by number, inclusive (5000 Loehne, 5003 and the rest of the 50xx run). The payroll line is
 # the salary run only: the 57xx social contributions are paid through the insurers' bills, the 58xx other personnel
 # costs come as bills or bank lines, so none of them is in the payroll basis.
@@ -61,7 +62,8 @@ MONTH_WORDS = frozenset((
 PAYROLL_VAT_STEMS = ("lohn", "salär", "salar", "gehalt", "ahv", "mwst", "vat", "estv", "steuerverwaltung")
 # A bank line is a purchase bill's payment when a bill of the same amount is dated this close to it.
 BILL_MATCH_DAYS = 5
-# The new sales run-rate: the receipts of the last this many 13-week windows, from the invoices issued in the same window.
+# The run-rates (new sales, new purchases): the receipts or payments of the last this many 13-week windows, from the
+# invoices issued in the same window.
 RUN_RATE_WINDOWS = 4
 
 
@@ -315,6 +317,15 @@ def run_rate(payments, as_of):
     return round(statistics.mean(totals) / WEEKS, 2), as_of - length * RUN_RATE_WINDOWS
 
 
+def purchase_run_rate(payments, as_of, excluded):
+    """payments: (supplier, bill date, payment date, amount) of the Purchase Invoices paid in the last RUN_RATE_WINDOWS
+    windows. The run-rate of run_rate over the suppliers not in excluded: those the recurring costs already forecast,
+    and the insurers' bills, which are recurring bills of their own. Returns (weekly amount, first day of the oldest
+    window, how many excluded suppliers were paid in the windows: the count the basis note tells)."""
+    weekly, since = run_rate([(issued, paid, amount) for supplier, issued, paid, amount in payments if supplier not in excluded], as_of)
+    return weekly, since, len({supplier for supplier, _issued, _paid, _amount in payments if supplier in excluded})
+
+
 def forecast(as_of, opening, lines):
     """lines: dicts with kind, day, amount (positive; negative for a vat refund), party, doctype, name, note.
     Places each line in its week and runs the balance from the opening cash.
@@ -324,7 +335,7 @@ def forecast(as_of, opening, lines):
     for week in range(1, WEEKS + 1):
         start, end = week_bounds(week, as_of)
         weeks.append({"week": week, "start": start, "end": end, "receipt": 0.0, "new_sales": 0.0, "bill": 0.0,
-                      "recurring": 0.0, "payroll": 0.0, "vat": 0.0})
+                      "new_purchases": 0.0, "recurring": 0.0, "payroll": 0.0, "vat": 0.0})
     beyond = 0
     for line in lines:
         week = week_of(line["day"], as_of)

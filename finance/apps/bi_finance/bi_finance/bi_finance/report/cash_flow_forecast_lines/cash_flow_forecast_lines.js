@@ -21,5 +21,11 @@ frappe.query_reports["Cash Flow Forecast Lines"] = {
 			fieldtype: "Check",
 			default: 1,
 		},
+		{
+			fieldname: "include_new_purchases",
+			label: __("Include new purchases run-rate"),
+			fieldtype: "Check",
+			default: 1,
+		},
 	],
 };
