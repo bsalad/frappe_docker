@@ -93,8 +93,9 @@ BEXIO_BROKER=1 python3 finance/bexio/export.py --complete
 ```
 
 Without the broker it needs both logins (the read-only one and the export one, as below).
-Entities whose paths are not yet checked against the live API (credit vouchers, file usage,
-the expense and delivery PDFs) say so in their refusals; read those in the manifest first.
+A document PDF is asked raw first and, on HTTP 415, in the JSON form (base64 content). Entities
+whose paths are not yet checked against the live API (credit vouchers, file usage, expense
+attachments) say so in their refusals; read those in the manifest first.
 
 ## Export login (fallback, one run, then removed)
 

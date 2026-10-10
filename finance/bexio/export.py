@@ -318,9 +318,8 @@ def download_files(client, rows, out, templates=FILE_CONTENT_PATHS):
 
 
 def document_pdf(client, path):
-    """The PDF bytes of one document. bexio answers 415 to the raw request for every document read on 10-10, so
-    a 415 is asked again in the JSON form, whose content is the PDF in base64 (the form is not confirmed live
-    until the run). Raises BexioError: the status of the refusal, or 415 when the JSON form holds no PDF."""
+    """The PDF bytes of one document. bexio answers 415 to the raw request for the documents, so a 415 is
+    asked again in the JSON form, whose content is the PDF in base64 (confirmed live through the broker on 10-10). Raises BexioError: the status of the refusal, or 415 when the JSON form holds no PDF."""
     try:
         return client.get(path, raw=True)
     except BexioError as err:
