@@ -199,8 +199,8 @@ class JournalWinsTest(unittest.TestCase):
             path = os.path.join(tmp, "wins.txt")
             with open(path, "w", encoding="utf-8") as f:
                 f.write("# entries bexio books differently\n\n7001 test reason, with a comma\n")
-            self.assertEqual(imf.load_journal_wins(path), {"7001": "test reason, with a comma"})
-            self.assertEqual(imf.load_journal_wins(os.path.join(tmp, "missing.txt")), {})
+            self.assertEqual(ime.load_journal_wins(path), {"7001": "test reason, with a comma"})
+            self.assertEqual(ime.load_journal_wins(os.path.join(tmp, "missing.txt")), {})
 
     def test_reasons_file_line_without_reason_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -208,7 +208,7 @@ class JournalWinsTest(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("7001\n")
             with self.assertRaises(ValueError):
-                imf.load_journal_wins(path)
+                ime.load_journal_wins(path)
 
 
 class ReportTest(unittest.TestCase):

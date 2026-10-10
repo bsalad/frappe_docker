@@ -67,6 +67,8 @@ JOURNAL_FILE = "journal.json"
 CURRENCIES_FILE = "currencies.json"
 PROBLEMS_FILE = "bexio-manual-entries-dry-run.txt"
 JOURNAL_CHECK_FILE = "bexio-manual-entries-journal-check.txt"
+# the entries bexio books differently on purpose (D11): their expected side is bexio's journal, see load_journal_wins
+JOURNAL_WINS_FILE = "bexio-manual-journal-wins.txt"
 JOURNAL = "Journal Entry"
 # the bexio journal lines of documents (invoices, bills, credit vouchers, payments): the rest are bank and manual lines
 DOCUMENT_CLASSES = ("KbInvoice", "KbBill", "KbCreditVoucher", "KbClientAccountEntry")
@@ -436,14 +438,34 @@ def _gross_matches(row, net, vat):
     return abs(abs(gross) - abs(net) - abs(vat)) <= TOLERANCE
 
 
-def journal_check(entries, totals, journal, lookups):
+def load_journal_wins(path):
+    """The entries bexio books differently on purpose, from the private file: one bexio id per line, then its reason.
+    {bexio id: reason}. Blank lines and lines starting with # are skipped; a missing file lists none."""
+    if not os.path.exists(path):
+        return {}
+    reasons = {}
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            text = raw.strip()
+            if not text or text.startswith("#"):
+                continue
+            bexio_id, _, reason = text.partition(" ")
+            if not reason.strip():
+                raise ValueError("a line of {} has no reason after its bexio id".format(path))
+            reasons[bexio_id] = reason.strip()
+    return reasons
+
+
+def journal_check(entries, totals, journal, lookups, wins=None):
     """The mapping against bexio's journal, per manual entry and account (CHF, debit minus credit). entries are the export's
     own (not the --extra ones, which bexio does not book). Returns (problems, per year: [accounts compared, accounts that
-    differ, the sum of the differences in CHF], entries compared).
+    differ, the sum of the differences in CHF], entries compared, journal wins).
 
     The accounts compared are 1170, 1171, 2200 and every profit-and-loss account. An entry bexio books that the mapping
-    does not hold (an unmapped one) differs on every account it books.
+    does not hold (an unmapped one) differs on every account it books. An entry in wins (load_journal_wins) is not compared:
+    bexio books it differently on purpose, so it is counted as a journal win, not as a difference.
     """
+    wins = wins or {}
     owner = entry_of_lines(entries, journal)
     exported = {manual_key(entry["id"]) for entry in entries}
     names = {str(bexio_id): name for bexio_id, (name, _) in lookups.accounts.items()}
@@ -467,7 +489,9 @@ def journal_check(entries, totals, journal, lookups):
         booked[entry_id][credit] -= amount
         years.setdefault(entry_id, str(line["date"])[:4])
     problems, per_year = [], collections.defaultdict(lambda: [0, 0, ZERO])
-    for entry_id in sorted(set(mapped) | set(booked), key=str):
+    seen = set(mapped) | set(booked)
+    won = {entry_id for entry_id in seen if entry_id in wins}
+    for entry_id in sorted(seen - won, key=str):
         year = years.get(entry_id)
         for account in sorted(set(mapped[entry_id]) | set(booked[entry_id]), key=str):
             if account is None:
@@ -482,12 +506,14 @@ def journal_check(entries, totals, journal, lookups):
                 cell[1] += 1
                 cell[2] += abs(want - have)
                 problems.append("entry {} ({}): {} mapped {:.2f} bexio {:.2f}".format(entry_id, year, account, want, have))
-    return problems, dict(per_year), len(set(mapped) | set(booked))
+    return problems, dict(per_year), len(seen - won), len(won)
 
 
-def check_report(per_year, compared):
-    """The journal check as totals per year: accounts compared, accounts that differ, and the sum of the differences."""
-    lines = ["manual entries against bexio's journal: {} entries compared, nothing was written".format(compared),
+def check_report(per_year, compared, unexplained, wins):
+    """The journal check as totals per year: accounts compared, accounts that differ, and the sum of the differences. The
+    header counts the entries compared, the differences left unexplained and the journal wins (D11)."""
+    header = "manual entries against bexio's journal: {} entries compared, {} unexplained, {} journal wins (D11), nothing was written"
+    lines = [header.format(compared, unexplained, wins),
              "{:<6}{:>10}{:>10}{:>16}".format("year", "accounts", "differ", "sum of differences")]
     for year, (count, differ, total) in sorted(per_year.items(), key=lambda item: (item[0] is None, item[0] or "")):
         lines.append("{:<6}{:>10}{:>10}{:>16,.2f}".format(year if year is not None else "?", count, differ, total))
@@ -540,8 +566,9 @@ def main(argv):
     print(report(totals, export_dir))
     with open(os.path.join(export_dir, JOURNAL_FILE), encoding="utf-8") as f:
         journal = json.load(f)
-    check_problems, per_year, compared = journal_check(exported, totals, journal, lookups)
-    print(check_report(per_year, compared))
+    wins = load_journal_wins(os.path.join(im.PRIVATE, JOURNAL_WINS_FILE))
+    check_problems, per_year, compared, won = journal_check(exported, totals, journal, lookups, wins)
+    print(check_report(per_year, compared, len(check_problems), won))
     ip.write_private(os.path.join(im.PRIVATE, JOURNAL_CHECK_FILE), check_problems or ["none"])
     if totals.problems:
         ip.write_private(os.path.join(im.PRIVATE, PROBLEMS_FILE), totals.problems)

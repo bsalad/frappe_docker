@@ -421,38 +421,54 @@ class EntryOfLinesTest(unittest.TestCase):
 
 
 class JournalCheckTest(unittest.TestCase):
-    def check(self, journal, record=None):
+    def check(self, journal, record=None, wins=None):
         known = lookups()
         record = record or entry("m-1", lines=[line(21, 11, 108.10, tax_id=35, tax_account_id=21)])
         totals = ime.dry_run([record], known, CURRENCIES)
-        return ime.journal_check([record], totals, journal, known)
+        return ime.journal_check([record], totals, journal, known, wins)
 
     def test_mapping_that_bexio_books_the_same_way_has_no_problem(self):
-        problems, per_year, compared = self.check([journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 8.10)])
+        problems, per_year, compared, won = self.check([journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 8.10)])
         self.assertEqual(problems, [])
         self.assertEqual(compared, 1)
+        self.assertEqual(won, 0)
         # 1170 (VAT) and 5001 (expense, profit and loss) are compared; the bank account is not
         self.assertEqual(per_year["2025"][0:2], [2, 0])
 
     def test_a_vat_line_bexio_books_differently_is_listed_by_entry_and_account(self):
         # 7.00 instead of 8.10 on 1170: the expense is then 101.10 instead of 100.00, both are listed
-        problems, per_year, _ = self.check([journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 7.00)])
+        problems, per_year, _, _ = self.check([journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 7.00)])
         self.assertEqual(problems, ["entry m-1 (2025): 1170 - Vorsteuer Test - bic mapped 8.10 bexio 7.00",
                                     "entry m-1 (2025): 5001 - Testaufwand - bic mapped 100.00 bexio 101.10"])
         self.assertEqual(per_year["2025"][1], 2)
 
     def test_a_line_bexio_books_beyond_the_mapping_is_listed(self):
         # a further line on the entry's description: the bank and the expense differ from the mapping
-        problems, _, _ = self.check([journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 8.10), journal_line(5, 21, 11, 50)])
+        problems, _, _, _ = self.check([journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 8.10), journal_line(5, 21, 11, 50)])
         self.assertIn("entry m-1 (2025): 5001 - Testaufwand - bic mapped 100.00 bexio 150.00", problems)
+
+    def test_an_entry_on_the_journal_wins_list_is_not_a_difference(self):
+        # the same 7.00 as above, but bexio booked the entry differently on purpose: it is a journal win, not listed
+        problems, per_year, compared, won = self.check([journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 7.00)],
+                                                       wins={"m-1": "invented reason"})
+        self.assertEqual((problems, per_year, compared, won), ([], {}, 0, 1))
+
+    def test_an_entry_not_on_the_journal_wins_list_is_still_a_difference(self):
+        problems, _, compared, won = self.check([journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 7.00)],
+                                                wins={"m-2": "invented reason"})
+        self.assertEqual((len(problems), compared, won), (2, 1, 0))
 
     def test_extra_entries_are_not_compared(self):
         known = lookups()
         export = [entry("m-1")]
         extra = entry("1099-correction", lines=[line(11, 21, 165.66)])
         totals = ime.dry_run(export + [extra], known, CURRENCIES)
-        problems, _, compared = ime.journal_check(export, totals, [journal_line(1, 21, 11, 100)], known)
+        problems, _, compared, _ = ime.journal_check(export, totals, [journal_line(1, 21, 11, 100)], known)
         self.assertEqual((problems, compared), ([], 1))
+
+    def test_report_header_counts_unexplained_and_journal_wins(self):
+        self.assertIn("1 entries compared, 0 unexplained, 6 journal wins (D11), nothing was written",
+                      ime.check_report({}, 1, 0, 6))
 
 
 class LoadEntriesTest(unittest.TestCase):

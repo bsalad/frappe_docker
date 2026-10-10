@@ -43,7 +43,6 @@ KEY_PREFIX = "manual-"
 CORRECTION_PREFIX = "vatfix-manual-"
 PROBLEMS_FILE = "bexio-manual-fix-problems.txt"
 DETAILS_FILE = "bexio-manual-fix-documents.txt"
-JOURNAL_WINS_FILE = "bexio-manual-journal-wins.txt"
 
 
 def group_of(key):
@@ -90,24 +89,6 @@ def expected_group(entry, lookups, currencies):
     for row in doc["accounts"]:
         want[row["account"]] += _money(row.get("debit", 0)) - _money(row.get("credit", 0))
     return {"want": dict(want), "voucher_type": doc["voucher_type"], "date": doc["posting_date"]}
-
-
-def load_journal_wins(path):
-    """The entries whose expected side is bexio's journal, from the private file: one bexio id per line, then its reason.
-    {group: reason}. Blank lines and lines starting with # are skipped; a missing file lists none."""
-    if not os.path.exists(path):
-        return {}
-    reasons = {}
-    with open(path, encoding="utf-8") as f:
-        for raw in f:
-            text = raw.strip()
-            if not text or text.startswith("#"):
-                continue
-            bexio_id, _, reason = text.partition(" ")
-            if not reason.strip():
-                raise ValueError("a line of {} has no reason after its bexio id".format(path))
-            reasons[bexio_id] = reason.strip()
-    return reasons
 
 
 def journal_wins(entry, export_entries, journal, lookups):
@@ -170,7 +151,7 @@ def correction_document(group, day, voucher_type, lines, lookups, key=None):
 def plan(export_entries, vouchers, gl, lookups, currencies, journal=(), wins=None):
     """The corrections for the live groups: (documents, problems, details, counts). A live group whose entry is in the
     export is compared with its mapping, or with bexio's journal when its bexio id is in wins (the reasons by bexio id,
-    see load_journal_wins); an export entry that is not live is counted, not written."""
+    see import_manual_entries.load_journal_wins); an export entry that is not live is counted, not written."""
     groups = live_groups(vouchers, gl)
     exported = {str(entry["id"]): entry for entry in export_entries}
     wins = wins or {}
@@ -272,7 +253,7 @@ def main(argv):
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2
-    wins = load_journal_wins(os.path.join(im.PRIVATE, JOURNAL_WINS_FILE))
+    wins = ime.load_journal_wins(os.path.join(im.PRIVATE, ime.JOURNAL_WINS_FILE))
     journal = []
     if wins:
         with open(os.path.join(export_dir, ime.JOURNAL_FILE), encoding="utf-8") as f:
