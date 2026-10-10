@@ -49,7 +49,7 @@ def _get(token, path, params=None, opener=urllib.request.urlopen):
 
 def profiles(token, opener=urllib.request.urlopen):
     """The profiles the token belongs to: a list of dicts with id and type (PERSONAL or BUSINESS)."""
-    return _get(token, "/profiles", opener=opener)
+    return _get(token, "/v1/profiles", opener=opener)
 
 
 def balances(token, profile_id, opener=urllib.request.urlopen):

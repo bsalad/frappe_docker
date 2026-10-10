@@ -57,6 +57,8 @@ class Client(unittest.TestCase):
         opener = FakeOpener(answer=[{"id": 1, "type": "BUSINESS"}])
         self.assertEqual(wise_client.profiles(TOKEN, opener=opener), [{"id": 1, "type": "BUSINESS"}])
         request = opener.requests[0]
+        # the path carries its version: Wise answers 404 on an unversioned /profiles
+        self.assertEqual(request.full_url, wise_client.BASE_URL + "/v1/profiles")
         self.assertEqual(request.get_method(), "GET")
         self.assertEqual(request.get_header("Authorization"), "Bearer " + TOKEN)
         self.assertNotIn(TOKEN, request.full_url)
