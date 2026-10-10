@@ -308,6 +308,19 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(manifest["entities"]["document_pdfs"]["failed"], ["invoice:5"])
         self.assertFalse(os.path.exists(os.path.join(self.out, "documents", "invoice-5.pdf")))
 
+    def test_refused_document_pdfs_count_the_status_that_refused_them(self):
+        c = answering(fake_client(), {
+            "/2.0/kb_invoice/5/pdf": BexioError(404, "/2.0/kb_invoice/5/pdf"),
+            "/2.0/kb_invoice/6/pdf": BexioError(403, "/2.0/kb_invoice/6/pdf"),
+            "/2.0/kb_invoice/7/pdf": BexioError(404, "/2.0/kb_invoice/7/pdf"),
+        })
+        os.makedirs(self.out)
+        with open(os.path.join(self.out, "invoices.json"), "w", encoding="utf-8") as f:
+            json.dump([{"id": 5}, {"id": 6}, {"id": 7}], f)
+        _, summary = export.download_document_pdfs(c, self.out)
+        self.assertEqual(summary["failed"], ["invoice:5", "invoice:6", "invoice:7"])
+        self.assertEqual(summary["reasons"], {"HTTP 403": 1, "HTTP 404": 2})
+
     def test_a_credit_voucher_pdf_is_asked_for_even_when_its_detail_is_refused(self):
         c = answering(fake_client(), {
             "/2.0/kb_invoice/5/payment": [{"kb_credit_voucher_id": 8, "value": "-3"}],

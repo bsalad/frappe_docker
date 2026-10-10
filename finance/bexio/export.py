@@ -327,7 +327,7 @@ def download_document_pdfs(client, out):
     folder = os.path.join(out, DOCUMENTS)
     os.makedirs(folder, mode=0o700, exist_ok=True)
     os.chmod(folder, 0o700)
-    rows, failed, skipped = [], [], []
+    rows, failed, skipped, reasons = [], [], [], {}
     for entity, kind, template in DOCUMENT_PDFS:
         path = os.path.join(out, entity + ".json")
         if not os.path.exists(path):
@@ -338,14 +338,16 @@ def download_document_pdfs(client, out):
         for document in documents:
             try:
                 content = client.get(template.format(id=document["id"]), raw=True)
-            except BexioError:
+            except BexioError as err:
                 failed.append("{}:{}".format(kind, document["id"]))
+                # the status says why (a missing scope, a path bexio does not serve): counted, not per id
+                reasons["HTTP {}".format(err.status)] = reasons.get("HTTP {}".format(err.status), 0) + 1
                 continue
             name = "{}-{}.pdf".format(kind, document["id"])
             write_private_bytes(os.path.join(folder, name), content)
             rows.append({"kind": kind, "id": document["id"], "file": name, "bytes": len(content)})
     summary = {"downloaded": len(rows), "bytes": sum(row["bytes"] for row in rows), "failed": failed,
-               "skipped": skipped}
+               "reasons": reasons, "skipped": skipped}
     return rows, summary
 
 
@@ -549,6 +551,8 @@ def print_manifest(manifest):
         elif name == DOCUMENT_PDFS_ENTITY:
             line += " (downloaded {}, {} bytes, failed {}, skipped {})".format(
                 entry["downloaded"], entry["bytes"], len(entry["failed"]), ", ".join(entry["skipped"]) or "none")
+            if entry["reasons"]:
+                line += " refused: " + ", ".join("{} x{}".format(k, v) for k, v in sorted(entry["reasons"].items()))
         elif entry.get("failed"):
             line += " (failed {})".format(len(entry["failed"]))
         print(line)
