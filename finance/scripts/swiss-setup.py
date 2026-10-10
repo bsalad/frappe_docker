@@ -1,6 +1,6 @@
 """Swiss setup of company BI Concepts, run inside the backend container by
 swiss-setup.sh. Steps are named on the command line (coa, vat, fiscal,
-fields, currencies, banks, gebuev, qrbill, host); each one is re-runnable and skips what
+fields, currencies, banks, gebuev, qrbill, host, payments); each one is re-runnable and skips what
 already exists. `freeze <date> [--apply]` is a separate command: it closes the
 books up to a date and is a dry run unless --apply is given."""
 import csv
@@ -421,6 +421,29 @@ def currencies():
     say(f"currencies: {frappe.db.count('Currency', {'enabled': 1})} enabled")
 
 
+def payments():
+    # Payment runs (bi_finance/payment_run.py). validate_xml stays 0: the app checks each
+    # file against the Swiss schema after fixing its country code (see the app). Unidecode
+    # turns the names into the character set the bank takes. The pay-from account's IBAN
+    # and BIC are company data: entered in ERPNext, not set here.
+    s = frappe.get_single("ERPNextSwiss Settings")
+    want = {"validate_xml": 0, "use_unidecode": 1, "xml_version": "09", "banking_region": "CH"}
+    changed = [f for f, v in want.items() if s.get(f) != v]
+    for f in changed:
+        say(f"payments: ERPNextSwiss Settings {f} {s.get(f)} -> {want[f]}")
+        s.set(f, want[f])
+    if changed:
+        s.save()
+    else:
+        say("payments: ERPNextSwiss Settings already set")
+    account = frappe.db.get_value("Account", {"account_name": "UBS Kontokorrent", "company": COMPANY}, ["name", "iban", "bic"], as_dict=True)
+    if not account:
+        say("payments: no account UBS Kontokorrent for the company")
+    elif not account.iban or not account.bic:
+        say(f"payments: {account.name} has no IBAN or no BIC; a bank file cannot be made until both are set")
+    frappe.db.commit()
+
+
 # The print format is a Jinja file of the bi_finance app (finance/apps/bi_finance),
 # which the image installs. The app's qrbill.py draws the QR code.
 PRINT_FORMAT = "BI Sales Invoice QR"
@@ -549,7 +572,7 @@ def freeze(date, apply):
 
 
 STEPS = {"coa": coa, "vat": vat, "fiscal": fiscal, "fields": fields, "currencies": currencies, "banks": banks,
-         "gebuev": gebuev, "qrbill": qrbill, "host": host}
+         "gebuev": gebuev, "qrbill": qrbill, "host": host, "payments": payments}
 
 if __name__ == "__main__":
     args = sys.argv[1:]
