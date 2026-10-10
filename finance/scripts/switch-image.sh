@@ -51,7 +51,7 @@ docker compose -p frappe-finance restart frontend websocket
 ping_ok() {
   i=0
   while [ "$i" -lt "$PING_TRIES" ]; do
-    code=$(curl -s -o /dev/null -w '%{http_code}' "$PING_URL" || true)
+    code=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "$PING_URL" || true)
     if [ "$code" = "200" ]; then
       return 0
     fi
