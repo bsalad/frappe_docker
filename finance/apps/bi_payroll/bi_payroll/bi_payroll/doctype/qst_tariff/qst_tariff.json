@@ -1,0 +1,93 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-10-10 15:00:00.000000",
+ "custom": 0,
+ "description": "Quellensteuertarife (Löhne) of the ESTV, one row per tariff record (Recordart 06 and 11), loaded by bi_payroll.swiss_payroll.load_tariff. Source: ESTV, 'Aufbau und Recordformate der Quellensteuer-Tarife ab 2025 (Löhne)', D_DVS Nr. 0005 / 06.06, valid from 1 January 2025 (qst-tarife-recordformate-loehne-2025-de.pdf, https://www.estv.admin.ch/de/quellensteuertarife-import-in-lohnbuchhaltungssysteme). Monthly incomes only. Rates in percent.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "canton",
+  "tariff_code",
+  "valid_from",
+  "income_from",
+  "step",
+  "minimum_tax",
+  "rate"
+ ],
+ "fields": [
+  {
+   "fieldname": "canton",
+   "label": "Canton",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "tariff_code",
+   "label": "Tariff code (Code Tarif or Steuerart)",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "valid_from",
+   "label": "Valid from",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "income_from",
+   "label": "Monthly income from (CHF)",
+   "fieldtype": "Float",
+   "precision": "2",
+   "reqd": 1
+  },
+  {
+   "fieldname": "step",
+   "label": "Bracket step (CHF)",
+   "fieldtype": "Float",
+   "precision": "2",
+   "reqd": 1
+  },
+  {
+   "fieldname": "minimum_tax",
+   "label": "Minimum tax (CHF)",
+   "fieldtype": "Float",
+   "precision": "2"
+  },
+  {
+   "fieldname": "rate",
+   "label": "Tax rate (%)",
+   "fieldtype": "Float",
+   "precision": "2",
+   "reqd": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "modified": "2026-10-10 15:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "BI Payroll",
+ "name": "QST Tariff",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "print": 0,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 0,
+   "write": 0
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

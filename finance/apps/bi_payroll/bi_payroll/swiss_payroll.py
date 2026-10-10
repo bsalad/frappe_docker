@@ -7,6 +7,7 @@ validate, and the slip keeps the rates it was computed with.
 
 import frappe
 
+from bi_payroll.quellensteuer import parse_tariff_file
 from bi_payroll.swiss_rates import RATE_FIELDS
 
 # Order matters: a formula can read only the components above it (BVG Age before the BVG components).
@@ -47,3 +48,20 @@ def ensure_structure():
         })
         doc.insert()
         doc.submit()
+
+
+def load_tariff(path):
+    # A year's update is a reload: the rows of the file's canton and valid-from dates are replaced, the rest kept.
+    # The ESTV files are ASCII; run as `bench --site <copy> execute bi_payroll.swiss_payroll.load_tariff --args '["<path>"]'`.
+    with open(path, encoding="latin-1") as f:
+        rows = parse_tariff_file(f.read())
+    if not rows:
+        frappe.throw("The tariff file has no tariff records (Recordart 06 or 11).")
+    frappe.db.delete("QST Tariff", {
+        "canton": rows[0]["canton"],
+        "valid_from": ["in", sorted({row["valid_from"] for row in rows})],
+    })
+    for row in rows:
+        frappe.get_doc({"doctype": "QST Tariff", **row}).insert(ignore_permissions=True)
+    frappe.db.commit()
+    return len(rows)

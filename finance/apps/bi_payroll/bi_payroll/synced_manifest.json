@@ -6,5 +6,9 @@
  "bi_payroll/report/payroll_hand_over/payroll_hand_over.json": {
   "modified": "2026-10-10 15:00:00.000000",
   "sha": "3f85259b1986a7e6d7ed6cd784d60abf105bdf58dc74d7647f4086ecb5484c3a"
+ },
+ "bi_payroll/doctype/qst_tariff/qst_tariff.json": {
+  "modified": "2026-10-10 15:00:00.000000",
+  "sha": "5c7d29275b7bca2a86427f490e0252eb7b99ba7175f8ed1591f1e1fc5d5f9e8e"
  }
 }

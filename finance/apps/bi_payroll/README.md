@@ -21,6 +21,14 @@ copy only: it requires `hrms`, which the live site does not have, so nothing her
   with invented employees.
 - `bi_payroll/test_swiss_payroll.py`: offline tests with invented employees and rates:
   `python3 -m unittest bi_payroll.test_swiss_payroll` from this directory (no frappe needed).
+- `bi_payroll/quellensteuer.py`: the ESTV withholding tariffs (Quellensteuer, Löhne, 2025 record format; source and
+  version in the `QST Tariff` doctype's description). It parses a canton's text file (records 06 and 11), finds the
+  bracket for a monthly gross and gives the tax (rate on the whole income, at least the minimum tax). Pure Python.
+- `bi_payroll/bi_payroll/doctype/qst_tariff`: the tariff rows (data, one per record). `swiss_payroll.load_tariff(path)`
+  reloads a canton's file: the rows of its valid-from dates are replaced. Employees carry `swiss_qst_canton` and
+  `swiss_qst_code` (Employee custom fields, fixtures).
+- `bi_payroll/test_quellensteuer.py`: offline tests with invented rows in the ESTV format:
+  `python3 -m unittest bi_payroll.test_quellensteuer`.
 - `bi_payroll/test_layout.py`: the layout and stamp guard, copied from `bi_finance`:
   `python3 -m unittest bi_payroll.test_layout`.
 - `finance/images/bi_payroll.Containerfile`: the layer on the HRMS copy image.
