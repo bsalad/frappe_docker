@@ -40,6 +40,11 @@ drafts, and un-marks the invoices.
   erpnextswiss validates against the generic schema of that version; this app also
   validates against SIX's Swiss variant (`pain.001.001.09.ch.03.xsd`), which is the
   one banks name in their documentation.
+- EndToEndId is what erpnextswiss writes: the supplier's invoice number (`bill_no`, else
+  the Purchase Invoice name), cut to 35 characters; the invoices of one supplier in a run
+  are one file row, so their numbers are joined by a space. It is **not** the Payment Entry
+  name. Each Payment Entry carries the same invoice number as its `reference_no`, so the
+  camt import (erp-f5ss) matches a bank line to Payment Entries on that number and the amount.
 - The company's country code is written upper case (erpnextswiss writes it lower case).
 - **Not verified:** that UBS e-banking accepts this file. No UBS source found
   confirms the version or the Swiss variant. Before the first live file, upload a

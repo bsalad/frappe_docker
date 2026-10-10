@@ -229,8 +229,9 @@ class PainFile(unittest.TestCase):
                 mock.patch.object(frappe, "get_value", return_value="CH"), \
                 mock.patch.object(frappe, "render_template", side_effect=render), \
                 mock.patch.object(swiss, "get_primary_address", return_value=address), \
-                mock.patch.object(PaymentProposal, "submit_payment_entries"):
+                mock.patch.object(PaymentProposal, "submit_payment_entries") as submit:
             content = PaymentProposal.create_bank_file(doc)["content"]
+            submit.assert_called_once()
 
         self.assertIn("<Ctry>CH</Ctry>", content)
         self.assertNotIn("<Ctry>ch</Ctry>", content)
