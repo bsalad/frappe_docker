@@ -349,38 +349,121 @@ class Forecast(unittest.TestCase):
         self.assertEqual([line.get("week") for line in lines], [1, 1, 2, None])
 
 
+def paid_in_window(days_back, amount, paid_back=None):
+    """A payment of an invoice issued days_back days before as-of and paid paid_back days before (the same window by default)."""
+    issued = AS_OF - datetime.timedelta(days=days_back)
+    paid = AS_OF - datetime.timedelta(days=days_back - 10 if paid_back is None else paid_back)
+    return (issued, paid, amount)
+
+
 class RunRate(unittest.TestCase):
+    def test_the_default_basis_is_the_chosen_one(self):
+        # mean2 is the basis the calibration chose for both lines; the report and the purchase line read it by default
+        self.assertEqual(cf.RUN_RATE_BASIS, "mean2")
+        self.assertEqual(cf.run_rate([], AS_OF)["basis"], "mean2")
+
     def test_a_receipt_counts_in_its_window_when_the_invoice_and_the_payment_fall_inside_it(self):
         # the most recent window is the 91 days before as-of: an invoice of day -80 paid on day -20 is in it
-        weekly, since = cf.run_rate([(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0)], AS_OF)
-        # 1300 in one of four windows: the mean is 325, a thirteenth of it each week
-        self.assertEqual(weekly, 25.0)
-        self.assertEqual(since, AS_OF - datetime.timedelta(days=364))
+        rate = cf.run_rate([(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0)], AS_OF)
+        # 1300 in one of the two windows of mean2: the mean is 650, a thirteenth of it each week
+        self.assertEqual(rate["weekly"], 50.0)
+        self.assertEqual(rate["since"], AS_OF - datetime.timedelta(days=182))
 
     def test_an_invoice_paid_in_another_window_than_it_was_issued_is_not_counted(self):
         # issued in the second window (day -170), paid in the first (day -20): neither window holds both
-        weekly, _ = cf.run_rate([(AS_OF - datetime.timedelta(days=170), AS_OF - datetime.timedelta(days=20), 1300.0)], AS_OF)
-        self.assertEqual(weekly, 0.0)
+        rate = cf.run_rate([(AS_OF - datetime.timedelta(days=170), AS_OF - datetime.timedelta(days=20), 1300.0)], AS_OF)
+        self.assertEqual(rate["weekly"], 0.0)
 
-    def test_an_invoice_issued_before_the_four_windows_is_not_counted(self):
-        weekly, _ = cf.run_rate([(AS_OF - datetime.timedelta(days=400), AS_OF - datetime.timedelta(days=30), 1300.0)], AS_OF)
-        self.assertEqual(weekly, 0.0)
+    def test_an_invoice_issued_before_the_windows_the_basis_reads_is_not_counted(self):
+        # mean2 reads two windows; an invoice of the third window (day -260) is not in its mean
+        rate = cf.run_rate([(AS_OF - datetime.timedelta(days=260), AS_OF - datetime.timedelta(days=200), 1300.0)], AS_OF)
+        self.assertEqual(rate["weekly"], 0.0)
+        mean4 = cf.run_rate([(AS_OF - datetime.timedelta(days=260), AS_OF - datetime.timedelta(days=200), 1300.0)], AS_OF, "mean4")
+        self.assertEqual(mean4["weekly"], 25.0)
 
     def test_the_windows_are_contiguous_and_a_window_starts_on_its_first_day(self):
         # day -91 starts the most recent window; day -92 is the last day of the one before it
         start = AS_OF - datetime.timedelta(days=91)
-        weekly, _ = cf.run_rate([(start, AS_OF - datetime.timedelta(days=10), 910.0)], AS_OF)
-        self.assertEqual(weekly, 17.5)
-        weekly, _ = cf.run_rate([(start - datetime.timedelta(days=1), AS_OF - datetime.timedelta(days=10), 910.0)], AS_OF)
-        self.assertEqual(weekly, 0.0)
+        self.assertEqual(cf.run_rate([(start, AS_OF - datetime.timedelta(days=10), 910.0)], AS_OF)["weekly"], 35.0)
+        rate = cf.run_rate([(start - datetime.timedelta(days=1), AS_OF - datetime.timedelta(days=10), 910.0)], AS_OF)
+        self.assertEqual(rate["weekly"], 0.0)
 
     def test_the_mean_counts_an_empty_window_as_zero(self):
-        # 1300 in the most recent window and 2600 in the third: the mean over four windows is 975, 75 a week
+        # 1300 in the most recent window, nothing in the second: the mean over the two windows of mean2 is 650, 50 a week
         payments = [(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0),
                     (AS_OF - datetime.timedelta(days=260), AS_OF - datetime.timedelta(days=200), 2600.0)]
-        weekly, _ = cf.run_rate(payments, AS_OF)
-        self.assertEqual(weekly, 75.0)
-        self.assertEqual(round(weekly * cf.WEEKS, 2), 975.0)
+        rate = cf.run_rate(payments, AS_OF)
+        self.assertEqual(rate["weekly"], 50.0)
+        self.assertEqual(round(rate["weekly"] * cf.WEEKS, 2), 650.0)
+        self.assertEqual((rate["low"], rate["high"]), (0.0, 100.0))
+
+    def test_the_band_is_the_least_and_the_most_of_the_windows_the_basis_uses(self):
+        # invented: 1300 in the most recent window, 2600 in the second, 5200 in the third (not read by mean2)
+        payments = [paid_in_window(80, 1300.0), paid_in_window(170, 2600.0), paid_in_window(260, 5200.0)]
+        rate = cf.run_rate(payments, AS_OF)
+        self.assertEqual((rate["low"], rate["weekly"], rate["high"]), (100.0, 150.0, 200.0))
+
+
+class Bases(unittest.TestCase):
+    # invented receipts by window, newest first: 1000 in the most recent, 800, 600, 400 in the fourth
+    WINDOWS = [1000.0, 800.0, 600.0, 400.0]
+
+    def payments(self):
+        return [paid_in_window(80 + 91 * i, amount) for i, amount in enumerate(self.WINDOWS)]
+
+    def test_mean4_is_the_mean_of_four_windows(self):
+        self.assertEqual(cf.basis_total(self.payments(), AS_OF, "mean4"), (700.0, 400.0, 1000.0))
+
+    def test_mean2_is_the_mean_of_the_last_two_windows(self):
+        self.assertEqual(cf.basis_total(self.payments(), AS_OF, "mean2"), (900.0, 800.0, 1000.0))
+
+    def test_last_is_the_most_recent_window_alone(self):
+        self.assertEqual(cf.basis_total(self.payments(), AS_OF, "last"), (1000.0, 1000.0, 1000.0))
+
+    def test_trailing12_is_the_trailing_year_over_four(self):
+        # the four windows are inside the trailing year: 2800 of receipts over four quarters, 700 a quarter
+        self.assertEqual(cf.basis_total(self.payments(), AS_OF, "trailing12"), (700.0, 400.0, 1000.0))
+
+    def test_seasonal_is_the_window_a_year_back_alone(self):
+        year_back = [paid_in_window(365 + 50, 700.0)]
+        self.assertEqual(cf.basis_total(self.payments() + year_back, AS_OF, "seasonal"), (700.0, 700.0, 700.0))
+
+    def test_trend_runs_the_line_through_the_four_windows_one_window_on(self):
+        # the windows, oldest first: 400, 600, 800, 1000: a rise of 200 a window, so 1200 on the fifth
+        self.assertEqual(cf.basis_total(self.payments(), AS_OF, "trend"), (1200.0, 400.0, 1000.0))
+
+    def test_trend_does_not_go_below_zero(self):
+        falling = [paid_in_window(80 + 91 * i, amount) for i, amount in enumerate([0.0, 400.0, 800.0, 1200.0])]
+        self.assertEqual(cf.basis_total(falling, AS_OF, "trend")[0], 0.0)
+
+    def test_an_unknown_basis_is_an_error(self):
+        with self.assertRaises(ValueError):
+            cf.basis_total(self.payments(), AS_OF, "median")
+
+    def test_each_basis_reads_back_no_further_than_its_days(self):
+        # the seasonal window's payments are read from the lookback; no payment older than it counts for any basis
+        far = [paid_in_window(cf.RUN_RATE_LOOKBACK_DAYS + 5, 9999.0)]
+        for basis in cf.BASES:
+            self.assertEqual(cf.basis_total(far, AS_OF, basis)[0], 0.0, basis)
+        self.assertEqual(cf.RUN_RATE_LOOKBACK_DAYS, max(cf.BASIS_DAYS.values()))
+
+    def test_run_rate_of_each_basis_reports_the_days_it_reads(self):
+        for basis in cf.BASES:
+            rate = cf.run_rate(self.payments(), AS_OF, basis)
+            self.assertEqual(rate["since"], AS_OF - datetime.timedelta(days=cf.BASIS_DAYS[basis]), basis)
+            self.assertEqual(rate["basis"], basis)
+
+
+class ClosingBand(unittest.TestCase):
+    def test_the_closing_moves_by_thirteen_weeks_of_each_run_rate_at_its_low_and_high(self):
+        sales = {"weekly": 50.0, "low": 0.0, "high": 100.0}
+        purchases = {"weekly": 20.0, "low": 10.0, "high": 30.0}
+        # sales lowest and purchases highest make the low: 1000 - 13 * 50 - 13 * 10; the reverse makes the high
+        self.assertEqual(cf.closing_band(1000.0, sales, purchases), (220.0, 1780.0))
+
+    def test_a_run_rate_left_out_does_not_move_the_band(self):
+        self.assertEqual(cf.closing_band(1000.0, None, None), (1000.0, 1000.0))
+        self.assertEqual(cf.closing_band(1000.0, {"weekly": 50.0, "low": 0.0, "high": 100.0}, None), (350.0, 1650.0))
 
 
 class PurchaseRunRate(unittest.TestCase):
@@ -389,15 +472,20 @@ class PurchaseRunRate(unittest.TestCase):
         paid = AS_OF - datetime.timedelta(days=20)
         payments = [("Test Supplier A", day, paid, 1300.0), ("Test Recurring", day, paid, 900.0),
                     ("Test Recurring", day, paid, 100.0), ("Test Insurer", day, paid, 50.0)]
-        weekly, since, excluded = cf.purchase_run_rate(payments, AS_OF, {"Test Recurring", "Test Insurer"})
-        # 1300 of the one supplier that is not excluded, in one of four windows: 25 a week; two of the excluded paid
-        self.assertEqual((weekly, excluded), (25.0, 2))
-        self.assertEqual(since, AS_OF - datetime.timedelta(days=364))
+        rate = cf.purchase_run_rate(payments, AS_OF, {"Test Recurring", "Test Insurer"})
+        # 1300 of the one supplier that is not excluded, in one of the two windows of mean2: 50 a week; two of the excluded paid
+        self.assertEqual((rate["weekly"], rate["excluded"]), (50.0, 2))
+        self.assertEqual(rate["since"], AS_OF - datetime.timedelta(days=182))
 
     def test_no_excluded_supplier_paid_counts_zero(self):
         day = AS_OF - datetime.timedelta(days=80)
-        weekly, _, excluded = cf.purchase_run_rate([("Test Supplier A", day, AS_OF - datetime.timedelta(days=20), 1300.0)], AS_OF, {"Test Insurer"})
-        self.assertEqual((weekly, excluded), (25.0, 0))
+        rate = cf.purchase_run_rate([("Test Supplier A", day, AS_OF - datetime.timedelta(days=20), 1300.0)], AS_OF, {"Test Insurer"})
+        self.assertEqual((rate["weekly"], rate["excluded"]), (50.0, 0))
+
+    def test_the_basis_is_a_parameter_of_the_purchase_line_too(self):
+        day = AS_OF - datetime.timedelta(days=80)
+        payments = [("Test Supplier A", day, AS_OF - datetime.timedelta(days=20), 1300.0)]
+        self.assertEqual(cf.purchase_run_rate(payments, AS_OF, set(), "mean4")["weekly"], 25.0)
 
 
 class JournalOccurrences(unittest.TestCase):

@@ -241,6 +241,11 @@ class InsurerSuppliers(unittest.TestCase):
         frappe.db.sql.assert_not_called()
 
 
+def money(value, currency=None):
+    """fmt_money without a site: the amount to two places, in the currency the test reads."""
+    return "%.2f CHF" % value
+
+
 class NewSalesRunRate(unittest.TestCase):
     def patch_readers(self, stack, payments):
         # every read of the books stubbed to nothing but the opening cash and the new sales receipts
@@ -262,15 +267,19 @@ class NewSalesRunRate(unittest.TestCase):
         return result, mocks
 
     def payments(self):
-        # 1300 collected in the most recent window from an invoice issued in it: 25 a week over the 13 weeks
+        # 1300 collected in the most recent window from an invoice issued in it: the mean of the two windows of mean2
+        # is 650, 50 a week over the 13 weeks
         return [(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0)]
 
     def test_the_run_rate_is_a_receipt_in_each_of_the_thirteen_weeks(self):
         result, _mocks = self.compute(self.payments(), include=True)
-        self.assertEqual(result["run_rate"], {"weekly": 25.0, "since": AS_OF - datetime.timedelta(days=364)})
-        self.assertEqual([row["new_sales"] for row in result["weeks"]], [25.0] * 13)
+        self.assertEqual(result["run_rate"], {"weekly": 50.0, "low": 0.0, "high": 100.0,
+                                              "since": AS_OF - datetime.timedelta(days=182), "basis": "mean2"})
+        self.assertEqual([row["new_sales"] for row in result["weeks"]], [50.0] * 13)
         self.assertEqual([row["receipt"] for row in result["weeks"]], [0.0] * 13)
-        self.assertEqual(result["weeks"][-1]["closing"], 1325.0)
+        self.assertEqual(result["weeks"][-1]["closing"], 1650.0)
+        # at the low of the basis the sales come to nothing (0 a week), at the high to 100 a week: 1650 less and more by 650
+        self.assertEqual(result["closing_band"], (1000.0, 2300.0))
 
     def test_the_filter_off_leaves_the_run_rate_out(self):
         result, mocks = self.compute(self.payments(), include=False)
@@ -284,13 +293,15 @@ class NewSalesRunRate(unittest.TestCase):
             self.patch_readers(stack, self.payments())
             stack.enter_context(mock.patch.object(cff, "_", lambda text: text))  # no site, so no translations
             stack.enter_context(mock.patch.object(cff.frappe, "get_cached_value", return_value="CHF"))
-            stack.enter_context(mock.patch.object(cff, "fmt_money", return_value="25.00 CHF"))
+            stack.enter_context(mock.patch.object(cff, "fmt_money", side_effect=money))
             return cff.execute(filters)
 
     def test_the_report_includes_the_run_rate_by_default_and_says_so(self):
         _columns, rows, message, _chart, _summary = self.execute({"company": "Test Company", "as_of_date": AS_OF})
-        self.assertEqual([row["new_sales"] for row in rows], [25.0] * 13)
-        self.assertIn("New sales are in the forecast at 25.00 CHF a week", message)
+        self.assertEqual([row["new_sales"] for row in rows], [50.0] * 13)
+        self.assertIn("New sales are in the forecast at 50.00 CHF a week (0.00 CHF to 100.00 CHF): "
+                      "the mean of the last two 13-week windows", message)
+        self.assertIn("End of week 13 the closing cash is 1650.00 CHF, between 1000.00 CHF and 2300.00 CHF", message)
 
     def test_the_report_has_the_new_purchases_column_and_a_basis_note_with_the_excluded_count_and_no_names(self):
         day = AS_OF - datetime.timedelta(days=80)
@@ -302,23 +313,24 @@ class NewSalesRunRate(unittest.TestCase):
             stack.enter_context(mock.patch.object(cff, "insurer_suppliers", return_value={"Test Insurer"}))
             stack.enter_context(mock.patch.object(cff, "_", lambda text: text))
             stack.enter_context(mock.patch.object(cff.frappe, "get_cached_value", return_value="CHF"))
-            stack.enter_context(mock.patch.object(cff, "fmt_money", return_value="25.00 CHF"))
+            stack.enter_context(mock.patch.object(cff, "fmt_money", side_effect=money))
             columns, rows, message, _chart, _summary = cff.execute(
                 {"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0})
         self.assertIn(("New purchases", "new_purchases"), [(c["label"], c["fieldname"]) for c in columns])
-        self.assertEqual([row["new_purchases"] for row in rows], [25.0] * 13)
-        self.assertIn("New purchases are in the forecast at 25.00 CHF a week", message)
+        self.assertEqual([row["new_purchases"] for row in rows], [50.0] * 13)
+        self.assertIn("New purchases are in the forecast at 50.00 CHF a week (0.00 CHF to 100.00 CHF)", message)
         self.assertIn("1 suppliers left out", message)
         self.assertNotIn("Test Insurer", message)
 
-    def test_the_receipts_are_payment_entries_against_sales_invoices_over_the_four_windows(self):
+    def test_the_receipts_are_payment_entries_against_sales_invoices_over_the_longest_basis(self):
         with mock.patch.object(cff, "frappe") as frappe:
             frappe.db.sql.return_value = [(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0)]
             rows = cff.sales_paid_in_windows("Test Company", AS_OF)
         self.assertEqual(rows, [(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0)])
         sql, args = frappe.db.sql.call_args.args
         self.assertIn("ple.voucher_type = 'Payment Entry'", sql)
-        self.assertEqual(args, ("Test Company", AS_OF - datetime.timedelta(days=364), AS_OF))
+        # the seasonal basis reads the window a year back, so the payments are read from as far back as that window
+        self.assertEqual(args, ("Test Company", AS_OF - datetime.timedelta(days=cf.RUN_RATE_LOOKBACK_DAYS), AS_OF))
 
     def test_the_report_filter_off_shows_the_documents_alone(self):
         _columns, rows, message, _chart, _summary = self.execute(
@@ -339,7 +351,7 @@ class NewSalesRunRate(unittest.TestCase):
 
         rows = run({"company": "Test Company", "as_of_date": AS_OF})
         receipts = [row for row in rows if row["type"] == "Expected receipts from new sales"]
-        self.assertEqual([row["amount"] for row in receipts], [25.0] * 13)
+        self.assertEqual([row["amount"] for row in receipts], [50.0] * 13)
         self.assertEqual(run({"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0, "include_new_purchases": 0}), [])
 
 
@@ -414,17 +426,17 @@ class NewPurchasesRunRate(LedgerFixture):
 
     def test_a_payment_of_a_bill_from_before_the_four_windows_is_not_counted(self):
         old = AS_OF - datetime.timedelta(days=400)
-        weekly, _since, _excluded = cf.purchase_run_rate(
+        rate = cf.purchase_run_rate(
             [("Test Old Supplier", old, self.paid, 500.0), ("Test Supplier", self.posted, self.paid, 1300.0)], AS_OF, set())
-        self.assertEqual(weekly, 25.0)
+        self.assertEqual(rate["weekly"], 50.0)
 
     def test_the_recurring_suppliers_and_the_insurers_are_left_out_and_counted(self):
         payments = cff.purchase_paid_in_windows("Test Company", AS_OF)
-        weekly, since, excluded = cf.purchase_run_rate(payments, AS_OF, {"Test Recurring Supplier", "Test Insurer"})
-        # the recurring supplier's 900 is out: 1300 in the most recent window, a quarter of it a week
-        self.assertEqual((weekly, since, excluded), (25.0, AS_OF - datetime.timedelta(days=364), 1))
-        weekly, _since, excluded = cf.purchase_run_rate(payments, AS_OF, {"Test Supplier", "Test Recurring Supplier"})
-        self.assertEqual((weekly, excluded), (0.0, 2))
+        rate = cf.purchase_run_rate(payments, AS_OF, {"Test Recurring Supplier", "Test Insurer"})
+        # the recurring supplier's 900 is out: 1300 in the most recent window, the mean of two windows is 650, 50 a week
+        self.assertEqual((rate["weekly"], rate["since"], rate["excluded"]), (50.0, AS_OF - datetime.timedelta(days=182), 1))
+        rate = cf.purchase_run_rate(payments, AS_OF, {"Test Supplier", "Test Recurring Supplier"})
+        self.assertEqual((rate["weekly"], rate["excluded"]), (0.0, 2))
 
     def compute(self, include, recurring=(), insurers=()):
         bills = [{"supplier": supplier, "amount": 900.0, "period": "monthly", "count": 3, "last_bill": "PI-HIST"}
@@ -444,15 +456,16 @@ class NewPurchasesRunRate(LedgerFixture):
 
     def test_each_week_carries_the_run_rate_and_the_closing_cash_pays_it(self):
         result = self.compute(include=True, recurring={"Test Recurring Supplier"})
-        self.assertEqual(result["new_purchases"], {"weekly": 25.0, "since": AS_OF - datetime.timedelta(days=364), "excluded": 1})
-        self.assertEqual([row["new_purchases"] for row in result["weeks"]], [25.0] * 13)
+        self.assertEqual(result["new_purchases"], {"weekly": 50.0, "low": 0.0, "high": 100.0,
+                                                   "since": AS_OF - datetime.timedelta(days=182), "basis": "mean2", "excluded": 1})
+        self.assertEqual([row["new_purchases"] for row in result["weeks"]], [50.0] * 13)
         self.assertEqual([row["bill"] for row in result["weeks"]], [0.0] * 13)
-        self.assertEqual(result["weeks"][-1]["closing"], round(1000.0 - 25.0 * 13, 2))
+        self.assertEqual(result["weeks"][-1]["closing"], round(1000.0 - 50.0 * 13, 2))
 
     def test_an_insurer_bill_is_left_out_of_the_run_rate(self):
-        # the insurer's 1300 is out; the recurring supplier's 900 is not recurring here, so it stays: 900 over 52 weeks
+        # the insurer's 1300 is out; the recurring supplier's 900 is not recurring here, so it stays: 900 over two windows
         result = self.compute(include=True, insurers={"Test Supplier"})
-        self.assertEqual((result["new_purchases"]["weekly"], result["new_purchases"]["excluded"]), (17.31, 1))
+        self.assertEqual((result["new_purchases"]["weekly"], result["new_purchases"]["excluded"]), (34.62, 1))
 
     def test_the_filter_off_leaves_the_line_out_and_does_not_read_the_payments(self):
         with mock.patch.object(cff, "purchase_paid_in_windows") as paid:
@@ -480,8 +493,8 @@ class NewPurchasesRunRate(LedgerFixture):
 
         rows = run({"company": "Test Company", "as_of_date": AS_OF})
         purchases = [row for row in rows if row["type"] == "Expected payments for new purchase bills"]
-        # both payments of the window, 1300 and 900, a thirteenth of the mean of four windows each week: an outflow
-        self.assertEqual([row["amount"] for row in purchases], [-round(2200 / (cf.WEEKS * cf.RUN_RATE_WINDOWS), 2)] * 13)
+        # both payments of the window, 1300 and 900, a thirteenth of the mean of the two windows each week: an outflow
+        self.assertEqual([row["amount"] for row in purchases], [-round(2200 / 2 / cf.WEEKS, 2)] * 13)
         self.assertEqual([row for row in run({"company": "Test Company", "as_of_date": AS_OF, "include_new_purchases": 0})
                           if row["type"] == "Expected payments for new purchase bills"], [])
 

@@ -74,6 +74,14 @@ BILL_MATCH_DAYS = 5
 # The run-rates (new sales, new purchases): the receipts or payments of the last this many 13-week windows, from the
 # invoices issued in the same window.
 RUN_RATE_WINDOWS = 4
+# The days back from the as-of date that each run-rate basis reads (see basis_total): the oldest day of its windows.
+# The seasonal basis reads the window a year back, so the payments are read this far back (RUN_RATE_LOOKBACK_DAYS).
+RUN_RATE_WINDOW_DAYS = WEEKS * DAYS_PER_WEEK
+BASIS_DAYS = {
+    "mean4": 4 * RUN_RATE_WINDOW_DAYS, "mean2": 2 * RUN_RATE_WINDOW_DAYS, "last": RUN_RATE_WINDOW_DAYS,
+    "trailing12": 365, "seasonal": 365 + RUN_RATE_WINDOW_DAYS, "trend": 4 * RUN_RATE_WINDOW_DAYS,
+}
+RUN_RATE_LOOKBACK_DAYS = max(BASIS_DAYS.values())
 
 
 def add_months(day, months):
@@ -350,29 +358,87 @@ def expected_receipt(due, late_days):
     return due + datetime.timedelta(days=late_days)
 
 
-def run_rate(payments, as_of):
-    """payments: (invoice date, payment date, amount) of the Sales Invoices paid in the last RUN_RATE_WINDOWS windows.
-    A window is WEEKS weeks, and the windows run back from as_of with no gap. Its receipts are the amounts collected
-    inside it from the invoices issued inside it: the invoices a forecast cannot see yet, since they are not open.
-    The run-rate is the mean over the windows, spread evenly over the weeks: (weekly amount, first day of the oldest
-    window). A window with no receipts counts as 0 in the mean."""
+# The basis of the run-rates: how the 13-week total is estimated from the windows back from the as-of date (see
+# basis_total). mean2, the mean of the last two windows, is the one with the lowest median error over thirteen month-end
+# as-of dates for both lines; the others are the candidates that calibration compared. A later change is this line.
+BASES = ("mean4", "mean2", "last", "trailing12", "seasonal", "trend")
+RUN_RATE_BASIS = "mean2"
+
+
+def window_total(payments, start, stop):
+    """The amount collected inside [start, stop) from the invoices issued inside it: payments are (invoice date, payment
+    date, amount), and an invoice a forecast cannot see yet (not open on the as-of date) is the one issued in the window."""
+    return sum(amount for issued, paid, amount in payments if start <= issued < stop and start <= paid < stop)
+
+
+def basis_total(payments, as_of, basis):
+    """(13-week total, low, high) of the run-rate on the basis. The windows are WEEKS weeks each, back from as_of with
+    no gap; a window with no receipts counts as 0. low and high are the least and the most of the windows the basis
+    reads, so the band is the spread of those windows (mean4, mean2, trailing12 and trend read the last four; last reads
+    one; seasonal reads one window a year back and its band is the point). trailing12: the receipts of the trailing 12
+    months, from the invoices issued in them, a quarter of them. trend: the least-squares line through the last four
+    windows, one window on, not below zero."""
     length = datetime.timedelta(days=WEEKS * DAYS_PER_WEEK)
-    totals = []
-    for back in range(1, RUN_RATE_WINDOWS + 1):
-        start = as_of - length * back
-        stop = as_of - length * (back - 1)
-        totals.append(sum(amount for issued, paid, amount in payments
-                          if start <= issued < stop and start <= paid < stop))
-    return round(statistics.mean(totals) / WEEKS, 2), as_of - length * RUN_RATE_WINDOWS
+    year = datetime.timedelta(days=365)
+    totals = [window_total(payments, as_of - length * back, as_of - length * (back - 1))
+              for back in range(1, RUN_RATE_WINDOWS + 1)]
+    if basis == "mean4":
+        return statistics.mean(totals), min(totals), max(totals)
+    if basis == "mean2":
+        return statistics.mean(totals[:2]), min(totals[:2]), max(totals[:2])
+    if basis == "last":
+        return totals[0], totals[0], totals[0]
+    if basis == "trailing12":
+        return window_total(payments, as_of - year, as_of) / 4, min(totals), max(totals)
+    if basis == "seasonal":
+        seasonal = window_total(payments, as_of - year - length, as_of - year)
+        return seasonal, seasonal, seasonal
+    if basis == "trend":
+        # least squares over the windows, oldest first as x = 1..WINDOWS, read at the window after the last one
+        ys = totals[::-1]
+        x_mean = (RUN_RATE_WINDOWS + 1) / 2
+        y_mean = statistics.mean(ys)
+        slope = (sum((x - x_mean) * (y - y_mean) for x, y in enumerate(ys, 1))
+                 / sum((x - x_mean) ** 2 for x in range(1, RUN_RATE_WINDOWS + 1)))
+        return max(y_mean + slope * (RUN_RATE_WINDOWS + 1 - x_mean), 0.0), min(totals), max(totals)
+    raise ValueError("unknown run-rate basis: %s" % basis)
 
 
-def purchase_run_rate(payments, as_of, excluded):
-    """payments: (supplier, bill date, payment date, amount) of the Purchase Invoices paid in the last RUN_RATE_WINDOWS
-    windows. The run-rate of run_rate over the suppliers not in excluded: those the recurring costs already forecast,
-    and the insurers' bills, which are recurring bills of their own. Returns (weekly amount, first day of the oldest
-    window, how many excluded suppliers were paid in the windows: the count the basis note tells)."""
-    weekly, since = run_rate([(issued, paid, amount) for supplier, issued, paid, amount in payments if supplier not in excluded], as_of)
-    return weekly, since, len({supplier for supplier, _issued, _paid, _amount in payments if supplier in excluded})
+def run_rate(payments, as_of, basis=RUN_RATE_BASIS):
+    """payments: (invoice date, payment date, amount) of the Sales Invoices paid in the last RUN_RATE_LOOKBACK_DAYS.
+    The run-rate is the 13-week total of basis_total spread evenly over the weeks. Returns a dict: weekly (the amount
+    of each week), low and high (the same for the band of the basis), since (the first day the basis reads), and
+    basis (the name of the basis, for the basis note)."""
+    total, low, high = basis_total(payments, as_of, basis)
+    return {
+        "weekly": round(total / WEEKS, 2), "low": round(low / WEEKS, 2), "high": round(high / WEEKS, 2),
+        "since": as_of - datetime.timedelta(days=BASIS_DAYS[basis]), "basis": basis,
+    }
+
+
+def closing_band(closing, sales, purchases):
+    """(low, high) of the closing cash at the end of the horizon, with the new sales and the new purchases run-rates at
+    the low and the high of their basis. A run-rate is the same amount each week, so over the thirteen weeks its band
+    moves the closing by thirteen times the difference. sales, purchases: run_rate dicts, or None when left out."""
+    low, high = closing, closing
+    if sales:
+        low -= WEEKS * (sales["weekly"] - sales["low"])
+        high += WEEKS * (sales["high"] - sales["weekly"])
+    if purchases:
+        low -= WEEKS * (purchases["high"] - purchases["weekly"])
+        high += WEEKS * (purchases["weekly"] - purchases["low"])
+    return round(low, 2), round(high, 2)
+
+
+def purchase_run_rate(payments, as_of, excluded, basis=RUN_RATE_BASIS):
+    """payments: (supplier, bill date, payment date, amount) of the Purchase Invoices paid in the last RUN_RATE_LOOKBACK_DAYS.
+    The run-rate of run_rate over the suppliers not in excluded: those the recurring costs already forecast,
+    and the insurers' bills, which are recurring bills of their own. Returns the run_rate dict with excluded: how many
+    excluded suppliers were paid in the windows, the count the basis note tells."""
+    rate = run_rate([(issued, paid, amount) for supplier, issued, paid, amount in payments if supplier not in excluded],
+                    as_of, basis)
+    rate["excluded"] = len({supplier for supplier, _issued, _paid, _amount in payments if supplier in excluded})
+    return rate
 
 
 def forecast(as_of, opening, lines):
