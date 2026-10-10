@@ -343,3 +343,19 @@ exception to the mapping: its expected side is what bexio's journal books for it
     finance/scripts/bexio-drafts.sh FILE submit
 
 A second run inserts nothing: a corrected entry has no difference left, and the loader finds each entry by its bexio id.
+
+## Trial balance check
+
+`check_trial_balance.py` compares ERPNext with bexio per business year and account, after the
+import chain has run. bexio's side comes from `journal.json`, ERPNext's from its GL Entry rows
+(not cancelled), read through the API user; nothing is written. Balance-sheet accounts (roots 1
+and 2) compare the closing balance at the year's end; profit-and-loss accounts (roots 3 to 9)
+compare the net movement within the year, since ERPNext has no Period Closing Voucher yet. bexio's
+carry-forward lines and account 9100 are left out on bexio's side, and the vouchers with a leg on
+9100 on ERPNext's side, so both sides compare the same postings.
+
+    python3 finance/bexio/check_trial_balance.py [--export DIR] [--out CSV]
+
+It prints totals only: years, accounts and rows compared, rows with a difference (more than half
+a rappen), and the band of the largest one. The rows go to `<private>/bexio-trial-balance-<date>.csv`.
+Exit status 1 means at least one difference.
