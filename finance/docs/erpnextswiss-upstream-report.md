@@ -21,9 +21,17 @@ test discovery fails, and the test `test_item_cleanup_native` cannot import its 
 `erpnextswiss/scripts/item_tools.py`, line 43. The lines around it:
 
 ```python
+@frappe.whitelist()
+def get_voucher_value(voucher_code, customer):
+    value = frappe.db.sql("""
+                SELECT ...
+                    AND `parent` IN (SELECT `name` FROM `tabSales Invoice` WHERE `docstatus` = 1 AND `customer` = %(customer)s);""",
+            ,
             {
                 'voucher': voucher_code,
                 'customer': customer
+            },
+            as_dict=True)
 ```
 
 Line 42 ends the SQL string with `""",` and line 43 is a bare `,` on its own line.
@@ -51,8 +59,11 @@ Exit status 1.
 - `import erpnextswiss.scripts.item_tools` fails.
 - Test discovery for the app fails on this module, and
   `test_item_cleanup_native` errors on import.
-- Within the package, only the test module and a verifier script refer to it. Hooks,
-  whitelisted methods and pages do not import it, so the runtime is not affected.
+- The module holds two `@frappe.whitelist()` functions, `get_next_item_code` and
+  `get_voucher_value`. Neither can be called through `/api/method/` while the file does
+  not compile.
+- Within the package, only the test module, a security test and a verifier script refer
+  to it. Hooks and pages do not import it.
 
 ## Request
 

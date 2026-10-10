@@ -199,7 +199,7 @@ live site runs `bi10`) and on the HRMS copy image `hrms1`.
 
 | # | Where (erpnextswiss 1.34.1) | Finding | Effect on us |
 | --- | --- | --- | --- |
-| 1 | `erpnextswiss/scripts/item_tools.py` line 43 | Stray comma after a SQL string: `SyntaxError: invalid syntax`. | None at runtime. The module is a maintenance script, not hooked, and nothing we use imports it. It breaks erpnextswiss's own test discovery and `test_item_cleanup_native`. |
+| 1 | `erpnextswiss/scripts/item_tools.py` line 43 | Stray comma after a SQL string: `SyntaxError: invalid syntax`. | None at runtime. The module is a maintenance script, not hooked, and nothing we use imports or calls it. Its two `@frappe.whitelist()` functions (`get_next_item_code`, `get_voucher_value`) cannot be called while it does not compile; no app in the image references them. It breaks erpnextswiss's own test discovery and `test_item_cleanup_native`. |
 | 2 | `tests/test_ebics_automation` | 6 of 33 tests error, `ImportError: not properly registered`. | None. EBICS stays disabled (Risks 6). erpnextswiss's own tests are not part of our gate. |
 | 3 | `tests/test_workspace_routes_native` | 2 of 7 tests error: `Schweizer Buchhaltung is an archive of the previous navigation and can no longer be edited`. | None. The archived workspace is not used. |
 
@@ -210,8 +210,8 @@ Not compared on `bi9`: no site without HRMS was built for it. The errors do not 
 HRMS, so it is likely they also fail without it, but that is not shown.
 
 **Does anything we use import item_tools?** No. Searched the image's apps for
-`item_tools`: `hooks.py`, the whitelisted methods, page and doctype code do not
-reference it. The hits are `test_item_cleanup_native` (imports it), a
+`item_tools` and `get_voucher_value`: `hooks.py`, page and doctype code do not
+reference them. Client Scripts stored in a site's database are not in the image and were not searched. The hits are `test_item_cleanup_native` (imports it), a
 security test that reads the file, and a verifier script that names it as a string.
 The `bi_finance` app does not import it.
 
