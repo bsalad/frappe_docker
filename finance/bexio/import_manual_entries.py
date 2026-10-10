@@ -28,8 +28,11 @@ tax_id; the VAT is then split off on the side of the income or expense account
 of the line (a purchase debits the Vorsteuer, a sale credits the Umsatzsteuer,
 a reversal the other way round; with no such account the root type of the tax
 account decides) and booked to tax_account_id at the rate of its
-code (import_purchase's VAT_OF_TAX_ID). A code without an Item Tax Template in
-ERPNext is reported, not guessed. Entries of type banking_transaction are
+code (import_purchase's VAT_OF_TAX_ID). The VAT goes to the account of the code's
+kind (VAT_NUMBER_OF_CODE: 2200 for a sales code, 1170 or 1171 for a purchase one),
+the account bexio's journal books it on, not to tax_account_id: in a manual-entry
+row that names the taxed account itself, and it is only checked to be one of the row's own accounts. A code
+without an Item Tax Template in ERPNext is reported, not guessed. Entries of type banking_transaction are
 mapped too, but counted apart: the posting plan decides whether they or the
 bank transactions carry the booking.
 
@@ -37,9 +40,9 @@ Two shapes the export has beyond the single line. A compound entry has one row
 without id: its counterpart, the account each id row is booked against (its
 journal line carries it on the other side); the counterpart is not posted
 itself, the id rows take it as their missing side. A reverse-charge code
-(import_purchase's BEZUG) is net, and its tax goes on the Vorsteuer account and
-is taken back on the Bezugsteuer liability, as the bills do. An entry with no
-type is booked as a single one.
+(import_purchase's BEZUG) is net, and its tax goes on the Vorsteuer account of
+its kind and is taken back on 2203, as bexio's journal books it for a manual
+entry (the bills book 1172 and 2202). An entry with no type is booked as a single one.
 
 An entry on a depreciation account is a Depreciation Entry, as ERPNext requires
 for those accounts; an entry on a receivable or payable account needs a party,
@@ -49,6 +52,7 @@ Standard library only, apart from import_master and import_purchase.
 """
 
 import argparse
+import collections
 import datetime
 import json
 import os
@@ -59,9 +63,16 @@ import import_master as im
 import import_purchase as ip
 
 ENTRIES_FILE = "manual_entries.json"
+JOURNAL_FILE = "journal.json"
 CURRENCIES_FILE = "currencies.json"
 PROBLEMS_FILE = "bexio-manual-entries-dry-run.txt"
+JOURNAL_CHECK_FILE = "bexio-manual-entries-journal-check.txt"
 JOURNAL = "Journal Entry"
+# the bexio journal lines of documents (invoices, bills, credit vouchers, payments): the rest are bank and manual lines
+DOCUMENT_CLASSES = ("KbInvoice", "KbBill", "KbCreditVoucher", "KbClientAccountEntry")
+# the accounts the journal check compares besides the profit-and-loss ones: the VAT accounts the manual entries book on
+CHECK_NUMBERS = ("1170", "1171", "2200")
+TOLERANCE = Decimal("0.005")
 SINGLE, COMPOUND, GROUP = "manual_single_entry", "manual_compound_entry", "manual_group_entry"
 # the type of the entries a bank import created; bexio's docs do not list it, the name is from the mapping notes
 BANKING = "banking_transaction"
@@ -71,6 +82,14 @@ SIDE_OF_ROOT = {"Asset": "debit", "Expense": "debit", "Liability": "credit", "In
 PROFIT_AND_LOSS = ("Income", "Expense")
 # the bexio codes with a rate of 0 % in BEXIO_TAXES (swiss-setup), with the purchase importer's: no VAT split on an entry
 MANUAL_ZERO_RATE_IDS = ip.ZERO_RATE_IDS + (3, 4, 5, 6, 13, 14, 48)
+# the account a manual entry's VAT is booked on, by the kind of its code: bexio's journal books it there, on the final
+# accounts, not on the transitory 1172 or 2202. The sales codes are those of import_master's VAT_OF_TAX_ID (S, rates > 0)
+SALES_IDS = (16, 28, 17, 29, 18, 30)
+VAT_NUMBER_OF_CODE = dict([(i, "2200") for i in SALES_IDS] + [(i, "1170") for i in ip.MAT_SV_IDS] + [(i, "1171") for i in ip.INV_BA_IDS])
+# a reverse-charge code's Vorsteuer by its kind (BZM Material 19 and 33, BZB Investitionen 20 and 32), taken back on 2203:
+# the liability bexio's manual entries book the reverse charge on (the bills book 1172 and 2202, import_purchase's BEZUG)
+REVERSE_CHARGE_NUMBER_OF_CODE = {19: "1170", 33: "1170", 20: "1171", 32: "1171"}
+REVERSE_CHARGE_LIABILITY = "2203"
 # the account types ERPNext wants a voucher of its own for (Depreciation Entry), and the ones that need a party
 DEPRECIATION_TYPES = ("Depreciation", "Accumulated Depreciation")
 DEPRECIATION_ENTRY = "Depreciation Entry"
@@ -98,7 +117,7 @@ class Lookups:
     def from_erp(cls, erp):
         rows = erp.list("Account", [["company", "=", im.COMPANY], ["bexio_id", "is", "set"]],
                         ["name", "bexio_id", "root_type", "account_currency", "account_type"])
-        numbers = sorted({account for account, _ in ip.BEZUG.values()} | {ip.BEZUGSTEUER})
+        numbers = sorted(set(VAT_NUMBER_OF_CODE.values()) | set(REVERSE_CHARGE_NUMBER_OF_CODE.values()) | {REVERSE_CHARGE_LIABILITY})
         by_number = erp.list("Account", [["company", "=", im.COMPANY], ["account_number", "in", numbers]],
                              ["name", "account_number", "root_type", "account_currency", "account_type"])
         return cls(
@@ -134,17 +153,20 @@ def _account(lookups, bexio_id):
 
 
 def _vat(line, lookups):
-    """(rate, tax account name, side of the tax account) of a line, or None when the line carries no VAT."""
+    """(rate, VAT account name, side of the VAT account) of a line, or None when the line carries no VAT. The account
+    comes from the code (VAT_NUMBER_OF_CODE), not from tax_account_id, which _check_tax_accounts only checks."""
     tax_id = line.get("tax_id")
     if not tax_id or tax_id in MANUAL_ZERO_RATE_IDS:
         return None
     if tax_id not in im.VAT_OF_TAX_ID:
         raise ip.MappingError("unknown VAT code {}".format(tax_id))
+    if tax_id not in VAT_NUMBER_OF_CODE:
+        raise ip.MappingError("no VAT account for code {}".format(tax_id))
     if not lookups.taxes.get(str(tax_id)):
         raise ip.MappingError("no Item Tax Template with bexio_id {} in ERPNext".format(tax_id))
-    tax_account, root = _account(lookups, line.get("tax_account_id"))
+    tax_account, root = _by_number(lookups, VAT_NUMBER_OF_CODE[tax_id])
     if root not in SIDE_OF_ROOT:
-        raise ip.MappingError("VAT account {} has root type {}".format(line.get("tax_account_id"), root))
+        raise ip.MappingError("VAT account {} has root type {}".format(VAT_NUMBER_OF_CODE[tax_id], root))
     rate, _ = im.VAT_OF_TAX_ID[tax_id]
     return rate, tax_account, SIDE_OF_ROOT[root]
 
@@ -177,15 +199,29 @@ def _postings(kind, lines):
     return postings
 
 
-def _reverse_charge(line, lookups, debit, credit, amount, factor):
+def _check_tax_accounts(lines):
+    """A VAT row's tax_account_id is one of the row's own accounts, as bexio writes it. It is checked before a compound
+    row takes its counterpart as the missing side: a row that names another account is listed, not guessed."""
+    for line in lines:
+        tax_id = line.get("tax_id")
+        if not tax_id or tax_id in MANUAL_ZERO_RATE_IDS or tax_id in ip.BEZUG:
+            continue
+        own = {str(line[side]) for side in ("debit_account_id", "credit_account_id") if line.get(side) is not None}
+        if str(line.get("tax_account_id")) not in own:
+            raise ip.MappingError("tax account {} is not an account of its row".format(line.get("tax_account_id")))
+
+
+def _reverse_charge(line, lookups, debit, credit, amount, factor, side):
     """The parts of a reverse-charge line (Bezugsteuer): the amount is net, and the tax is booked on the Vorsteuer account
-    and taken back on the Bezugsteuer liability, as import_purchase does for a bill (its net is the same on both sides)."""
-    vorsteuer_number, rate = ip.BEZUG[line["tax_id"]]
-    vorsteuer, _ = _by_number(lookups, vorsteuer_number)
-    bezugsteuer, _ = _by_number(lookups, ip.BEZUGSTEUER)
+    of its kind and taken back on 2203, as bexio's journal books a manual entry (its net is the same on both sides). On
+    the credit side (a reversal) the tax goes the other way, as ordinary VAT does."""
+    rate = ip.BEZUG[line["tax_id"]][1]
+    vorsteuer, _ = _by_number(lookups, REVERSE_CHARGE_NUMBER_OF_CODE[line["tax_id"]])
+    bezugsteuer, _ = _by_number(lookups, REVERSE_CHARGE_LIABILITY)
     tax = (amount * _money(rate) / 100).quantize(CENT, rounding=ROUND_HALF_UP)
+    other = "credit" if side == "debit" else "debit"
     parts = [(debit, "debit", amount, _chf(amount, factor)), (credit, "credit", amount, _chf(amount, factor)),
-             (vorsteuer, "debit", tax, _chf(tax, factor)), (bezugsteuer, "credit", tax, _chf(tax, factor))]
+             (vorsteuer, side, tax, _chf(tax, factor)), (bezugsteuer, other, tax, _chf(tax, factor))]
     return sorted(parts, key=lambda part: part[1] != "debit")
 
 
@@ -207,7 +243,9 @@ def _line_parts(line, lookups, currencies):
     factor = _money(line.get("currency_factor") or 1)
     gross = _chf(amount, factor)
     if line.get("tax_id") in ip.BEZUG:
-        return _reverse_charge(line, lookups, debit, credit, amount, factor), factor
+        # the expense or income side decides, as for ordinary VAT: a reversal credits the expense and takes the tax back
+        side = "credit" if credit_root in PROFIT_AND_LOSS and debit_root not in PROFIT_AND_LOSS else "debit"
+        return _reverse_charge(line, lookups, debit, credit, amount, factor, side), factor
     vat = _vat(line, lookups)
     if vat is None:
         return [(debit, "debit", amount, gross), (credit, "credit", amount, gross)], factor
@@ -249,6 +287,7 @@ def map_entry(entry, lookups, currencies):
         raise ip.MappingError("single entry with {} lines".format(len(lines)))
     rows, debit, credit = [], ZERO, ZERO
     reference = entry.get("reference_nr") or ""
+    _check_tax_accounts(lines)
     for line in _postings(kind, lines):
         parts, factor = _line_parts(line, lookups, currencies)
         code = currencies[str(line.get("currency_id"))]
@@ -355,6 +394,90 @@ def report(totals, export_dir):
     return "\n".join(lines)
 
 
+def entry_of_lines(entries, journal):
+    """{journal line id: manual entry id} of the bexio journal lines an entry books: a line whose id is one of an entry's
+    row ids, and a VAT line of a row, found by the entry's date and the row's description (posting_plan's pairing). A
+    line that two entries could claim is left out. The document lines (invoices, bills, payments) are not an entry's."""
+    by_id, by_text = {}, collections.defaultdict(set)
+    for entry in entries:
+        for row in entry.get("entries") or []:
+            if row.get("id") is not None:
+                by_id[row["id"]] = str(entry["id"])
+                by_text[(str(entry["date"])[:10], row.get("description"))].add(str(entry["id"]))
+    owner = {}
+    for line in journal:
+        if line["ref_class"] in DOCUMENT_CLASSES:
+            continue
+        if line["id"] in by_id:
+            owner[line["id"]] = by_id[line["id"]]
+            continue
+        claimants = by_text.get((line["date"][:10], line.get("description")), set())
+        if len(claimants) == 1:
+            owner[line["id"]] = next(iter(claimants))
+        elif by_id.get(line["id"] - 1) in claimants:
+            # two entries of the day carry the same text; bexio numbers a row's VAT line right after the row, so the row before decides
+            owner[line["id"]] = by_id[line["id"] - 1]
+    return owner
+
+
+def journal_check(entries, totals, journal, lookups):
+    """The mapping against bexio's journal, per manual entry and account (CHF, debit minus credit). entries are the export's
+    own (not the --extra ones, which bexio does not book). Returns (problems, per year: [accounts compared, accounts that
+    differ, the sum of the differences in CHF], entries compared).
+
+    The accounts compared are 1170, 1171, 2200 and every profit-and-loss account. An entry bexio books that the mapping
+    does not hold (an unmapped one) differs on every account it books.
+    """
+    owner = entry_of_lines(entries, journal)
+    exported = {manual_key(entry["id"]) for entry in entries}
+    names = {str(bexio_id): name for bexio_id, (name, _) in lookups.accounts.items()}
+    roots = {name: root for name, root in lookups.accounts.values()}
+    mapped, booked = collections.defaultdict(collections.Counter), collections.defaultdict(collections.Counter)
+    years = {}
+    for document in totals.documents:
+        if document["bexio_id"] not in exported:
+            continue
+        entry_id = document["bexio_id"][len("manual-"):]
+        years[entry_id] = document["values"]["posting_date"][:4]
+        for row in document["values"]["accounts"]:
+            mapped[entry_id][row["account"]] += _money(row.get("debit", 0)) - _money(row.get("credit", 0))
+    for line in journal:
+        entry_id = owner.get(line["id"])
+        if entry_id is None:
+            continue
+        amount = _money(line["base_currency_amount"])
+        debit, credit = names.get(str(line["debit_account_id"])), names.get(str(line["credit_account_id"]))
+        booked[entry_id][debit] += amount
+        booked[entry_id][credit] -= amount
+        years.setdefault(entry_id, str(line["date"])[:4])
+    problems, per_year = [], collections.defaultdict(lambda: [0, 0, ZERO])
+    for entry_id in sorted(set(mapped) | set(booked), key=str):
+        year = years.get(entry_id)
+        for account in sorted(set(mapped[entry_id]) | set(booked[entry_id]), key=str):
+            if account is None:
+                problems.append("entry {} ({}): a bexio account has no Account in ERPNext".format(entry_id, year))
+                continue
+            if not (account.split()[0] in CHECK_NUMBERS or roots.get(account) in PROFIT_AND_LOSS):
+                continue
+            want, have = mapped[entry_id][account], booked[entry_id][account]
+            cell = per_year[year]
+            cell[0] += 1
+            if abs(want - have) > TOLERANCE:
+                cell[1] += 1
+                cell[2] += abs(want - have)
+                problems.append("entry {} ({}): {} mapped {:.2f} bexio {:.2f}".format(entry_id, year, account, want, have))
+    return problems, dict(per_year), len(set(mapped) | set(booked))
+
+
+def check_report(per_year, compared):
+    """The journal check as totals per year: accounts compared, accounts that differ, and the sum of the differences."""
+    lines = ["manual entries against bexio's journal: {} entries compared, nothing was written".format(compared),
+             "{:<6}{:>10}{:>10}{:>16}".format("year", "accounts", "differ", "sum of differences")]
+    for year, (count, differ, total) in sorted(per_year.items(), key=lambda item: (item[0] is None, item[0] or "")):
+        lines.append("{:<6}{:>10}{:>10}{:>16,.2f}".format(year if year is not None else "?", count, differ, total))
+    return "\n".join(lines)
+
+
 def load_entries(export_dir):
     """(entries, currency codes by bexio id) of the export, or None when manual_entries.json is not there yet."""
     path = os.path.join(export_dir, ENTRIES_FILE)
@@ -389,6 +512,7 @@ def main(argv):
         print("manual entries: not exported yet ({} is not in {})".format(ENTRIES_FILE, export_dir))
         return 0
     entries, currencies = loaded
+    exported = entries
     if args.extra:
         entries = entries + load_extra(args.extra)
     try:
@@ -398,6 +522,11 @@ def main(argv):
         return 2
     totals = dry_run(entries, lookups, currencies)
     print(report(totals, export_dir))
+    with open(os.path.join(export_dir, JOURNAL_FILE), encoding="utf-8") as f:
+        journal = json.load(f)
+    check_problems, per_year, compared = journal_check(exported, totals, journal, lookups)
+    print(check_report(per_year, compared))
+    ip.write_private(os.path.join(im.PRIVATE, JOURNAL_CHECK_FILE), check_problems or ["none"])
     if totals.problems:
         ip.write_private(os.path.join(im.PRIVATE, PROBLEMS_FILE), totals.problems)
         print("{} entry(ies) listed by bexio id in {}".format(len(totals.problems), os.path.join(im.PRIVATE, PROBLEMS_FILE)), file=sys.stderr)

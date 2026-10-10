@@ -306,3 +306,38 @@ decides which lines these are, so the module reuses `posting_plan.classify` and 
 against the lines, the GL per account and year against bexio's lines, the posted ids to `<private>/bexio-payroll-ids.txt`
 (for the manual entries and bank bead, erp-fd93 and erp-7avs), and any missing or differing line to
 `<private>/bexio-payroll-live-differences.txt`.
+
+## Manual entries (Journal Entries)
+
+`import_manual_entries.py` maps each bexio manual entry (single, compound, group, banking and untyped) to one
+Journal Entry keyed `manual-<id>`. The VAT of a row goes to the account of its code's kind, the account bexio's
+journal books it on, not to `tax_account_id`: 2200 for a sales code, 1170 for a purchase code of Material und
+Dienstleistungen, 1171 for one of Investitionen und Aufwand. A reverse-charge code (Bezugsteuer) books its tax on
+the Vorsteuer of its kind (1170 or 1171) and takes it back on 2203, as bexio's journal does for a manual entry. A
+zero-rate code has no VAT split. A row's `tax_account_id` must be one of the row's own accounts; a row that is not
+is listed, not guessed.
+
+- an entry on a depreciation account is a Depreciation Entry; an entry on a receivable or payable account needs a
+  party, which a manual entry does not carry, so it is listed and not written.
+- `--extra FILE` adds entries the export does not hold (a correction), as a private list in bexio's shape.
+
+    python3 finance/bexio/import_manual_entries.py --dry-run [--export DIR] [--extra FILE]
+    python3 finance/bexio/import_manual_entries.py --write FILE [--export DIR] [--extra FILE]
+    finance/scripts/bexio-drafts.sh FILE submit
+
+The dry run also compares the mapping with bexio's journal, per entry and account, for 1170, 1171, 2200 and every
+profit-and-loss account. The lines of an entry are its row lines and its VAT lines (bexio numbers a row's VAT line
+right after the row; otherwise the entry's date and the row's text). Entries that differ are listed by id in
+`<private>/bexio-manual-entries-journal-check.txt`; the terminal shows totals per year only.
+
+`import_manual_fix.py` corrects the VAT of the live entries without touching a submitted document: for each live
+entry (a submitted Journal Entry `manual-<id>`) the difference per account between the mapping and ERPNext's GL,
+its own corrections included (`manual-<id>-<suffix>`, `vatfix-manual-<id>`), is one Journal Entry on the entry's
+posting date, keyed `vatfix-manual-<id>`. A group with no difference gets nothing; an unbalanced one, or an account
+not in CHF, is listed by bexio id.
+
+    python3 finance/bexio/import_manual_fix.py --dry-run [--export DIR]
+    python3 finance/bexio/import_manual_fix.py --write FILE [--export DIR]
+    finance/scripts/bexio-drafts.sh FILE submit
+
+A second run inserts nothing: a corrected entry has no difference left, and the loader finds each entry by its bexio id.

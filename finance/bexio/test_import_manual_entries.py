@@ -13,9 +13,15 @@ from decimal import Decimal
 from unittest import mock
 
 import import_manual_entries as ime
+import import_master as im
 import import_purchase as ip
 
 CURRENCIES = {"1": "CHF", "2": "EUR"}
+# the accounts by number: the reverse-charge pair, and the VAT accounts a code's kind books to (invented names)
+DEFAULT_BY_NUMBER = {
+    "1170": ("1170 - Vorsteuer Test - bic", "Asset"), "1171": ("1171 - Vorsteuer Invest Test - bic", "Asset"),
+    "2200": ("2200 - Umsatzsteuer Test - bic", "Liability"), "2203": ("2203 - Bezugsteuer Test - bic", "Liability"),
+}
 
 
 def lookups(taxes=None, by_number=None, currencies=None, depreciation=None, party=None):
@@ -32,9 +38,9 @@ def lookups(taxes=None, by_number=None, currencies=None, depreciation=None, part
             "61": ("6820 - Abschreibung Test - bic", "Expense"),
             "99": ("9999 - Ohne Wurzel - bic", "Stock"),
         },
-        taxes={"35": "Test MWST bexio 35", "22": "Test MWST bexio 22"} if taxes is None else dict(taxes),
-        by_number={"1172": ("1170 - Vorsteuer Test - bic", "Asset"), "2202": ("2200 - Bezugsteuer Test - bic", "Liability")}
-        if by_number is None else dict(by_number),
+        taxes={"35": "Test MWST bexio 35", "22": "Test MWST bexio 22", "16": "Test MWST bexio 16", "38": "Test MWST bexio 38"}
+        if taxes is None else dict(taxes),
+        by_number=DEFAULT_BY_NUMBER if by_number is None else dict(by_number),
         depreciation=depreciation, party=party,
     )
 
@@ -118,7 +124,7 @@ class MapEntryTest(unittest.TestCase):
 
     def test_purchase_vat_is_split_off_the_debit_side(self):
         # 108.10 incl. 8.1 %: net 100.00 on the expense, tax 8.10 on Vorsteuer (asset, debited), 108.10 credited to the bank
-        doc = ime.map_entry(entry(lines=[line(21, 11, 108.10, tax_id=35, tax_account_id=22)]), lookups(), CURRENCIES)
+        doc = ime.map_entry(entry(lines=[line(21, 11, 108.10, tax_id=35, tax_account_id=21)]), lookups(), CURRENCIES)
         self.assertEqual(rows_of(doc), [
             ("5001 - Testaufwand - bic", 100.0, 0.0),
             ("1170 - Vorsteuer Test - bic", 8.1, 0.0),
@@ -126,9 +132,24 @@ class MapEntryTest(unittest.TestCase):
         ])
         self.assertEqual(side_totals(doc), (Decimal("108.10"), Decimal("108.10")))
 
+    def test_purchase_vat_of_an_investment_code_is_on_1171(self):
+        # 6570 against 2010 at 8.1 % (invented numbers): net on the expense, VAT on 1171, gross on the bank
+        doc = ime.map_entry(entry(lines=[line(21, 11, 108.10, tax_id=38, tax_account_id=21)]), lookups(), CURRENCIES)
+        self.assertEqual(rows_of(doc), [
+            ("5001 - Testaufwand - bic", 100.0, 0.0),
+            ("1171 - Vorsteuer Invest Test - bic", 8.1, 0.0),
+            ("1020 - Bank Test - bic", 0.0, 108.1),
+        ])
+
+    def test_each_kind_of_code_books_to_its_own_account(self):
+        self.assertEqual((ime.VAT_NUMBER_OF_CODE[16], ime.VAT_NUMBER_OF_CODE[22], ime.VAT_NUMBER_OF_CODE[24]), ("2200", "1170", "1171"))
+        # every code that carries VAT in import_master's table has its account; no 0 % code is in it
+        self.assertEqual(set(ime.VAT_NUMBER_OF_CODE), set(im.VAT_OF_TAX_ID))
+        self.assertFalse(set(ime.VAT_NUMBER_OF_CODE) & set(ime.MANUAL_ZERO_RATE_IDS))
+
     def test_sales_vat_is_split_off_the_credit_side(self):
         # 107.70 incl. 7.7 %: receivable debited 107.70, income 100.00 and Umsatzsteuer 7.70 credited
-        doc = ime.map_entry(entry(lines=[line(12, 32, 107.70, tax_id=22, tax_account_id=31)]), lookups(), CURRENCIES)
+        doc = ime.map_entry(entry(lines=[line(12, 32, 107.70, tax_id=16, tax_account_id=32)]), lookups(), CURRENCIES)
         self.assertEqual(rows_of(doc), [
             ("1100 - Debitoren Test - bic", 107.7, 0.0),
             ("3000 - Testertrag - bic", 0.0, 100.0),
@@ -138,7 +159,7 @@ class MapEntryTest(unittest.TestCase):
 
     def test_sales_reversal_debits_the_umsatzsteuer(self):
         # credit note: income debited 100.00, Umsatzsteuer debited 7.70, receivable credited 107.70
-        doc = ime.map_entry(entry(lines=[line(32, 12, 107.70, tax_id=22, tax_account_id=31)]), lookups(), CURRENCIES)
+        doc = ime.map_entry(entry(lines=[line(32, 12, 107.70, tax_id=16, tax_account_id=32)]), lookups(), CURRENCIES)
         self.assertEqual(rows_of(doc), [
             ("3000 - Testertrag - bic", 100.0, 0.0),
             ("2200 - Umsatzsteuer Test - bic", 7.7, 0.0),
@@ -146,7 +167,7 @@ class MapEntryTest(unittest.TestCase):
         ])
 
     def test_purchase_refund_credits_the_vorsteuer(self):
-        doc = ime.map_entry(entry(lines=[line(11, 21, 108.10, tax_id=35, tax_account_id=22)]), lookups(), CURRENCIES)
+        doc = ime.map_entry(entry(lines=[line(11, 21, 108.10, tax_id=35, tax_account_id=21)]), lookups(), CURRENCIES)
         self.assertEqual(rows_of(doc), [
             ("1020 - Bank Test - bic", 108.1, 0.0),
             ("5001 - Testaufwand - bic", 0.0, 100.0),
@@ -155,7 +176,7 @@ class MapEntryTest(unittest.TestCase):
 
     def test_vat_rows_add_up_to_the_gross_on_odd_amounts(self):
         # 0.33 at 8.1 %: the net is rounded, the tax is the rest, so the gross is kept to the rappen
-        doc = ime.map_entry(entry(lines=[line(21, 11, 0.33, tax_id=35, tax_account_id=22)]), lookups(), CURRENCIES)
+        doc = ime.map_entry(entry(lines=[line(21, 11, 0.33, tax_id=35, tax_account_id=21)]), lookups(), CURRENCIES)
         self.assertEqual(side_totals(doc), (Decimal("0.33"), Decimal("0.33")))
         self.assertEqual(round(doc["accounts"][0]["debit"] + doc["accounts"][1]["debit"], 2), 0.33)
 
@@ -193,13 +214,24 @@ class MapEntryTest(unittest.TestCase):
             ime.map_entry(entry(lines=[line(21, 11, 100, currency_id=2, currency_factor=0.93)]), lookups(currencies=usd), CURRENCIES)
 
     def test_foreign_currency_with_vat_balances_in_chf(self):
-        lines = [line(21, 11, 108.10, currency_id=2, currency_factor=0.93, tax_id=35, tax_account_id=22)]
+        lines = [line(21, 11, 108.10, currency_id=2, currency_factor=0.93, tax_id=35, tax_account_id=21)]
         doc = ime.map_entry(entry(lines=lines), lookups(), CURRENCIES)
         self.assertEqual(side_totals(doc), (Decimal("100.53"), Decimal("100.53")))
 
     def test_untyped_entry_is_booked_as_a_single_one(self):
         doc = ime.map_entry(entry(kind=None), lookups(), CURRENCIES)
         self.assertEqual(rows_of(doc), [("5001 - Testaufwand - bic", 100.0, 0.0), ("1020 - Bank Test - bic", 0.0, 100.0)])
+
+    def test_compound_row_with_vat_on_its_own_credit_takes_the_expense_from_the_counterpart(self):
+        # the id row is paid from account 11 (its own account, named as the tax account); the expense is the counterpart
+        # on 21, so the net goes there and the VAT is split off it, as bexio's journal books it
+        lines = [line(None, 11, 108.10, "Teil", tax_id=35, tax_account_id=11), counterpart(21, None, 108.10, "Gegenkonto")]
+        doc = ime.map_entry(entry(kind="manual_compound_entry", lines=lines), lookups(), CURRENCIES)
+        self.assertEqual(rows_of(doc), [
+            ("5001 - Testaufwand - bic", 100.0, 0.0),
+            ("1170 - Vorsteuer Test - bic", 8.1, 0.0),
+            ("1020 - Bank Test - bic", 0.0, 108.1),
+        ])
 
     def test_compound_counterpart_is_not_posted_and_completes_each_row(self):
         first, second = dict(line(None, 11, 60, "Teil 1"), id=1), dict(line(None, 12, 40, "Teil 2"), id=2)
@@ -215,9 +247,20 @@ class MapEntryTest(unittest.TestCase):
         doc = ime.map_entry(entry(lines=[line(21, 11, 100, tax_id=32, tax_account_id=21)]), lookups(), CURRENCIES)
         self.assertEqual(rows_of(doc), [
             ("5001 - Testaufwand - bic", 100.0, 0.0),
-            ("1170 - Vorsteuer Test - bic", 8.1, 0.0),
+            ("1171 - Vorsteuer Invest Test - bic", 8.1, 0.0),
             ("1020 - Bank Test - bic", 0.0, 100.0),
-            ("2200 - Bezugsteuer Test - bic", 0.0, 8.1),
+            ("2203 - Bezugsteuer Test - bic", 0.0, 8.1),
+        ])
+        self.assertEqual(side_totals(doc), (Decimal("108.10"), Decimal("108.10")))
+
+    def test_reversed_reverse_charge_takes_the_tax_back_the_other_way(self):
+        # a refund of 100.00 net at 8.1 %: the expense is credited, and the tax is debited on 2203 and credited on Vorsteuer
+        doc = ime.map_entry(entry(lines=[line(11, 21, 100, tax_id=32, tax_account_id=21)]), lookups(), CURRENCIES)
+        self.assertEqual(rows_of(doc), [
+            ("1020 - Bank Test - bic", 100.0, 0.0),
+            ("2203 - Bezugsteuer Test - bic", 8.1, 0.0),
+            ("5001 - Testaufwand - bic", 0.0, 100.0),
+            ("1171 - Vorsteuer Invest Test - bic", 0.0, 8.1),
         ])
         self.assertEqual(side_totals(doc), (Decimal("108.10"), Decimal("108.10")))
 
@@ -249,7 +292,7 @@ class MapEntryErrorTest(unittest.TestCase):
                             "counterpart row without an account")
 
     def test_reverse_charge_without_its_accounts_is_reported(self):
-        self.assertUnmapped(entry(lines=[line(21, 11, 100, tax_id=32)]), "no Account 1172 in ERPNext", known=lookups(by_number={}))
+        self.assertUnmapped(entry(lines=[line(21, 11, 100, tax_id=32)]), "no Account 1171 in ERPNext", known=lookups(by_number={}))
 
     def test_entry_without_lines_is_reported(self):
         self.assertUnmapped(entry(lines=[]), "no entries lines")
@@ -261,17 +304,26 @@ class MapEntryErrorTest(unittest.TestCase):
         self.assertUnmapped(entry(lines=[line(777, 11, 10)]), "no Account for account 777")
 
     def test_vat_code_without_template_is_reported_not_guessed(self):
-        self.assertUnmapped(entry(lines=[line(21, 11, 10, tax_id=35, tax_account_id=22)]),
+        self.assertUnmapped(entry(lines=[line(21, 11, 10, tax_id=35, tax_account_id=21)]),
                             "no Item Tax Template with bexio_id 35", lookups(taxes={}))
 
     def test_unknown_vat_code_is_reported(self):
-        self.assertUnmapped(entry(lines=[line(21, 11, 10, tax_id=99, tax_account_id=22)]), "unknown VAT code 99")
+        self.assertUnmapped(entry(lines=[line(21, 11, 10, tax_id=99, tax_account_id=21)]), "unknown VAT code 99")
 
     def test_vat_without_tax_account_is_reported(self):
-        self.assertUnmapped(entry(lines=[line(21, 11, 10, tax_id=35)]), "no Account for account None")
+        self.assertUnmapped(entry(lines=[line(21, 11, 10, tax_id=35)]), "tax account None is not an account of its row")
+
+    def test_tax_account_that_is_not_an_account_of_the_row_is_reported_not_guessed(self):
+        # the row names account 12 as its tax account, but is booked on 21 and 11: the VAT would sit on a guess, so the entry is listed
+        self.assertUnmapped(entry(lines=[line(21, 11, 108.10, tax_id=35, tax_account_id=12)]), "tax account 12 is not an account of its row")
 
     def test_vat_account_of_an_unknown_root_is_reported(self):
-        self.assertUnmapped(entry(lines=[line(21, 11, 10, tax_id=35, tax_account_id=99)]), "has root type Stock")
+        known = lookups(by_number=dict(DEFAULT_BY_NUMBER, **{"1170": ("1170 - Vorsteuer Test - bic", "Stock")}))
+        self.assertUnmapped(entry(lines=[line(21, 11, 10, tax_id=35, tax_account_id=21)]), "VAT account 1170 has root type Stock", known)
+
+    def test_vat_account_missing_from_erpnext_is_reported(self):
+        known = lookups(by_number={k: v for k, v in DEFAULT_BY_NUMBER.items() if k != "1171"})
+        self.assertUnmapped(entry(lines=[line(21, 11, 10, tax_id=38, tax_account_id=21)]), "no Account 1171 in ERPNext", known)
 
     def test_entry_on_a_party_account_is_reported_not_written(self):
         self.assertUnmapped(entry(lines=[line(12, 21, 100)]), "account 1100 - Debitoren Test - bic needs a party",
@@ -322,6 +374,71 @@ class DryRunTest(unittest.TestCase):
         self.assertNotIn("m-1", text)
 
 
+def journal_line(line_id, debit, credit, amount, description="Testbuchung", ref_class="ManualEntry", date="2025-06-30"):
+    """A line of bexio's journal, in the shape of journal.json (invented)."""
+    return {"id": line_id, "ref_class": ref_class, "ref_id": None, "date": date, "description": description,
+            "debit_account_id": debit, "credit_account_id": credit, "base_currency_amount": amount}
+
+
+class EntryOfLinesTest(unittest.TestCase):
+    def test_a_row_line_and_its_vat_line_belong_to_the_entry(self):
+        owner = ime.entry_of_lines([entry("m-1", lines=[line(21, 11, 108.10, tax_id=35, tax_account_id=21)])],
+                                   [journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 8.10)])
+        self.assertEqual(owner, {1: "m-1", 2: "m-1"})
+
+    def test_two_vat_lines_of_one_row_text_both_belong_to_the_entry(self):
+        # the second line of the same date and text must not be lost: a set read for one claimant must not change it
+        owner = ime.entry_of_lines([entry("m-1")], [journal_line(7, 22, 21, 8.10), journal_line(8, 22, 21, 1.00)])
+        self.assertEqual(owner, {7: "m-1", 8: "m-1"})
+
+    def test_a_vat_line_two_entries_could_claim_belongs_to_neither(self):
+        entries = [entry("m-1"), entry("m-2", lines=[dict(line(21, 11, 100), id=2)])]
+        self.assertEqual(ime.entry_of_lines(entries, [journal_line(9, 21, 11, 100)]), {})
+
+    def test_a_vat_line_two_entries_could_claim_goes_to_the_one_whose_row_is_before_it(self):
+        # bexio numbers a row's VAT line right after the row: the row 5 of m-2 is before line 6, so line 6 is m-2's
+        entries = [entry("m-1"), entry("m-2", lines=[dict(line(21, 11, 100), id=5)])]
+        self.assertEqual(ime.entry_of_lines(entries, [journal_line(6, 22, 21, 8.10)]), {6: "m-2"})
+
+    def test_document_lines_are_not_an_entrys(self):
+        self.assertEqual(ime.entry_of_lines([entry("m-1")], [journal_line(1, 21, 11, 100, ref_class="KbInvoice")]), {})
+
+
+class JournalCheckTest(unittest.TestCase):
+    def check(self, journal, record=None):
+        known = lookups()
+        record = record or entry("m-1", lines=[line(21, 11, 108.10, tax_id=35, tax_account_id=21)])
+        totals = ime.dry_run([record], known, CURRENCIES)
+        return ime.journal_check([record], totals, journal, known)
+
+    def test_mapping_that_bexio_books_the_same_way_has_no_problem(self):
+        problems, per_year, compared = self.check([journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 8.10)])
+        self.assertEqual(problems, [])
+        self.assertEqual(compared, 1)
+        # 1170 (VAT) and 5001 (expense, profit and loss) are compared; the bank account is not
+        self.assertEqual(per_year["2025"][0:2], [2, 0])
+
+    def test_a_vat_line_bexio_books_differently_is_listed_by_entry_and_account(self):
+        # 7.00 instead of 8.10 on 1170: the expense is then 101.10 instead of 100.00, both are listed
+        problems, per_year, _ = self.check([journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 7.00)])
+        self.assertEqual(problems, ["entry m-1 (2025): 1170 - Vorsteuer Test - bic mapped 8.10 bexio 7.00",
+                                    "entry m-1 (2025): 5001 - Testaufwand - bic mapped 100.00 bexio 101.10"])
+        self.assertEqual(per_year["2025"][1], 2)
+
+    def test_a_line_bexio_books_beyond_the_mapping_is_listed(self):
+        # a further line on the entry's description: the bank and the expense differ from the mapping
+        problems, _, _ = self.check([journal_line(1, 21, 11, 108.10), journal_line(2, 22, 21, 8.10), journal_line(5, 21, 11, 50)])
+        self.assertIn("entry m-1 (2025): 5001 - Testaufwand - bic mapped 100.00 bexio 150.00", problems)
+
+    def test_extra_entries_are_not_compared(self):
+        known = lookups()
+        export = [entry("m-1")]
+        extra = entry("1099-correction", lines=[line(11, 21, 165.66)])
+        totals = ime.dry_run(export + [extra], known, CURRENCIES)
+        problems, _, compared = ime.journal_check(export, totals, [journal_line(1, 21, 11, 100)], known)
+        self.assertEqual((problems, compared), ([], 1))
+
+
 class LoadEntriesTest(unittest.TestCase):
     def test_no_file_means_not_exported_yet(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -351,6 +468,8 @@ class MainTest(unittest.TestCase):
                 json.dump([entry("m-1"), entry("m-9", lines=[line(777, 11, 10)])], f)
             with open(os.path.join(tmp, ime.CURRENCIES_FILE), "w", encoding="utf-8") as f:
                 json.dump([{"id": 1, "name": "CHF"}], f)
+            with open(os.path.join(tmp, ime.JOURNAL_FILE), "w", encoding="utf-8") as f:
+                json.dump([], f)
             out_file = os.path.join(tmp, "plan.json")
             # the problem list goes to <private>: a temp dir here, so a test run never writes the real one
             with mock.patch.object(ime.im, "PRIVATE", tmp), \
@@ -369,6 +488,8 @@ class MainTest(unittest.TestCase):
                 json.dump([entry("m-1")], f)
             with open(os.path.join(tmp, ime.CURRENCIES_FILE), "w", encoding="utf-8") as f:
                 json.dump([{"id": 1, "name": "CHF"}], f)
+            with open(os.path.join(tmp, ime.JOURNAL_FILE), "w", encoding="utf-8") as f:
+                json.dump([], f)
             extra = os.path.join(tmp, "extra.json")
             with open(extra, "w", encoding="utf-8") as f:
                 json.dump([entry("1099-correction", date="2024-10-29", lines=[line(11, 21, 165.66)])], f)
