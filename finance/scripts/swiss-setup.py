@@ -421,11 +421,38 @@ def currencies():
     say(f"currencies: {frappe.db.count('Currency', {'enabled': 1})} enabled")
 
 
+# Public BIC of the banks the company pays from, by the Bank's name in ERPNext. Bank data,
+# not company data; a bank not listed here keeps whatever its Bank form says.
+BANK_BICS = {"UBS Switzerland AG": "UBSWCHZH80A"}
+
+
+def payment_fixes(bank_accounts, gl_accounts, banks):
+    # The changes the payments step makes, from plain rows so the rule is testable offline.
+    # erpnextswiss reads the IBAN and BIC of a pay-from account from its GL Account, not from
+    # the Bank Account. Only empty fields are set, so a value entered by hand is never changed.
+    # bank_accounts: [{name, account, iban, bank}], gl_accounts: {account: {iban, bic}},
+    # banks: {bank: swift_number}. Returns [(doctype, name, field, value)].
+    fixes = {}
+    for ba in bank_accounts:
+        if not ba["iban"] or not ba["account"]:
+            continue
+        gl = gl_accounts.get(ba["account"]) or {}
+        if not gl.get("iban"):
+            fixes.setdefault(("Account", ba["account"], "iban"), ba["iban"])
+        bic = banks.get(ba["bank"]) or BANK_BICS.get(ba["bank"])
+        if not bic:
+            continue
+        if not banks.get(ba["bank"]):
+            fixes.setdefault(("Bank", ba["bank"], "swift_number"), bic)
+        if not gl.get("bic"):
+            fixes.setdefault(("Account", ba["account"], "bic"), bic)
+    return [(dt, name, field, value) for (dt, name, field), value in fixes.items()]
+
+
 def payments():
     # Payment runs (bi_finance/payment_run.py). validate_xml stays 0: the app checks each
     # file against the Swiss schema after fixing its country code (see the app). Unidecode
-    # turns the names into the character set the bank takes. The pay-from account's IBAN
-    # and BIC are company data: entered in ERPNext, not set here.
+    # turns the names into the character set the bank takes.
     s = frappe.get_single("ERPNextSwiss Settings")
     want = {"validate_xml": 0, "use_unidecode": 1, "xml_version": "09", "banking_region": "CH"}
     changed = [f for f, v in want.items() if s.get(f) != v]
@@ -436,6 +463,19 @@ def payments():
         s.save()
     else:
         say("payments: ERPNextSwiss Settings already set")
+
+    bank_accounts = frappe.get_all("Bank Account", filters={"company": COMPANY}, fields=["name", "account", "iban", "bank"])
+    gl_accounts = {ba.account: frappe.db.get_value("Account", ba.account, ["iban", "bic"], as_dict=True)
+                   for ba in bank_accounts if ba.account}
+    banks = {b.name: b.swift_number for b in frappe.get_all("Bank", fields=["name", "swift_number"])}
+    for dt, name, field, value in payment_fixes(bank_accounts, gl_accounts, banks):
+        doc = frappe.get_doc(dt, name)
+        doc.set(field, value)
+        doc.save()
+        say(f"payments: {dt} {name}: {field} set")
+    if not bank_accounts:
+        say("payments: no bank account of the company")
+
     account = frappe.db.get_value("Account", {"account_name": "UBS Kontokorrent", "company": COMPANY}, ["name", "iban", "bic"], as_dict=True)
     if not account:
         say("payments: no account UBS Kontokorrent for the company")

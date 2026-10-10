@@ -87,5 +87,64 @@ class StepsTest(unittest.TestCase):
         self.assertNotIn("freeze", swiss_setup.STEPS)
 
 
+# Invented IBANs and account names only: the test data is not company data.
+TEST_IBAN = "CH0000000000000000001"
+TEST_IBAN_WISE = "CH0000000000000000002"
+UBS_BIC = "UBSWCHZH80A"
+
+
+class PaymentFixesTest(unittest.TestCase):
+    def test_copies_iban_to_gl_account_and_sets_public_bic(self):
+        # The live case: Bank Account with an IBAN, empty GL Account and an empty Bank.
+        bank_accounts = [{"name": "UBS KK", "account": "1020 UBS", "iban": TEST_IBAN, "bank": "UBS Switzerland AG"}]
+        fixes = swiss_setup.payment_fixes(bank_accounts, {"1020 UBS": {"iban": None, "bic": None}}, {"UBS Switzerland AG": None})
+        self.assertEqual(fixes, [
+            ("Account", "1020 UBS", "iban", TEST_IBAN),
+            ("Bank", "UBS Switzerland AG", "swift_number", UBS_BIC),
+            ("Account", "1020 UBS", "bic", UBS_BIC),
+        ])
+
+    def test_second_run_changes_nothing(self):
+        # Once the fixes are applied, the next run finds every field set.
+        bank_accounts = [{"name": "UBS KK", "account": "1020 UBS", "iban": TEST_IBAN, "bank": "UBS Switzerland AG"}]
+        gl = {"1020 UBS": {"iban": TEST_IBAN, "bic": UBS_BIC}}
+        self.assertEqual(swiss_setup.payment_fixes(bank_accounts, gl, {"UBS Switzerland AG": UBS_BIC}), [])
+
+    def test_a_value_entered_by_hand_is_not_overwritten(self):
+        bank_accounts = [{"name": "UBS KK", "account": "1020 UBS", "iban": TEST_IBAN, "bank": "UBS Switzerland AG"}]
+        gl = {"1020 UBS": {"iban": "CH0000000000000000009", "bic": "OTHERBIC"}}
+        self.assertEqual(swiss_setup.payment_fixes(bank_accounts, gl, {"UBS Switzerland AG": "OTHERBIC"}), [])
+
+    def test_bank_swift_number_kept_and_copied_to_gl_bic(self):
+        # A Bank that already has a swift number keeps it; the GL Account takes it.
+        bank_accounts = [{"name": "UBS KK", "account": "1020 UBS", "iban": TEST_IBAN, "bank": "UBS Switzerland AG"}]
+        gl = {"1020 UBS": {"iban": TEST_IBAN, "bic": None}}
+        self.assertEqual(swiss_setup.payment_fixes(bank_accounts, gl, {"UBS Switzerland AG": UBS_BIC}),
+                         [("Account", "1020 UBS", "bic", UBS_BIC)])
+
+    def test_bank_without_public_bic_gets_only_the_iban(self):
+        # Wise has no BIC in the table: its IBAN is copied, nothing else is set.
+        bank_accounts = [{"name": "Wise", "account": "1030 Wise", "iban": TEST_IBAN_WISE, "bank": "WISE PAYMENTS LIMITED"}]
+        gl = {"1030 Wise": {"iban": None, "bic": None}}
+        self.assertEqual(swiss_setup.payment_fixes(bank_accounts, gl, {"WISE PAYMENTS LIMITED": None}),
+                         [("Account", "1030 Wise", "iban", TEST_IBAN_WISE)])
+
+    def test_bank_account_without_iban_or_gl_account_is_skipped(self):
+        bank_accounts = [
+            {"name": "no iban", "account": "1040 X", "iban": None, "bank": "UBS Switzerland AG"},
+            {"name": "no gl", "account": None, "iban": TEST_IBAN, "bank": "UBS Switzerland AG"},
+        ]
+        self.assertEqual(swiss_setup.payment_fixes(bank_accounts, {}, {"UBS Switzerland AG": None}), [])
+
+    def test_two_bank_accounts_on_one_gl_account_give_one_fix(self):
+        bank_accounts = [
+            {"name": "a", "account": "1020 UBS", "iban": TEST_IBAN, "bank": "UBS Switzerland AG"},
+            {"name": "b", "account": "1020 UBS", "iban": TEST_IBAN, "bank": "UBS Switzerland AG"},
+        ]
+        fixes = swiss_setup.payment_fixes(bank_accounts, {"1020 UBS": {"iban": None, "bic": None}}, {"UBS Switzerland AG": None})
+        self.assertEqual(len(fixes), len(set(fixes)))
+        self.assertEqual(len(fixes), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

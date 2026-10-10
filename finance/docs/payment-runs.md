@@ -10,11 +10,13 @@ Nothing is sent to a bank by ERPNext or by this code.
 
 ## Set up (once)
 
-1. In ERPNext, the account "UBS Kontokorrent" of company BI Concepts gets its IBAN
-   and BIC (Account form). Without both, no file can be made.
+1. The Bank Account "UBS Kontokorrent - UBS Switzerland AG" holds the IBAN. The
+   step below copies it to the GL Account "UBS Kontokorrent" (erpnextswiss reads it
+   there), and sets the BIC of UBS Switzerland AG (UBSWCHZH80A, public) on the Bank
+   and the GL Account when they are empty. Without an IBAN and a BIC, no file can be made.
 2. `finance/scripts/swiss-setup.sh payments`. It sets the erpnextswiss settings the
-   run needs (pain.001.001.09, region CH, unidecode on) and says if the account
-   still lacks an IBAN or BIC. A second run changes nothing.
+   run needs (pain.001.001.09, region CH, unidecode on), makes the IBAN and BIC fixes
+   above, and says if the account still lacks an IBAN or BIC. A second run changes nothing.
 
 ## Run
 
@@ -69,3 +71,6 @@ docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro"
 They cover the amount rule (skonto), the Payment Entries, the currency refusal, the
 submit on download, the cancel, the create button without HRMS, and a rendered file
 that passes both schemas.
+
+The IBAN and BIC rule of the `payments` step is tested offline with the other
+swiss-setup tests: `python3 -m unittest discover -s finance/scripts -p 'test_*.py'`.
