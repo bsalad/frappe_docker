@@ -17,6 +17,8 @@ LOOKUPS = {
     "receivable": {"CHF": "1100 - Forderungen - bic", "USD": "1101 - Forderungen USD - bic"},
     "exchange": {("USD", "CHF"): [("2025-06-30", Decimal("0.90")), ("2024-01-01", Decimal("0.85"))]},
     "invoice": {"500": "ACC-SINV-0001"},
+    "gl": {"2030": "2030 - Erhaltene Anzahlungen - bic", "4906": "4906 - Kursdifferenzen - bic"},
+    "cost_center": "Main - bic",
 }
 
 INVOICE = {
@@ -159,11 +161,20 @@ class Outstanding(unittest.TestCase):
         self.assertEqual(results[1]["doc"]["references"][0]["outstanding_amount"], 781.0)
 
     def test_payment_beyond_what_is_owed_is_unmapped_not_capped(self):
-        first = row(PAYMENT, id=811, date="2026-01-10", value="1081.000000")
-        again = row(PAYMENT, id=734, date="2026-01-23", value="1081.000000", title="Overpayment")
+        first = row(PAYMENT, id=811, date="2026-01-10", value="300.000000")
+        again = row(PAYMENT, id=734, date="2026-01-23", value="1081.000000")
         results = ipi.plan(export([first, again]), LOOKUPS)
         self.assertTrue(results[0]["doc"])
         self.assertIn("exceeds the outstanding amount", results[1]["error"])
+
+    def test_money_beyond_an_invoice_that_is_paid_is_an_advance_on_2030(self):
+        first = row(PAYMENT, id=811, date="2026-01-10", value="1081.000000")
+        again = row(PAYMENT, id=734, date="2026-01-23", value="1081.000000", title="Overpayment")
+        results = ipi.plan(export([first, again]), LOOKUPS)
+        self.assertIsNone(results[1]["error"])
+        self.assertEqual(results[1]["doc"]["paid_from"], "2030 - Erhaltene Anzahlungen - bic")
+        self.assertNotIn("references", results[1]["doc"])
+        self.assertEqual(results[1]["chf"], Decimal("1081.00"))
 
     def test_an_unmapped_payment_does_not_reduce_what_is_owed(self):
         unmapped = row(PAYMENT, id=810, date="2026-01-05", bank_account_id=None)
@@ -248,11 +259,123 @@ class WritePlan(unittest.TestCase):
         self.assertEqual(ipi.write_plan(results, {"ACC-SINV-0001"}), ([], []))
 
     def test_over_allocation_is_the_unmapped_reason_the_live_run_stops_on(self):
-        first = row(PAYMENT, id=811, date="2026-01-10", value="1081.000000")
-        again = row(PAYMENT, id=734, date="2026-01-23", value="1081.000000", title="Overpayment")
+        first = row(PAYMENT, id=811, date="2026-01-10", value="300.000000")
+        again = row(PAYMENT, id=734, date="2026-01-23", value="1081.000000")
         results = ipi.plan(export([first, again]), LOOKUPS)
         over = [r["bexio_id"] for r in results if r["error"] == ipi.OVER_ALLOCATED]
         self.assertEqual(over, ["734"])
+
+    def test_an_advance_is_handed_over_on_the_invoice_submission_test_too(self):
+        first = row(PAYMENT, id=811, date="2026-01-10", value="1081.000000")
+        again = row(PAYMENT, id=734, date="2026-01-23", value="1081.000000")
+        results = ipi.plan(export([first, again]), LOOKUPS)
+        documents, skipped = ipi.write_plan(results, set())
+        self.assertEqual(documents, [])
+        self.assertEqual(skipped, ["811", "734"])
+
+
+CHF_ERP = {"501": {"name": "ACC-SINV-0002", "currency": "CHF", "total": Decimal("180.00"), "outstanding": Decimal("180.00")}}
+USD_PAYMENT = row(PAYMENT, kb_invoice_id=501, value="200.000000")
+
+
+def chf_booked(chf, erp=CHF_ERP):
+    """Lookups for a USD invoice that ERPNext holds in CHF, and the journal booked `chf` to the bank for its receipt."""
+    return lookups(invoice_erp=erp, booked_chf={"811": Decimal(chf)})
+
+
+class ChfBooked(unittest.TestCase):
+    def test_the_chf_booked_to_the_bank_is_received_and_settles_the_chf_outstanding(self):
+        doc, received = ipi.map_payment(USD_PAYMENT, INVOICE_USD, chf_booked("180.00"), Decimal("180.00"))
+        self.assertEqual(doc["paid_from"], "1100 - Forderungen - bic")
+        self.assertEqual(doc["paid_from_account_currency"], "CHF")
+        self.assertEqual(received, Decimal("180.00"))
+        self.assertEqual(doc["references"][0]["reference_name"], "ACC-SINV-0002")
+        self.assertEqual(doc["references"][0]["allocated_amount"], 180.0)
+        self.assertNotIn("deductions", doc)
+
+    def test_a_gap_of_up_to_five_cents_is_an_exchange_difference_on_kursdifferenzen(self):
+        doc, received = ipi.map_payment(USD_PAYMENT, INVOICE_USD, chf_booked("179.98"), Decimal("180.00"))
+        self.assertEqual(received, Decimal("179.98"))
+        self.assertEqual(doc["references"][0]["allocated_amount"], 180.0)
+        self.assertEqual(doc["deductions"], [{"account": "4906 - Kursdifferenzen - bic", "cost_center": "Main - bic", "amount": 0.02}])
+
+    def test_a_larger_gap_is_left_open_and_not_booked_as_a_difference(self):
+        doc, _ = ipi.map_payment(USD_PAYMENT, INVOICE_USD, chf_booked("170.00"), Decimal("180.00"))
+        self.assertEqual(doc["references"][0]["allocated_amount"], 170.0)
+        self.assertNotIn("deductions", doc)
+        results = ipi.plan(export([USD_PAYMENT]), chf_booked("170.00"))
+        self.assertIn("stays open", results[0]["note"])
+
+    def test_more_than_the_chf_outstanding_is_unmapped(self):
+        with self.assertRaisesRegex(ipi.Unmapped, ipi.OVER_ALLOCATED):
+            ipi.map_payment(USD_PAYMENT, INVOICE_USD, chf_booked("181.00"), Decimal("180.00"))
+
+    def test_a_receipt_with_no_chf_booking_in_the_journal_is_unmapped(self):
+        with self.assertRaisesRegex(ipi.Unmapped, "no CHF booking"):
+            ipi.map_payment(USD_PAYMENT, INVOICE_USD, lookups(invoice_erp=CHF_ERP), Decimal("180.00"))
+
+    def test_the_plan_settles_the_chf_booked_receipt_on_the_chf_outstanding(self):
+        results = ipi.plan(export([USD_PAYMENT]), chf_booked("180.00"))
+        self.assertEqual(results[0]["chf"], Decimal("180.00"))
+        self.assertIsNone(results[0]["error"])
+
+
+class Advance(unittest.TestCase):
+    def test_money_received_before_the_invoice_owes_anything_has_no_reference(self):
+        doc, received = ipi.map_payment(row(PAYMENT, value="1081.000000"), INVOICE, LOOKUPS, Decimal("0"))
+        self.assertEqual(doc["paid_from"], "2030 - Erhaltene Anzahlungen - bic")
+        self.assertEqual((doc["party_type"], doc["party"]), ("Customer", "Beispiel AG"))
+        self.assertNotIn("references", doc)
+        self.assertEqual(received, Decimal("1081.00"))
+
+    def test_a_partly_owed_invoice_is_not_an_advance(self):
+        with self.assertRaisesRegex(ipi.Unmapped, ipi.OVER_ALLOCATED):
+            ipi.map_payment(row(PAYMENT, value="1081.000000"), INVOICE, LOOKUPS, Decimal("500"))
+
+
+class VatOnPayment(unittest.TestCase):
+    ACCOUNTS = [{"id": 77, "account_no": "1020"}, {"id": 93, "account_no": "1100"},
+                {"id": 127, "account_no": "2200"}, {"id": 129, "account_no": "2202"}]
+    GL = {"2200": "2200 - Geschuldete MWST - bic", "2202": "2202 - Umsatzsteuerausgleich - bic"}
+
+    def line(self, line_id, debit, credit, amount, ref=811):
+        return {"id": line_id, "ref_class": "KbClientAccountEntry", "ref_id": ref, "debit_account_id": debit,
+                "credit_account_id": credit, "base_currency_amount": amount, "amount": amount, "currency_id": 1}
+
+    def test_vat_lines_are_the_2202_to_2200_moves_on_a_receipt(self):
+        journal = [self.line(5, 129, 127, "19.50"), self.line(6, 129, 127, 0, ref=812), self.line(7, 77, 93, "100.00")]
+        self.assertEqual([x["id"] for x in ipi.vat_lines(journal, self.ACCOUNTS, {"811", "812"})], [5, 6])
+
+    def test_the_bank_booked_is_the_debit_on_a_bank_and_the_credit_on_the_receivable(self):
+        journal = [self.line(7, 77, 93, "1081.0000"), self.line(8, 129, 127, "19.50")]
+        self.assertEqual(ipi.bank_booked_chf(journal, self.ACCOUNTS, {"811"}), {"811": Decimal("1081.0000")})
+
+    def test_each_receipt_moves_its_vat_as_a_journal_entry_on_its_date(self):
+        results = ipi.plan(export([row(PAYMENT)]), LOOKUPS)
+        docs, _ = ipi.write_plan(results, {"ACC-SINV-0001"}, [self.line(5, 129, 127, "19.50")], self.GL)
+        je = [d for d in docs if d["doctype"] == "Journal Entry"]
+        self.assertEqual(len(je), 1)
+        self.assertEqual((je[0]["bexio_id"], je[0]["name"]), ("5", None))
+        self.assertEqual(je[0]["values"]["posting_date"], "2026-01-20")
+        self.assertEqual(je[0]["values"]["accounts"], [
+            {"account": "2202 - Umsatzsteuerausgleich - bic", "debit_in_account_currency": 19.5},
+            {"account": "2200 - Geschuldete MWST - bic", "credit_in_account_currency": 19.5},
+        ])
+
+    def test_a_zero_vat_line_is_no_journal_entry(self):
+        results = ipi.plan(export([row(PAYMENT)]), LOOKUPS)
+        docs, _ = ipi.write_plan(results, {"ACC-SINV-0001"}, [self.line(5, 129, 127, 0)], self.GL)
+        self.assertEqual([d["doctype"] for d in docs], ["Payment Entry"])
+
+    def test_a_receipt_line_that_is_none_of_these_is_left_for_erp_fd93(self):
+        journal = [self.line(7, 77, 93, "100.00"), self.line(5, 129, 127, "19.50"), self.line(9, 93, 99, "100.82")]
+        accounts = self.ACCOUNTS + [{"id": 99, "account_no": "3203"}, {"id": 123, "account_no": "2030"}]
+        self.assertEqual([x["id"] for x in ipi.left_lines(journal, accounts, {"811"})], [9])
+
+    def test_vat_of_a_receipt_not_handed_over_is_no_journal_entry(self):
+        results = ipi.plan(export([row(PAYMENT)]), LOOKUPS)
+        docs, skipped = ipi.write_plan(results, set(), [self.line(5, 129, 127, "19.50")], self.GL)
+        self.assertEqual((docs, skipped), ([], ["811"]))
 
 
 if __name__ == "__main__":
