@@ -21,7 +21,7 @@ The token itself is never printed.
 
 Instead of the Mac mini's desktop Terminal, the login can be started from the MacBook
 through a page on the tailnet. `finance/bexio/login_helper.py` serves it on
-127.0.0.1:8794, under varlock, so the client id and secret come from the keychain and
+127.0.0.1:8814, under varlock, so the client id and secret come from the keychain and
 never from a file. `tailscale serve` puts it on the tailnet over https. Never Funnel:
 the page starts logins and must not be public.
 
@@ -46,7 +46,7 @@ Install on the Mac mini (once):
    `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ch.bi-concepts.bexio-login.plist`
 3. Expose it on the tailnet only, with the Homebrew tailscale (the `~/.local/bin/tailscale`
    wrapper points at a Tailscale.app that is not installed):
-   `/opt/homebrew/bin/tailscale serve --bg --https=<https-port> http://127.0.0.1:8794`
+   `/opt/homebrew/bin/tailscale serve --bg --https=<https-port> http://127.0.0.1:8814`
 
 Then open `https://<mac-mini>.<tailnet>.ts.net:<https-port>/login` on the MacBook
 and approve the login at bexio. The page must say `logged in`.

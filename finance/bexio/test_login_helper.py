@@ -10,6 +10,7 @@ import contextlib
 import http.client
 import io
 import os
+import socket
 import threading
 import unittest
 import urllib.parse
@@ -205,6 +206,25 @@ class LoginHelperTest(unittest.TestCase):
     def test_the_server_binds_loopback_only(self):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         self.assertEqual(oauth.CALLBACK_HOST, "127.0.0.1")
+
+    def test_the_default_port_is_the_reserved_8814(self):
+        # IT assigned finance's reserve port 8814 to this helper; the old port sat in IT's range.
+        self.assertEqual(login_helper.DEFAULT_PORT, 8814)
+
+    def test_a_port_already_taken_fails_loudly_and_serves_nothing(self):
+        # Something else answers on the port: the helper exits non-zero and never serves there.
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.addCleanup(holder.close)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        taken = holder.getsockname()[1]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as exit_:
+            login_helper.main(["--redirect-uri", REDIRECT, "--tailnet-user", TAILNET_USER, "--port", str(taken)])
+        self.assertNotEqual(exit_.exception.code, 0)
+        self.assertIn("cannot bind 127.0.0.1:{}".format(taken), exit_.exception.code)
+        self.assertIn("another process holds it", exit_.exception.code)
+        self.assertEqual(out.getvalue(), "")  # never prints the "bexio login page on" line
 
 
 if __name__ == "__main__":

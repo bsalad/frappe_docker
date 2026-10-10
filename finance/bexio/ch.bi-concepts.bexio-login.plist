@@ -18,7 +18,7 @@
         <string>/usr/bin/python3</string>
         <string>finance/bexio/login_helper.py</string>
         <string>--port</string>
-        <string>8794</string>
+        <string>8814</string>
         <string>--redirect-uri</string>
         <string>REDIRECT_URI_PLACEHOLDER</string>
         <string>--tailnet-user</string>

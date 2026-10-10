@@ -5,7 +5,7 @@ varlock, so the client id and secret come from the keychain and never from a fil
 It binds 127.0.0.1 only. `tailscale serve` puts it on the tailnet over https, never
 Funnel (see finance/bexio/README.md):
 
-    tailscale serve --bg --https=<port> http://127.0.0.1:8794
+    tailscale serve --bg --https=<port> http://127.0.0.1:8814
 
 - /login starts one PKCE login: the read-only scopes, or /login?scope=export for
   the export login. The browser is redirected to bexio.
@@ -38,7 +38,7 @@ import urllib.parse
 
 import oauth
 
-DEFAULT_PORT = 8794  # loopback only; tailscale serve forwards the tailnet https port to it
+DEFAULT_PORT = 8814  # loopback only; tailscale serve forwards the tailnet https port to it
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -142,7 +142,12 @@ def main(argv):
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="loopback port (default %(default)s)")
     args = parser.parse_args(argv)
     oauth._client_credentials()  # stops here, with the varlock hint, when the client id or secret is not injected
-    server = make_server(args.redirect_uri, args.tailnet_user, args.port)
+    try:
+        server = make_server(args.redirect_uri, args.tailnet_user, args.port)
+    except OSError as err:
+        # Another process holds the port: fail here, never serve on whatever answers there.
+        sys.exit("bexio login page: cannot bind 127.0.0.1:{} ({}); another process holds it, "
+                 "stop it or pass --port".format(args.port, err.strerror or err))
     print("bexio login page on 127.0.0.1:{}, callback {}".format(server.server_port, args.redirect_uri), flush=True)
     try:
         server.serve_forever()
