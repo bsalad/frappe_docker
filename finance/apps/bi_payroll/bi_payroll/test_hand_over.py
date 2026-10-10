@@ -73,12 +73,12 @@ class Components(unittest.TestCase):
         (row,) = hand_over([MONTH_1], LINES, by_month=False)
         self.assertEqual(row["basic"], 8000)
 
-    def test_quellensteuer_is_zero_until_its_component_exists(self):
+    def test_quellensteuer_is_zero_on_a_slip_without_its_row(self):
         (row,) = hand_over([MONTH_1], LINES, by_month=False)
         self.assertEqual(row["quellensteuer"], 0)
 
-    def test_quellensteuer_lands_in_its_column_once_it_is_on_the_slip(self):
-        lines = {"SAL-1": dict(LINES["SAL-1"], **{"Quellensteuer": 250})}
+    def test_quellensteuer_lands_in_its_column_from_the_fixture_component(self):
+        lines = {"SAL-1": dict(LINES["SAL-1"], **{"Quellensteuer Employee": 250})}
         (row,) = hand_over([MONTH_1], lines, by_month=False)
         self.assertEqual(row["quellensteuer"], 250)
 
@@ -94,6 +94,7 @@ class Components(unittest.TestCase):
     def test_the_components_are_the_fixture_names(self):
         self.assertEqual(COMPONENTS["ahv_employee"], "AHV/IV/EO Employee")
         self.assertEqual(COMPONENTS["fak_employer"], "FAK Employer")
+        self.assertEqual(COMPONENTS["quellensteuer"], "Quellensteuer Employee")
 
 
 class Lohnausweis(unittest.TestCase):
@@ -116,9 +117,9 @@ class Lohnausweis(unittest.TestCase):
     def test_line_10_1_is_the_employee_bvg(self):
         self.assertEqual(self.line()["line_10_1"], 300)
 
-    def test_line_12_is_zero_until_quellensteuer_is_on_the_slip(self):
+    def test_line_12_is_the_quellensteuer_employee_row(self):
         self.assertEqual(self.line()["line_12"], 0)
-        lines = {"SAL-1": dict(LINES["SAL-1"], **{"Quellensteuer": 250})}
+        lines = {"SAL-1": dict(LINES["SAL-1"], **{"Quellensteuer Employee": 250})}
         self.assertEqual(self.line(lines)["line_12"], 250)
 
     def test_ktg_employee_keeps_a_column_until_it_has_a_line(self):

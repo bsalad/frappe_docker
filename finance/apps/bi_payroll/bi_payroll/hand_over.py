@@ -7,15 +7,15 @@ Pure Python, so the offline tests run without frappe (test_hand_over.py). The re
 (bi_payroll/bi_payroll/report/payroll_hand_over) reads the submitted Salary Slips and passes them here.
 """
 
-# Column key -> the Salary Component's name in fixtures/salary_component.json. Quellensteuer is not a component yet
-# (the cantonal tariff is open): its column stays 0 until a component with this name exists.
+# Column key -> the Salary Component's name in fixtures/salary_component.json. Quellensteuer is the component
+# "Quellensteuer Employee" (erp-6rrh); a slip without that row leaves the column 0.
 COMPONENTS = {
     "ahv_employee": "AHV/IV/EO Employee",
     "alv_employee": "ALV Employee",
     "bvg_employee": "BVG Employee",
     "nbu_employee": "NBU Employee",
     "ktg_employee": "KTG Employee",
-    "quellensteuer": "Quellensteuer",
+    "quellensteuer": "Quellensteuer Employee",
     "ahv_employer": "AHV/IV/EO Employer",
     "alv_employer": "ALV Employer",
     "bvg_employer": "BVG Employer",
