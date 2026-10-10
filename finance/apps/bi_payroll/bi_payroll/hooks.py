@@ -20,8 +20,9 @@ after_migrate = "bi_payroll.swiss_payroll.ensure_structure"
 # The components and the slip fields are fixtures/ (exported with bench export-fixtures); the structure
 # is made by ensure_structure, because it names a company.
 fixtures = [
-    {"dt": "Salary Component", "filters": [["name", "like", "%Employee"], ["name", "like", "%Employer"]]},
-    {"dt": "Salary Component", "filters": [["name", "in", ["Basic Salary", "BVG Age"]]]},
+    # or_filters: two "like" filters in "filters" are ANDed and would export nothing
+    {"dt": "Salary Component", "or_filters": [
+        ["name", "like", "%Employee"], ["name", "like", "%Employer"], ["name", "in", ["Basic Salary", "BVG Age"]]]},
     {"dt": "Custom Field", "filters": [["name", "like", "Salary Slip-swiss_%"]]},
     {"dt": "Custom Field", "filters": [["name", "=", "Salary Structure Assignment-swiss_bvg_insured_salary"]]},
 ]
