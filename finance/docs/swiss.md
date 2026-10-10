@@ -162,8 +162,8 @@ finance/scripts/build-image.sh copy <tag>     # finance/apps-copy.json, with hrm
 The script:
 
 1. Refuses a `copy` build if its list has no `hrms`.
-2. Refuses if `frappe-finance-custom:<tag>` (or its `-base`) already exists, so a copy
-   build never overwrites a live tag. Pick a new tag.
+2. Refuses if `frappe-finance-custom:<tag>` (or its `-base` or `-finance` layer) already
+   exists, so a build never overwrites a tag in use. Pick a new tag.
 3. Checks that the `v16` branch of erpnextswiss still points at the commit in the list
    (`git ls-remote`). It stops if the branch has moved.
 4. Runs `docker build` with `--secret id=apps_json`, `FRAPPE_BRANCH=v16.50.0`,
@@ -255,7 +255,7 @@ Build result: see the bead note.
 
 The pin is the head of upstream's `v16` branch today (`git ls-remote`, 2026-10-10),
 so there is no fixed commit to bump to. Found on the images `bi9` and `bi10` (the
-live site runs `bi10`) and on the HRMS copy image `hrms1`.
+live site ran `bi10` then) and on the HRMS copy image `hrms1`.
 
 | # | Where (erpnextswiss 1.34.1) | Finding | Effect on us |
 | --- | --- | --- | --- |

@@ -5,8 +5,8 @@ the way `swiss.md` decides the Swiss accounting. Benchi decided on 2026-10-10: f
 HRMS in ERPNext, with the payroll history from bexio included. This document says how,
 and what is still open. HRMS is in `finance/apps.json` (live) and `finance/apps-copy.json` (the copy
 site, see [Copy site](#copy-site)). Payroll runs on the live site too (Decision 2026-10-10, below):
-the live stack takes the HRMS image in the deploy bead; until then `finance-local.yml` names the
-image without HRMS.
+the live stack runs the HRMS image named in `finance-local.yml` (bi11), with `hrms` and `bi_payroll`
+installed on `frontend`.
 
 Public facts only: no company data, no employee data, no amounts from the company.
 Those stay in `private/`.
@@ -154,8 +154,8 @@ slot that ledgerdemain gives (`erpnext-setup.md`).
    list stays without it) and build the copy image as `swiss.md` does. Install on a copy of the site after a backup. Check that
    erpnextswiss and bi_finance still migrate and their tests pass.
 3. **Swiss salary components and structure.** Components with the formulas above, as
-   fixtures of the new app `bi_payroll` (`finance/apps/bi_payroll/`), not `bi_finance`: HRMS is not
-   on the live site, and a fixture that names an HRMS doctype would break the live migrate. The app
+   fixtures of the new app `bi_payroll` (`finance/apps/bi_payroll/`), not `bi_finance`: a fixture that
+   names an HRMS doctype would break `bi_finance`'s migrate on a site without HRMS. The app
    requires `hrms` and is installed on the live site and the copy (Decision 2026-10-10). The rates are the doctype Payroll Swiss
    Settings, not constants in code, so a 2027 change is a settings edit; each Salary Slip keeps
    the rates it was computed with. Invented-data tests for each formula, with the ALV ceiling and
