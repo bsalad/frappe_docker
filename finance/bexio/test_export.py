@@ -3,6 +3,7 @@
 Run with: python3 -m unittest discover -s finance/bexio -p 'test_*.py'
 """
 
+import base64
 import datetime
 import json
 import os
@@ -320,6 +321,46 @@ class ExportTest(unittest.TestCase):
         _, summary = export.download_document_pdfs(c, self.out)
         self.assertEqual(summary["failed"], ["invoice:5", "invoice:6", "invoice:7"])
         self.assertEqual(summary["reasons"], {"HTTP 403": 1, "HTTP 404": 2})
+
+    def test_a_document_pdf_refused_raw_is_read_in_the_json_form_as_base64(self):
+        # invented content: the PDF header and a few bytes, base64 as bexio's JSON form is read to hold it
+        raw_refused = BexioError(415, "/2.0/kb_invoice/5/pdf")
+        json_form = {"name": "invoice-5.pdf", "content": base64.b64encode(b"%PDF-json-form").decode("ascii")}
+
+        def get(path, params=None, raw=False):
+            if path != "/2.0/kb_invoice/5/pdf":
+                raise AssertionError(path)
+            if raw:
+                raise raw_refused
+            return json_form
+
+        c = fake_client()
+        c.get = get
+        os.makedirs(self.out)
+        with open(os.path.join(self.out, "invoices.json"), "w", encoding="utf-8") as f:
+            json.dump([{"id": 5}], f)
+        _, summary = export.download_document_pdfs(c, self.out)
+        self.assertEqual(summary["downloaded"], 1)
+        self.assertEqual(summary["failed"], [])
+        with open(os.path.join(self.out, "documents", "invoice-5.pdf"), "rb") as f:
+            self.assertEqual(f.read(), b"%PDF-json-form")
+
+    def test_a_document_pdf_refused_in_both_forms_counts_415_and_is_not_written(self):
+        # the JSON form holds no PDF (the content is not base64 or not a PDF): refused as 415, nothing written
+        def get(path, params=None, raw=False):
+            if raw:
+                raise BexioError(415, path)
+            return {"content": base64.b64encode(b"not a pdf").decode("ascii")}
+
+        c = fake_client()
+        c.get = get
+        os.makedirs(self.out)
+        with open(os.path.join(self.out, "invoices.json"), "w", encoding="utf-8") as f:
+            json.dump([{"id": 5}], f)
+        _, summary = export.download_document_pdfs(c, self.out)
+        self.assertEqual(summary["failed"], ["invoice:5"])
+        self.assertEqual(summary["reasons"], {"HTTP 415": 1})
+        self.assertFalse(os.path.exists(os.path.join(self.out, "documents", "invoice-5.pdf")))
 
     def test_a_credit_voucher_pdf_is_asked_for_even_when_its_detail_is_refused(self):
         c = answering(fake_client(), {

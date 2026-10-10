@@ -46,6 +46,7 @@ needs the payroll scopes (oauth.SCOPE) consented once.
 """
 
 import argparse
+import base64
 import datetime
 import json
 import os
@@ -316,6 +317,24 @@ def download_files(client, rows, out, templates=FILE_CONTENT_PATHS):
     return summary
 
 
+def document_pdf(client, path):
+    """The PDF bytes of one document. bexio answers 415 to the raw request for every document read on 10-10, so
+    a 415 is asked again in the JSON form, whose content is the PDF in base64 (the form is not confirmed live
+    until the run). Raises BexioError: the status of the refusal, or 415 when the JSON form holds no PDF."""
+    try:
+        return client.get(path, raw=True)
+    except BexioError as err:
+        if err.status != 415:
+            raise
+    try:
+        content = base64.b64decode(client.get(path)["content"], validate=True)
+    except (ValueError, KeyError, TypeError):
+        raise BexioError(415, path) from None
+    if not content.startswith(b"%PDF-"):
+        raise BexioError(415, path)
+    return content
+
+
 def download_document_pdfs(client, out):
     """Write the PDF of each document of the entity files in out to out/documents/<kind>-<id>.pdf.
 
@@ -337,7 +356,7 @@ def download_document_pdfs(client, out):
             documents = json.load(f)
         for document in documents:
             try:
-                content = client.get(template.format(id=document["id"]), raw=True)
+                content = document_pdf(client, template.format(id=document["id"]))
             except BexioError as err:
                 failed.append("{}:{}".format(kind, document["id"]))
                 # the status says why (a missing scope, a path bexio does not serve): counted, not per id
