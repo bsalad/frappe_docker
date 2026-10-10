@@ -93,25 +93,29 @@ MWST. This is a decision for Benchi.
 
 ## Build
 
-`finance/apps.json` lists the apps (ERPNext, erpnextswiss, and HRMS for the copy image, see
-`hrms.md`). The live image `bi9` has no HRMS: a build for live from this file would add it, so
-build live images from a list without the `hrms` entry. The build uses `images/custom/Containerfile`,
-which is the upstream full-image build. It takes the apps through `bench init
---apps_path`, with the file as a BuildKit secret.
+Two app lists: `finance/apps.json` (ERPNext and erpnextswiss, the live image) and
+`finance/apps-copy.json` (the same plus HRMS at its pinned tag, the copy image, see
+`hrms.md`). The build uses `images/custom/Containerfile`, which is the upstream full-image
+build. It takes the apps through `bench init --apps_path`, with the list as a BuildKit secret.
 
 ```sh
-finance/scripts/build-image.sh            # tag v16.50.0-swiss
+finance/scripts/build-image.sh live <tag>     # finance/apps.json, no hrms
+finance/scripts/build-image.sh copy <tag>     # finance/apps-copy.json, with hrms
 ```
 
 The script:
 
-1. Checks that the `v16` branch of erpnextswiss still points at the commit in
-   `apps.json` (`git ls-remote`). It stops if the branch has moved.
-2. Runs `docker build` with `--secret id=apps_json`, `FRAPPE_BRANCH=v16.50.0`,
+1. Refuses a `live` build if its list has `hrms`, and a `copy` build if it has none.
+2. Refuses if `frappe-finance-custom:<tag>` (or its `-base`) already exists, so a copy
+   build never overwrites a live tag. Pick a new tag.
+3. Checks that the `v16` branch of erpnextswiss still points at the commit in the list
+   (`git ls-remote`). It stops if the branch has moved.
+4. Runs `docker build` with `--secret id=apps_json`, `FRAPPE_BRANCH=v16.50.0`,
    and `--no-cache`. The cache is off on purpose: a secret is not part of the
    layer cache key, so a cached `bench init` layer would keep the old apps.
+5. Builds the `bi_finance` layer on top.
 
-Result: `frappe-finance-custom:v16.50.0-swiss`. Not run against site `frontend`.
+Result: `frappe-finance-custom:<tag>`. Not run against site `frontend`.
 
 Why a commit in a JSON key and not in the ref: bench clones each app with
 `git clone --depth 1 --branch <ref>`, so it accepts a branch or tag, not a

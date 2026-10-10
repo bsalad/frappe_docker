@@ -11,6 +11,8 @@ docker compose -f pwd.yml -f finance-copy.yml config -q
 (cd finance/apps/bi_finance && python3 -m unittest bi_finance.test_layout)
 # The bexio importers' unit tests, stdlib only, about half a second.
 (cd finance/bexio && python3 -m unittest discover -s . -p "test_*.py")
+# The image app lists (live without hrms, copy with it) and build-image.sh's modes; no docker.
+(cd finance/scripts && python3 -m unittest test_build_image)
 # Upstream's own lint, when pre-commit is installed (optional for now).
 if command -v pre-commit >/dev/null; then
   pre-commit run --all-files

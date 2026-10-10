@@ -218,6 +218,13 @@ docker build --build-arg BASE=frappe-finance-custom:v16.50.0-swiss-bi1-base \
 
 ## Redo on a fresh site
 
+The live image is built from `finance/apps.json` (no HRMS), under a new tag that does not
+exist yet (the script refuses an existing one). `finance-local.yml` names the tag in use:
+
+```sh
+finance/scripts/build-image.sh live <new-tag>
+```
+
 With the swiss image built (`finance/scripts/build-image.sh`), the stack
 running on it and company BI Concepts (CH, CHF) created:
 

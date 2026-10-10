@@ -3,8 +3,9 @@
 Decision document for running Swiss payroll in ERPNext v16 (ERPNext `v16.50.0`),
 the way `swiss.md` decides the Swiss accounting. Benchi decided on 2026-10-10: full
 HRMS in ERPNext, with the payroll history from bexio included. This document says how,
-and what is still open. HRMS is in `finance/apps.json` and installed on a copy site only
-(see [Copy site](#copy-site)). The live stack is unchanged: it runs `bi9`, without HRMS.
+and what is still open. HRMS is in `finance/apps-copy.json` and installed on a copy site only
+(see [Copy site](#copy-site)). The live stack is unchanged: it runs the tag in
+`finance-local.yml`, without HRMS.
 
 Public facts only: no company data, no employee data, no amounts from the company.
 Those stay in `private/`.
@@ -121,8 +122,8 @@ Ordered beads. Each is one change, offline first; the live site is only changed 
 slot that ledgerdemain gives (`erpnext-setup.md`).
 
 1. **Benchi's decisions** (the Questions below). No code.
-2. **HRMS image on a copy.** Add `hrms` (tag `v16.50.0`) to `finance/apps.json` and build a
-   layer as `swiss.md` does. Install on a copy of the site after a backup. Check that
+2. **HRMS image on a copy.** Add `hrms` (tag `v16.50.0`) to `finance/apps-copy.json` (the live
+   list stays without it) and build the copy image as `swiss.md` does. Install on a copy of the site after a backup. Check that
    erpnextswiss and bi_finance still migrate and their tests pass.
 3. **Swiss salary components and structure.** Components with the formulas above, as
    fixtures of the `bi_finance` app (its files go under `finance/apps/bi_finance/bi_finance/bi_finance/`).
@@ -203,7 +204,16 @@ stays on this machine and the tailnet. The live stack is not touched by any of t
 
 - Image: `frappe-finance-custom:v16.50.0-swiss-hrms1` (ERPNext and HRMS 16.50.0, erpnextswiss
   1.34.1, bi_finance), built on `v16.50.0-swiss-hrms1-base`.
-  Live stays on `v16.50.0-swiss-bi9`. A later app (bi_payroll) gets its own layer on top.
+  Live stays on the tag in `finance-local.yml`. A later app (bi_payroll) gets its own layer on top.
+- Build: from `finance/apps-copy.json`, under a tag that does not exist yet (the script
+  refuses an existing one, so the live tags cannot be overwritten):
+
+  ```sh
+  finance/scripts/build-image.sh copy <new-tag>
+  ```
+
+  The live image is built the other way round, from `finance/apps.json` (no HRMS):
+  `finance/scripts/build-image.sh live <new-tag>`. See `swiss.md`, Build.
 - Safety settings on the copy's site, set after every restore, do not turn them off:
   `pause_scheduler` 1 and `mute_emails` 1 (no scheduled jobs, no mail), no enabled Webhook,
   no outgoing Email Account, `host_name` the copy's own URL, and the app name starts with
