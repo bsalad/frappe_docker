@@ -11,7 +11,11 @@ required_apps = ["erpnext", "hrms", "bi_finance"]
 # The rates are settings, not constants: each slip takes a copy when it is validated, because the
 # formulas read the slip and the assignment only (see swiss_payroll.py).
 doc_events = {
-    "Salary Slip": {"before_validate": "bi_payroll.swiss_payroll.copy_rates_to_slip"},
+    "Salary Slip": {
+        "before_validate": "bi_payroll.swiss_payroll.copy_rates_to_slip",
+        # after HRMS's validate, which computes the gross the withholding tax is worked out from
+        "validate": "bi_payroll.swiss_payroll.withhold_qst",
+    },
 }
 
 after_install = "bi_payroll.swiss_payroll.ensure_structure"

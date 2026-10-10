@@ -13,13 +13,14 @@ import os
 import unittest
 from datetime import date
 
-from bi_payroll.swiss_rates import ASSIGNMENT_FIELDS, RATE_FIELDS
+from bi_payroll.swiss_rates import ASSIGNMENT_FIELDS, RATE_FIELDS, STRUCTURE_DEDUCTIONS, STRUCTURE_EARNINGS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.join(HERE, "fixtures")
 SETTINGS = os.path.join(HERE, "bi_payroll", "doctype", "payroll_swiss_settings", "payroll_swiss_settings.json")
 SLIP_FUNCTIONS = {"min": min, "max": max, "int": int, "getdate": lambda d: d}
-SLIP_NAMES = {"gross_pay", "base", "end_date", "date_of_birth"}
+# swiss_qst_amount is set on the slip by withhold_qst (after gross_pay), and read by the QST component
+SLIP_NAMES = {"gross_pay", "base", "end_date", "date_of_birth", "swiss_qst_amount"}
 
 
 def load(name):
@@ -112,6 +113,29 @@ class OpenInsurers(unittest.TestCase):
         rates = dict(RATES, swiss_nbu_ee=1.2, swiss_ktg_ee=0.5, swiss_uvg_max=148200)
         self.assertAlmostEqual(run("NBUV", gross_pay=8000, rates=rates), 8000 * 1.2 / 100)
         self.assertAlmostEqual(run("KTG", gross_pay=8000, rates=rates), 8000 * 0.5 / 100)
+
+
+class Quellensteuer(unittest.TestCase):
+    def test_the_component_is_the_amount_set_on_the_slip(self):
+        self.assertEqual(run("QST", swiss_qst_amount=57.75), 57.75)
+
+    def test_no_code_or_no_gross_is_zero_and_the_component_is_left_out(self):
+        self.assertEqual(run("QST", swiss_qst_amount=0), 0)
+
+
+class Structure(unittest.TestCase):
+    def test_every_structure_component_is_a_fixture(self):
+        names = {c["name"] for c in load("salary_component.json")}
+        self.assertEqual(set(STRUCTURE_EARNINGS + STRUCTURE_DEDUCTIONS) - names, set())
+
+    def test_the_withholding_tax_is_a_deduction_after_the_gross(self):
+        self.assertIn("Quellensteuer Employee", STRUCTURE_DEDUCTIONS)
+        self.assertEqual(COMPONENTS["QST"]["type"], "Deduction")
+        self.assertEqual(COMPONENTS["QST"]["salary_component"], "Quellensteuer Employee")
+
+    def test_the_withholding_amount_is_a_slip_field(self):
+        slip = {f["fieldname"] for f in load("custom_field.json") if f["dt"] == "Salary Slip"}
+        self.assertIn("swiss_qst_amount", slip)
 
 
 class Fixtures(unittest.TestCase):

@@ -376,6 +376,23 @@
  },
  {
   "doctype": "Custom Field",
+  "name": "Salary Slip-swiss_qst_amount",
+  "dt": "Salary Slip",
+  "fieldname": "swiss_qst_amount",
+  "label": "Quellensteuer amount (CHF)",
+  "fieldtype": "Currency",
+  "insert_after": "swiss_fak_ag",
+  "description": "Set on validate from the gross and the employee's tariff code (bi_payroll.swiss_payroll.withhold_qst). The Quellensteuer Employee component reads it.",
+  "read_only": 1,
+  "no_copy": 0,
+  "is_system_generated": 0,
+  "modified": "2026-10-10 16:00:00.000000",
+  "modified_by": "Administrator",
+  "owner": "Administrator",
+  "docstatus": 0
+ },
+ {
+  "doctype": "Custom Field",
   "name": "Salary Structure Assignment-swiss_bvg_insured_salary",
   "dt": "Salary Structure Assignment",
   "fieldname": "swiss_bvg_insured_salary",

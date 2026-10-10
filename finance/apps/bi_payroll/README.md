@@ -24,6 +24,11 @@ copy only: it requires `hrms`, which the live site does not have, so nothing her
 - `bi_payroll/quellensteuer.py`: the ESTV withholding tariffs (Quellensteuer, Löhne, 2025 record format; source and
   version in the `QST Tariff` doctype's description). It parses a canton's text file (records 06 and 11), finds the
   bracket for a monthly gross and gives the tax (rate on the whole income, at least the minimum tax). Pure Python.
+  Monthly method only: the gross of the slip, the tariff as published (it already holds the AHV/ALV/BVG share); annual,
+  variable and 13th-salary cases are not handled. The 2026 file's record format is not checked yet.
+- `swiss_payroll.withhold_qst` (a `validate` on Salary Slip, after HRMS has the gross): sets `swiss_qst_amount` and
+  computes the deductions again; the `Quellensteuer Employee` component reads it. HRMS is not in this repo, so the
+  order against HRMS's own validate is checked on the copy only.
 - `bi_payroll/bi_payroll/doctype/qst_tariff`: the tariff rows (data, one per record). `swiss_payroll.load_tariff(path)`
   reloads a canton's file: the rows of its valid-from dates are replaced. Employees carry `swiss_qst_canton` and
   `swiss_qst_code` (Employee custom fields, fixtures).

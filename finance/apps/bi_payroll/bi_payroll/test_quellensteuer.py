@@ -10,7 +10,7 @@ import unittest
 from datetime import date
 from decimal import Decimal
 
-from bi_payroll.quellensteuer import find_tariff, parse_tariff_file, withholding
+from bi_payroll.quellensteuer import find_tariff, parse_tariff_file, qst_amount, withholding
 
 
 def cents(value):
@@ -123,6 +123,33 @@ class Withholding(unittest.TestCase):
     def test_no_income_gives_no_tax(self):
         row = find_tariff(self.ROWS, "XX", "A0N", Decimal("1000"), date(2025, 3, 1))
         self.assertEqual(withholding(0, row), Decimal("0.00"))
+
+
+class QstAmount(unittest.TestCase):
+    # an invented employee in canton XX with code A0N, on the slip's end date
+    ROWS = parse_tariff_file(file_of("XX", *OLD)) + parse_tariff_file(file_of("XX", *NEW))
+
+    def test_the_deduction_of_the_monthly_gross_under_the_loaded_tariff(self):
+        self.assertEqual(qst_amount(self.ROWS, "XX", "A0N", 1000, date(2025, 3, 31)), Decimal("50.00"))
+        self.assertEqual(qst_amount(self.ROWS, "XX", "A0N", Decimal("1000.00"), date(2026, 3, 31)), Decimal("60.00"))
+
+    def test_the_minimum_tax_of_the_bracket_applies(self):
+        self.assertEqual(qst_amount(self.ROWS, "XX", "A0N", 1050, date(2025, 3, 31)), Decimal("57.75"))
+
+    def test_the_other_code_of_the_canton_gives_its_own_rate(self):
+        self.assertEqual(qst_amount(self.ROWS, "XX", "B2N", 1000, date(2025, 3, 31)), Decimal("20.00"))
+
+    def test_no_code_or_no_gross_is_no_deduction(self):
+        self.assertEqual(qst_amount(self.ROWS, "XX", "", 1000, date(2025, 3, 31)), Decimal("0.00"))
+        self.assertEqual(qst_amount(self.ROWS, "XX", "A0N", 0, date(2025, 3, 31)), Decimal("0.00"))
+
+    def test_a_gross_below_the_first_bracket_is_an_error_not_a_zero(self):
+        with self.assertRaises(LookupError):
+            qst_amount(self.ROWS, "XX", "A0N", 999, date(2025, 3, 31))
+
+    def test_a_code_the_canton_does_not_have_is_an_error(self):
+        with self.assertRaises(LookupError):
+            qst_amount(self.ROWS, "XX", "C0N", 1000, date(2025, 3, 31))
 
 
 if __name__ == "__main__":

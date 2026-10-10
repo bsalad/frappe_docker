@@ -79,3 +79,12 @@ def withholding(income, row):
         return Decimal("0.00")
     tax = (income * row["rate"] / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return max(tax, row["minimum_tax"])
+
+
+def qst_amount(rows, canton, tariff_code, gross, on):
+    """The tax withheld from a monthly gross on the date, under the employee's tariff code. Zero without a code or a
+    gross; a code with no bracket for the gross raises LookupError, never a silent zero."""
+    gross = Decimal(str(gross))
+    if not tariff_code or gross <= 0:
+        return Decimal("0.00")
+    return withholding(gross, find_tariff(rows, canton, tariff_code, gross, on))
