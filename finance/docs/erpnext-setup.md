@@ -8,7 +8,8 @@ app itself: `swiss.md`.
 
 | Item | Count |
 | --- | --- |
-| Image | `frappe-finance-custom:v16.50.0-swiss-bi6` (all eight ERPNext services; previous images `v16.50.0-swiss-bi5` and `v16.50.0-swiss-bi4`, `v16.50.0-swiss-bi3`, and `v16.50.0-swiss-bi1` and `v16.50.0-swiss`, kept for rollback) |
+| Image | `frappe-finance-custom:v16.50.0-swiss-bi9` (all eight ERPNext services; previous images `v16.50.0-swiss-bi8`, `v16.50.0-swiss-bi7`, `v16.50.0-swiss-bi6`, `v16.50.0-swiss-bi5`, `v16.50.0-swiss-bi4`, `v16.50.0-swiss-bi3`, and `v16.50.0-swiss-bi1` and `v16.50.0-swiss`, kept for rollback) |
+| Backup before the bi9 switch | `20261010_122454` (`bench --site frontend backup --with-files`, 12:24) |
 | Apps | frappe 16.50.0, erpnext 16.50.0, erpnextswiss 1.34.1, bi_finance 0.0.1 |
 | Accounts, company BI Concepts | 179 (KMU chart, 9 roots, numbers in the names) |
 | Sales Taxes and Charges Templates | 15 (bexio codes) |
