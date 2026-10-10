@@ -122,6 +122,23 @@ class ErrorTest(unittest.TestCase):
             self.assertEqual(ctx.exception.status, 404)
             self.assertEqual(opened.call_count, 1)
 
+    def test_refused_answer_keeps_its_body_as_detail_outside_the_message(self):
+        c = _client()
+        body = io.BytesIO(b'{"message": "invented reason"}')
+        err = urllib.error.HTTPError("https://api.bexio.com/x", 400, "err", {}, body)
+        with mock.patch("urllib.request.urlopen", side_effect=err):
+            with self.assertRaises(BexioError) as ctx:
+                c.get("/x")
+        self.assertEqual(ctx.exception.detail, '{"message": "invented reason"}')
+        self.assertNotIn("invented reason", str(ctx.exception))
+
+    def test_refused_answer_without_body_has_no_detail(self):
+        c = _client()
+        with mock.patch("urllib.request.urlopen", side_effect=self._http_error(404)):
+            with self.assertRaises(BexioError) as ctx:
+                c.get("/x")
+        self.assertIsNone(ctx.exception.detail)
+
     def test_error_message_never_contains_the_token(self):
         c = Client(token="SECRET-TOKEN-VALUE")
         with mock.patch("urllib.request.urlopen", side_effect=self._http_error(403)):
@@ -323,6 +340,23 @@ class GetOnlyTest(unittest.TestCase):
             list(c.paginate("/z"))
         methods = {call.args[0].get_method() for call in opened.call_args_list}
         self.assertEqual(methods, {"GET"})
+
+    def test_accept_header_is_set_per_request(self):
+        # a raw request asks for */* by default; accept says what the endpoint wants (its docs: application/json)
+        c = _client()
+        sent = []
+
+        def urlopen(req, timeout=None):
+            sent.append(req.get_header("Accept"))
+            resp = mock.MagicMock()
+            resp.__enter__.return_value.read.return_value = b"[]"
+            return resp
+
+        with mock.patch("urllib.request.urlopen", side_effect=urlopen):
+            c.get("/x", raw=True)
+            c.get("/x", raw=True, accept="application/json")
+            c.get("/x")
+        self.assertEqual(sent, ["*/*", "application/json", "application/json"])
 
 
 if __name__ == "__main__":

@@ -40,7 +40,7 @@ offers, orders, deliveries, credit vouchers) and the payroll under payroll/, all
 (the read-only one and the export one), as the default run does.
 
 --payroll exports the payroll module instead (employees, absences per year, payslip PDFs
-per month, the paystub overview and the company reads) to <private>/bexio-payroll/, with its
+per month and the company reads) to <private>/bexio-payroll/, with its
 own manifest. It is not part of the default run, and it reads with the read-only login, which
 needs the payroll scopes (oauth.SCOPE) consented once.
 """
@@ -318,20 +318,42 @@ def download_files(client, rows, out, templates=FILE_CONTENT_PATHS):
 
 
 def document_pdf(client, path):
-    """The PDF bytes of one document. bexio answers 415 to the raw request for the documents, so a 415 is
-    asked again in the JSON form, whose content is the PDF in base64 (confirmed live through the broker on 10-10). Raises BexioError: the status of the refusal, or 415 when the JSON form holds no PDF."""
+    """The PDF bytes of one document or payslip. bexio answers 415 to the raw request (Accept */*); asked with
+    Accept: application/json (as its docs say), the answer is either the PDF itself, or JSON with the PDF in
+    base64 under "content" (both seen live through the broker and the export login, 10-10). Raises BexioError:
+    the status of the refusal, or 415 when the answer holds no PDF."""
     try:
         return client.get(path, raw=True)
     except BexioError as err:
         if err.status != 415:
             raise
+    answer = client.get(path, raw=True, accept="application/json")
+    if answer.startswith(b"%PDF-"):
+        return answer
     try:
-        content = base64.b64decode(client.get(path)["content"], validate=True)
+        body = json.loads(answer.decode("utf-8"))
+    except ValueError:
+        raise BexioError(415, path, "answer is neither a PDF nor JSON") from None
+    try:
+        content = base64.b64decode(body["content"], validate=True)
     except (ValueError, KeyError, TypeError):
-        raise BexioError(415, path) from None
+        raise BexioError(415, path, answer_shape(body)) from None
     if not content.startswith(b"%PDF-"):
-        raise BexioError(415, path)
+        raise BexioError(415, path, answer_shape(body))
     return content
+
+
+def answer_shape(answer):
+    """What a JSON answer that holds no PDF is made of: the keys and the types, the start of a "content" text.
+
+    Kept as a manifest detail to see why bexio's answer was not a PDF; no other value of the answer is shown.
+    """
+    if not isinstance(answer, dict):
+        return "answer is {}".format(type(answer).__name__)
+    shape = {key: type(value).__name__ for key, value in answer.items()}
+    if isinstance(answer.get("content"), str):
+        shape["content"] = "str starting {!r}".format(answer["content"][:24])
+    return "answer has {}".format(shape)
 
 
 def download_document_pdfs(client, out):
@@ -421,16 +443,18 @@ def export(client, out, entities=None, only=None, export_client=None):
 # The payroll export (--payroll), for the move of payroll into ERPNext HRMS. Names, AHV numbers,
 # salaries, absences and payslips: it goes to its own folder, apart from the export above, and is
 # read with the read-only login, so its scopes must be in that login's consent (oauth.SCOPE).
-# The paths are from docs.bexio.com (read 2026-10-10), base 4.0. Not yet checked against the live API:
-# the year parameter of the absences and the shape of the paystub overview. A 403 means a scope is
-# missing, a 404 on a payslip means none for that month.
+# The paths are from docs.bexio.com (read 2026-10-10), base 4.0. A 403 means a scope is missing,
+# a 404 on a payslip means none for that month.
+# There is no paystub overview in 4.0 (its path answered 401): each month is asked for below instead.
 PAYROLL = "/Users/bsaladin/ws_yardr_finance/private/bexio-payroll"
 PAYSTUBS = "paystubs"
 PAYROLL_EMPLOYEES = "/4.0/payroll/employees"
 PAYROLL_ABSENCES = "/4.0/payroll/employees/{id}/absences"
-# The download replaces the deprecated /paystubs/{year}/{month}/pdf (deprecated 2026-05-26).
+# The download replaces the deprecated /paystubs/{year}/{month}/pdf (deprecated 2026-05-26). It answers 415 to a
+# raw request; asked with Accept: application/json it sends the PDF (see document_pdf).
 PAYROLL_PAYSTUB = "/4.0/payroll/employees/{id}/paystub-pdf-download/{year}/{month}"
-PAYROLL_PAYSTUBS_OVERVIEW = "/4.0/payroll/paystubs/overview"
+# The body bexio answers a month without a payslip with (a 400, not a 404).
+NO_PAYSTUBS = "no_paystubs"
 # Company-level reads for the HRMS study: each is kept as it comes, under its path.
 PAYROLL_COMPANY = (
     "/4.0/payroll/companies/elm-status",
@@ -450,12 +474,16 @@ def payroll_rows(body, path):
 
 
 def payroll_absences(client, employees, years):
-    """The absences of each employee for each year, one row each with the employee and year added."""
+    """The absences of each employee for each year, one row each with the employee and year added.
+
+    The year goes as businessYear (docs.bexio.com, required; without it bexio answers 400). An employee
+    without absences is an empty list, not an error.
+    """
     rows = []
     for employee in employees:
         path = PAYROLL_ABSENCES.format(id=employee["id"])
         for year in sorted(years):
-            for absence in payroll_rows(client.get(path, {"year": year}), path):
+            for absence in payroll_rows(client.get(path, {"businessYear": year}), path):
                 rows.append(dict(absence, employee_id=employee["id"], year=year))
     return rows
 
@@ -463,7 +491,8 @@ def payroll_absences(client, employees, years):
 def payroll_paystubs(client, out, employees, years, today):
     """One PDF per employee and month up to today, in paystubs/; returns the index of them (no names).
 
-    A 404 is a month without a payslip. Any other refusal raises, so the entity is recorded as failed.
+    A month without a payslip is a 400 whose body says "no_paystubs" (a 404 counts too). Any other refusal
+    raises, so the entity is recorded as failed.
     """
     index = []
     for employee in employees:
@@ -473,9 +502,9 @@ def payroll_paystubs(client, out, employees, years, today):
                     continue
                 path = PAYROLL_PAYSTUB.format(id=employee["id"], year=year, month=month)
                 try:
-                    content = client.get(path, raw=True)
+                    content = document_pdf(client, path)
                 except BexioError as err:
-                    if err.status == 404:
+                    if err.status == 404 or (err.detail and NO_PAYSTUBS in err.detail):
                         continue
                     raise
                 name = "{}-{}-{:02d}.pdf".format(employee["id"], year, month)
@@ -517,6 +546,9 @@ def _payroll_entity(out, manifest, name, required, produce):
         if os.path.exists(stale):
             os.remove(stale)
         entry.update(status="error", error="HTTP {} on {}".format(err.status, err.path), count=0)
+        # bexio's reason for the refusal, kept in the private manifest only (what it asks for, not the data)
+        if err.detail:
+            entry["detail"] = err.detail
         return []
     write_private(os.path.join(out, entry["file"]), rows)
     entry.update(status="ok", count=len(rows))
@@ -538,8 +570,6 @@ def export_payroll(client, out, years, today=None):
     if manifest["entities"]["employees"]["status"] == "ok":
         _payroll_entity(out, manifest, "company", False, lambda: payroll_company(client))
         _payroll_entity(out, manifest, "absences", False, lambda: payroll_absences(client, employees, years))
-        _payroll_entity(out, manifest, "paystubs_overview", False,
-                        lambda: payroll_rows(client.get(PAYROLL_PAYSTUBS_OVERVIEW), PAYROLL_PAYSTUBS_OVERVIEW))
         paystubs = _payroll_entity(out, manifest, "paystubs", False,
                                    lambda: payroll_paystubs(client, out, employees, years, today))
         if manifest["entities"]["paystubs"]["status"] == "ok":

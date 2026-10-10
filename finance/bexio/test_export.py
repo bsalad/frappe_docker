@@ -49,9 +49,9 @@ def recording(client):
     paths = []
     real = client.get
 
-    def get(path, params=None, raw=False):
+    def get(path, params=None, raw=False, accept=None):
         paths.append(path)
-        return real(path, params, raw)
+        return real(path, params, raw, accept)
 
     client.get = get
     return paths
@@ -61,9 +61,9 @@ def answering(client, answers):
     """Wrap the client's get so that the paths in `answers` answer first (an exception instance is raised instead)."""
     real = client.get
 
-    def get(path, params=None, raw=False):
+    def get(path, params=None, raw=False, accept=None):
         if path not in answers:
-            return real(path, params, raw)
+            return real(path, params, raw, accept)
         if isinstance(answers[path], BexioError):
             raise answers[path]
         return answers[path]
@@ -76,7 +76,7 @@ def fake_client(missing=()):
     """A Client whose GETs answer from the fixtures: [] for unknown lists, 404 for unknown files, 403 for `missing`."""
     c = Client(token="test-token-not-real")
 
-    def fake_get(path, params=None, raw=False):
+    def fake_get(path, params=None, raw=False, accept=None):
         if path in missing:
             raise BexioError(403, path)
         if raw:
@@ -153,7 +153,7 @@ class ExportTest(unittest.TestCase):
         c = fake_client()
         seen = []
         real = c.get
-        c.get = lambda path, params=None, raw=False: (seen.append((path, dict(params or {}))), real(path, params, raw))[1]
+        c.get = lambda path, params=None, raw=False, accept=None: (seen.append((path, dict(params or {}))), real(path, params, raw, accept))[1]
         export.export(c, self.out, only=["bills"])
         bills = [p for path, p in seen if path == "/4.0/purchase/bills"]
         self.assertIn("page", bills[0])
@@ -327,12 +327,12 @@ class ExportTest(unittest.TestCase):
         raw_refused = BexioError(415, "/2.0/kb_invoice/5/pdf")
         json_form = {"name": "invoice-5.pdf", "content": base64.b64encode(b"%PDF-json-form").decode("ascii")}
 
-        def get(path, params=None, raw=False):
+        def get(path, params=None, raw=False, accept=None):
             if path != "/2.0/kb_invoice/5/pdf":
                 raise AssertionError(path)
-            if raw:
+            if raw and accept is None:
                 raise raw_refused
-            return json_form
+            return json.dumps(json_form).encode("utf-8")
 
         c = fake_client()
         c.get = get
@@ -347,10 +347,10 @@ class ExportTest(unittest.TestCase):
 
     def test_a_document_pdf_refused_in_both_forms_counts_415_and_is_not_written(self):
         # the JSON form holds no PDF (the content is not base64 or not a PDF): refused as 415, nothing written
-        def get(path, params=None, raw=False):
-            if raw:
+        def get(path, params=None, raw=False, accept=None):
+            if raw and accept is None:
                 raise BexioError(415, path)
-            return {"content": base64.b64encode(b"not a pdf").decode("ascii")}
+            return json.dumps({"content": base64.b64encode(b"not a pdf").decode("ascii")}).encode("utf-8")
 
         c = fake_client()
         c.get = get
@@ -361,6 +361,22 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(summary["failed"], ["invoice:5"])
         self.assertEqual(summary["reasons"], {"HTTP 415": 1})
         self.assertFalse(os.path.exists(os.path.join(self.out, "documents", "invoice-5.pdf")))
+
+    def test_a_json_answer_without_a_pdf_says_its_shape_not_its_values(self):
+        # invented: a name that must not show in the detail, and content that is not a PDF
+        def get(path, params=None, raw=False, accept=None):
+            if raw and accept is None:
+                raise BexioError(415, path)
+            return json.dumps({"name": "Invented Person",
+                               "content": base64.b64encode(b"not a pdf").decode("ascii")}).encode("utf-8")
+
+        c = fake_client()
+        c.get = get
+        with self.assertRaises(BexioError) as ctx:
+            export.document_pdf(c, "/p")
+        self.assertEqual(ctx.exception.status, 415)
+        self.assertIn("'name': 'str'", ctx.exception.detail)
+        self.assertNotIn("Invented Person", ctx.exception.detail)
 
     def test_a_credit_voucher_pdf_is_asked_for_even_when_its_detail_is_refused(self):
         c = answering(fake_client(), {
@@ -450,30 +466,35 @@ PAYROLL_PAYSLIPS = {
     (102, 2026, 1): b"%PDF-invented-3",
 }
 PAYROLL_TODAY = datetime.date(2026, 2, 15)
-
-
-PAYROLL_OVERVIEW = [{"employee_id": 101, "year": 2026, "month": 1}]
+# What bexio answers a month without a payslip: a 400 whose body names no_paystubs (invented ids).
+NO_PAYSLIP_BODY = '{"error": {"message": "no_paystubs", "id": 0}}'
 
 
 def payroll_client(missing=()):
-    """A Client whose payroll GETs answer from the invented fixtures; 404 for a payslip not in PAYROLL_PAYSLIPS."""
+    """A Client whose payroll GETs answer from the invented fixtures; 404 for a payslip not in PAYROLL_PAYSLIPS.
+
+    A payslip is answered as bexio answers the download: 415 to the raw request (Accept */*), the PDF itself
+    to Accept: application/json.
+    """
     c = Client(token="test-token-not-real")
 
-    def fake_get(path, params=None, raw=False):
+    def fake_get(path, params=None, raw=False, accept=None):
         if path in missing:
             raise BexioError(403, path)
         if path == export.PAYROLL_EMPLOYEES:
             return {"data": PAYROLL_EMPLOYEES}
-        if path == export.PAYROLL_PAYSTUBS_OVERVIEW:
-            return {"data": PAYROLL_OVERVIEW}
         if path in export.PAYROLL_COMPANY:
             return {"status": "invented"}
         if path.endswith("/absences"):
-            return {"data": [{"reason": "Vacation", "days": 5, "year": params["year"]}]}
+            if "businessYear" not in (params or {}):
+                raise BexioError(400, path, '{"title": "No business year provided"}')
+            return {"data": [{"reason": "Vacation", "days": 5, "year": params["businessYear"]}]}
         _, _, _, _, employee, _, year, month = path.split("/")
         key = (int(employee), int(year), int(month))
-        if not raw or key not in PAYROLL_PAYSLIPS:
-            raise BexioError(404, path)
+        if key not in PAYROLL_PAYSLIPS:
+            raise BexioError(400, path, NO_PAYSLIP_BODY)
+        if raw and accept is None:
+            raise BexioError(415, path)
         return PAYROLL_PAYSLIPS[key]
 
     c.get = fake_get
@@ -508,10 +529,73 @@ class PayrollExportTest(unittest.TestCase):
         self.assertEqual(manifest["entities"]["paystubs"]["by_month"], {"2026-01": 2, "2026-02": 1})
         self.assertEqual(self.load("manifest.json"), manifest)
 
-    def test_overview_and_company_reads_are_exported_as_their_own_entities(self):
+    def test_absences_are_asked_with_the_business_year_parameter(self):
+        seen = []
+        c = payroll_client()
+        real = c.get
+
+        def get(path, params=None, raw=False, accept=None):
+            if path.endswith("/absences"):
+                seen.append(params)
+            return real(path, params, raw, accept)
+
+        c.get = get
+        manifest = export.export_payroll(c, self.out, [2026], today=PAYROLL_TODAY)
+        self.assertEqual(seen, [{"businessYear": 2026}, {"businessYear": 2026}])
+        self.assertEqual(manifest["entities"]["absences"]["status"], "ok")
+
+    def test_an_employee_without_absences_is_an_empty_list_not_an_error(self):
+        c = payroll_client()
+        real = c.get
+
+        def get(path, params=None, raw=False, accept=None):
+            if path.endswith("/absences") and path.split("/")[4] == "102":
+                return {"data": []}
+            return real(path, params, raw, accept)
+
+        c.get = get
+        manifest = export.export_payroll(c, self.out, [2026], today=PAYROLL_TODAY)
+        self.assertEqual(manifest["entities"]["absences"]["status"], "ok")
+        self.assertEqual(manifest["entities"]["absences"]["count"], 1)
+        self.assertEqual(export.failed_required(manifest), [])
+
+    def test_there_is_no_overview_entity_and_no_overview_path(self):
+        # bexio's 4.0 has no paystub overview (the path answered 401): the months are asked one by one
         manifest = export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
-        self.assertEqual(manifest["entities"]["paystubs_overview"]["count"], 1)
-        self.assertEqual(self.load("paystubs_overview.json"), PAYROLL_OVERVIEW)
+        self.assertNotIn("paystubs_overview", manifest["entities"])
+        self.assertFalse(hasattr(export, "PAYROLL_PAYSTUBS_OVERVIEW"))
+        self.assertFalse(os.path.exists(os.path.join(self.out, "paystubs_overview.json")))
+
+    def test_a_payslip_served_raw_is_written_as_it_comes(self):
+        c = payroll_client()
+        real = c.get
+
+        def get(path, params=None, raw=False, accept=None):
+            if raw and path.endswith("/2026/1"):
+                return PAYROLL_PAYSLIPS[(101, 2026, 1)]
+            return real(path, params, raw, accept)
+
+        c.get = get
+        export.export_payroll(c, self.out, [2026], today=PAYROLL_TODAY)
+        with open(os.path.join(self.out, "paystubs", "101-2026-01.pdf"), "rb") as f:
+            self.assertEqual(f.read(), PAYROLL_PAYSLIPS[(101, 2026, 1)])
+
+    def test_a_payslip_answered_as_json_with_base64_is_written_as_its_pdf(self):
+        c = payroll_client()
+        real = c.get
+
+        def get(path, params=None, raw=False, accept=None):
+            if accept == "application/json" and path.endswith("/2026/1"):
+                return json.dumps({"content": base64.b64encode(PAYROLL_PAYSLIPS[(101, 2026, 1)]).decode("ascii")}).encode()
+            return real(path, params, raw, accept)
+
+        c.get = get
+        export.export_payroll(c, self.out, [2026], today=PAYROLL_TODAY)
+        with open(os.path.join(self.out, "paystubs", "101-2026-01.pdf"), "rb") as f:
+            self.assertEqual(f.read(), PAYROLL_PAYSLIPS[(101, 2026, 1)])
+
+    def test_company_reads_are_exported_as_their_own_entity(self):
+        manifest = export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
         self.assertEqual(manifest["entities"]["company"]["count"], len(export.PAYROLL_COMPANY))
         self.assertEqual(self.load("company.json")[0], {"path": export.PAYROLL_COMPANY[0], "body": {"status": "invented"}})
         self.assertFalse(manifest["entities"]["company"]["required"])
@@ -526,22 +610,15 @@ class PayrollExportTest(unittest.TestCase):
         self.assertEqual(manifest["entities"]["paystubs"]["count"], 3)
         self.assertEqual(export.failed_required(manifest), [])
 
-    def test_a_refused_overview_fails_only_its_entity(self):
-        manifest = export.export_payroll(payroll_client(missing={export.PAYROLL_PAYSTUBS_OVERVIEW}), self.out, [2026],
-                                         today=PAYROLL_TODAY)
-        self.assertEqual(manifest["entities"]["paystubs_overview"]["status"], "error")
-        self.assertEqual(manifest["entities"]["paystubs"]["status"], "ok")
-        self.assertFalse(os.path.exists(os.path.join(self.out, "paystubs_overview.json")))
-
     def test_no_payslip_is_asked_for_after_today(self):
         # Months after February 2026 are not asked for at all: a 404 there would hide a bug.
         seen = []
         c = payroll_client()
         real = c.get
 
-        def get(path, params=None, raw=False):
+        def get(path, params=None, raw=False, accept=None):
             seen.append(path)
-            return real(path, params, raw)
+            return real(path, params, raw, accept)
 
         c.get = get
         export.export_payroll(c, self.out, [2026], today=PAYROLL_TODAY)
@@ -556,6 +633,26 @@ class PayrollExportTest(unittest.TestCase):
         self.assertEqual(set(manifest["entities"]), {"employees"})
         self.assertEqual(export.failed_required(manifest), ["employees"])
 
+    def test_a_bad_request_for_a_payslip_that_is_not_no_paystubs_fails_its_entity(self):
+        path = export.PAYROLL_PAYSTUB.format(id=101, year=2026, month=2)
+        c = payroll_client()
+        real = c.get
+
+        def get(p, params=None, raw=False, accept=None):
+            if p == path:
+                raise BexioError(400, p, '{"error": {"message": "invented_other"}}')
+            return real(p, params, raw, accept)
+
+        c.get = get
+        manifest = export.export_payroll(c, self.out, [2026], today=PAYROLL_TODAY)
+        self.assertEqual(manifest["entities"]["paystubs"]["status"], "error")
+        self.assertIn("400", manifest["entities"]["paystubs"]["error"])
+
+    def test_months_without_a_payslip_are_skipped_not_failed(self):
+        manifest = export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
+        self.assertEqual(manifest["entities"]["paystubs"]["status"], "ok")
+        self.assertEqual(manifest["entities"]["paystubs"]["by_month"], {"2026-01": 2, "2026-02": 1})
+
     def test_a_forbidden_payslip_fails_its_entity_and_is_not_taken_for_no_payslip(self):
         path = export.PAYROLL_PAYSTUB.format(id=101, year=2026, month=2)
         manifest = export.export_payroll(payroll_client(missing={path}), self.out, [2026], today=PAYROLL_TODAY)
@@ -566,9 +663,9 @@ class PayrollExportTest(unittest.TestCase):
 
     def test_a_failed_entity_removes_its_file_from_an_earlier_run(self):
         export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
-        export.export_payroll(payroll_client(missing={export.PAYROLL_PAYSTUBS_OVERVIEW}), self.out, [2026],
+        export.export_payroll(payroll_client(missing={export.PAYROLL_ABSENCES.format(id=101)}), self.out, [2026],
                               today=PAYROLL_TODAY)
-        self.assertFalse(os.path.exists(os.path.join(self.out, "paystubs_overview.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.out, "absences.json")))
 
     def test_a_rerun_gives_the_same_manifest_and_files(self):
         first = export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)

@@ -46,12 +46,17 @@ MAX_RETRIES = 5
 
 
 class BexioError(Exception):
-    """A bexio answer that is not a usable 2xx response."""
+    """A bexio answer that is not a usable 2xx response.
 
-    def __init__(self, status, path):
+    detail is the start of the refused answer's body, when there was one: bexio says why in it
+    (a parameter it wants, a scope it lacks). It is kept apart from the message, which goes to stderr.
+    """
+
+    def __init__(self, status, path, detail=None):
         super().__init__("bexio GET {} failed with HTTP {}".format(path, status))
         self.status = status
         self.path = path
+        self.detail = detail
 
 
 TOKEN_NAMES = {
@@ -122,15 +127,18 @@ class Client:
             return self._opener.open(req, timeout=60)
         return urllib.request.urlopen(req, timeout=60)
 
-    def get(self, path, params=None, raw=False):
-        """GET one resource; returns the decoded JSON body, or the bytes when raw (a file's content)."""
+    def get(self, path, params=None, raw=False, accept=None):
+        """GET one resource; returns the decoded JSON body, or the bytes when raw (a file's content).
+
+        accept sets the Accept header: a raw request sends */* and the others application/json, unless told otherwise.
+        """
         url = self._base_url + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
         for attempt in range(MAX_RETRIES + 1):
             self.requests += 1
             req = urllib.request.Request(url, method="GET")
-            req.add_header("Accept", "*/*" if raw else "application/json")
+            req.add_header("Accept", accept or ("*/*" if raw else "application/json"))
             req.add_header("Authorization", "Bearer " + self._token)
             req.add_header("User-Agent", "yardr-finance-bexio-inventory/1.0")
             try:
@@ -140,7 +148,7 @@ class Client:
             except urllib.error.HTTPError as err:
                 retryable = err.code == 429 or 500 <= err.code < 600
                 if not retryable or attempt == MAX_RETRIES:
-                    raise BexioError(err.code, path) from None
+                    raise BexioError(err.code, path, _error_detail(err)) from None
                 time.sleep(_wait_seconds(err, attempt))
             except urllib.error.URLError:
                 if attempt == MAX_RETRIES:
@@ -226,6 +234,14 @@ def _unseen(rows, seen):
             seen.add(key)
         fresh.append(row)
     return fresh
+
+
+def _error_detail(err, limit=500):
+    """The first bytes of a refused answer's body, as text; None when there is no body to read."""
+    try:
+        return err.read(limit).decode("utf-8", errors="replace") or None
+    except (OSError, AttributeError):
+        return None
 
 
 def _wait_seconds(err, attempt):
