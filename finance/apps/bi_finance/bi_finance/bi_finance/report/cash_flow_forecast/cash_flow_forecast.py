@@ -234,15 +234,20 @@ def recurring_sources(company, as_of):
 
 
 def insurer_suppliers(company):
-    """The suppliers with a purchase bill booked to an insurer's payable (INSURER_PAYABLE_ACCOUNTS)."""
+    """The suppliers with a purchase bill that has an item booked to an insurer's payable (INSURER_PAYABLE_ACCOUNTS).
+    The bill's own credit account is the supplier's payable (2000), so the item's expense account is what tells."""
     accounts = frappe.get_all(
         "Account", filters={"company": company, "account_number": ["between", list(INSURER_PAYABLE_ACCOUNTS)]},
         pluck="name")
     if not accounts:
         return set()
-    return set(frappe.get_all(
-        "Purchase Invoice", filters={"company": company, "docstatus": 1, "credit_to": ["in", accounts]},
-        pluck="supplier"))
+    rows = frappe.db.sql(
+        """select distinct pi.supplier
+        from `tabPurchase Invoice Item` pii join `tabPurchase Invoice` pi on pi.name = pii.parent
+        where pi.company = %s and pi.docstatus = 1 and pii.expense_account in %s""",
+        (company, accounts),
+    )
+    return {row[0] for row in rows}
 
 
 def dry_run(company=None, as_of=None):
