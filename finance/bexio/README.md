@@ -375,6 +375,11 @@ second run; the dry run of each step is the rerun check (it reads ERPNext and wr
 4. VAT on the transitory accounts: `import_vat_fix.py --write FILE`, then submit (see its section).
 5. Bank: `import_bank.py --write FILE`, then submit (the loader reconciles each transaction with its vouchers once),
    then `import_bank.py --check`.
+   It matches the transactions bexio booked and the ones it never reconciled (not the ignored ones), each only on a
+   unique match: one voucher of the account, amount and day; else the only one within 5 days of the value or book date;
+   else the one named in the bank title; else a combination of Payment and Journal Entries within 5 days. A voucher that
+   another open line is also near, or that ERPNext holds for another transaction, is not taken. The rest stays open,
+   with its reason in the `--unmatched` file.
 6. Manual entries: `import_manual_entries.py --write FILE`, then submit; `import_manual_fix.py --write FILE`, then submit.
 7. Payroll journal lines: `import_payroll.py --write FILE`, then submit, then `import_payroll.py --check`.
 8. Opening entry: `import_opening.py --dry-run` (no entry is needed when the first business year has no opening lines).
