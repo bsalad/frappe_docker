@@ -1,0 +1,18 @@
+{
+ "doctype": "Dashboard Chart",
+ "name": "Cash Position History",
+ "chart_name": "Cash Position History",
+ "chart_type": "Report",
+ "report_name": "Cash Position",
+ "use_report_chart": 1,
+ "type": "Line",
+ "is_public": 1,
+ "is_standard": 1,
+ "module": "BI Finance",
+ "creation": "2026-10-10 09:00:00.000000",
+ "modified": "2026-10-10 09:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator",
+ "docstatus": 0,
+ "idx": 0
+}

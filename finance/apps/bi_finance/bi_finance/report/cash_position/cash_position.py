@@ -112,9 +112,12 @@ def execute(filters=None):
     company = filters.company or frappe.defaults.get_user_default("company")
     as_of = getdate(filters.as_of_date or nowdate())
 
+    # The Treasury cards select one account by its chart number (the card files carry no names).
     account_filter = {"company": company, "account_type": ["in", CASH_ACCOUNT_TYPES], "is_group": 0}
     if filters.account:
         account_filter["name"] = filters.account
+    if filters.account_number:
+        account_filter["account_number"] = filters.account_number
     accounts = frappe.get_all(
         "Account", filters=account_filter, fields=["name", "account_currency"], order_by="account_number, name"
     )

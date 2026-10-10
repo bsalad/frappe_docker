@@ -13,6 +13,10 @@ override_whitelisted_methods = {
     "erpnextswiss.erpnextswiss.doctype.payment_proposal.payment_proposal.create_payment_proposal": "bi_finance.payment_run.create_payment_proposal",
 }
 
+# Frappe syncs the module folders of standard types from the core list only; the Treasury cards
+# and chart (number_card/, dashboard_chart/) are this app's, so they are declared here.
+importable_doctypes = ["Number Card", "Dashboard Chart"]
+
 # Jinja print formats cannot import Python, and the PDF converter cannot fetch the
 # site's own URLs, so the QR image is a method the print format calls and embeds.
 jinja = {

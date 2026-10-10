@@ -24,5 +24,7 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   from this directory, or in the image as in `finance/docs/erpnext-setup.md`.
 - `bi_finance/report/cash_position`: the "Cash Position" report (Bank and Cash accounts, their
   balances in original currency and in CHF, month-end history). Read-only. The Treasury
-  workspace that shows it is set up by `finance/scripts/swiss-setup.sh treasury`.
-- `bi_finance/test_cash_position.py`: offline tests, run in the image (see `finance/docs/erpnext-setup.md`).
+  workspace (`workspace/treasury`), its number cards (`number_card/`) and the chart
+  (`dashboard_chart/`) show it; migrate syncs them.
+- `bi_finance/test_cash_position.py`, `bi_finance/test_treasury.py`: offline tests, run in the image
+  (see `finance/docs/erpnext-setup.md`).

@@ -179,17 +179,17 @@ the date would cover, and the role allowed to post into frozen periods (set by
 hand; the command does not set it). It refuses to move a freeze back. Not run
 yet: the history import comes first.
 
-**treasury.** `swiss-setup.sh treasury` is a dry run unless `--apply` is given. It creates
-or updates the "Treasury" workspace: a total card (CHF), one card per Bank or Cash account
-(named after the account, so a new account needs a re-run), and the month-end chart. They
-all read the report "Cash Position" of bi_finance (`bi_finance/report/cash_position`),
-which the migrate of the image syncs. The report reads the GL, not Bank Transactions. A
-foreign-currency balance is turned into CHF at the Currency Exchange rate of the as-of date,
-or the latest one before it. ERPNext fills that table from its rate source (Currency
-Exchange Settings, frankfurter.dev); the report never fetches a rate. A missing rate leaves
-that account's CHF value out, and the report says so. The step is not in the no-argument
-run, so it writes only when asked. Order: migrate the image, `treasury`, then
-`treasury --apply`. A second `--apply` changes nothing.
+**Treasury.** The workspace "Treasury" is a file of bi_finance, as are its number cards
+(`number_card/`: the total in CHF, and one card per Bank or Cash account by its chart
+number) and the month-end chart (`dashboard_chart/`). The image's migrate syncs them, so
+nothing is made by hand on the site. A new bank account gets its card as a new file. The
+cards read the report "Cash Position" (`report/cash_position`), which reads the GL, not Bank
+Transactions. A foreign-currency balance is turned into CHF at the Currency Exchange rate of
+the as-of date, or the latest one before it. ERPNext fills that table from its rate source
+(Currency Exchange Settings, frankfurter.dev); the report never fetches a rate. A missing
+rate leaves that account's CHF value out, and the report says so. The hooks of bi_finance
+list the two doctypes (`importable_doctypes`), since Frappe syncs only its own cards and
+charts from the module folders.
 
 ## Switching the stack to a new image
 

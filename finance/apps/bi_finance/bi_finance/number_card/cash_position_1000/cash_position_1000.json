@@ -1,0 +1,20 @@
+{
+ "doctype": "Number Card",
+ "name": "Cash Position 1000",
+ "label": "Account 1000",
+ "type": "Report",
+ "report_name": "Cash Position",
+ "report_field": "balance_chf",
+ "function": "Sum",
+ "report_function": "Sum",
+ "filters_json": "{\"account_number\": \"1000\"}",
+ "is_public": 1,
+ "is_standard": 1,
+ "module": "BI Finance",
+ "creation": "2026-10-10 09:00:00.000000",
+ "modified": "2026-10-10 09:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator",
+ "docstatus": 0,
+ "idx": 0
+}

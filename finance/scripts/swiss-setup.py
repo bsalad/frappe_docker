@@ -2,11 +2,9 @@
 swiss-setup.sh. Steps are named on the command line (coa, vat, fiscal,
 fields, currencies, banks, gebuev, qrbill, host, payments); each one is re-runnable and skips what
 already exists. `freeze <date> [--apply]` is a separate command: it closes the
-books up to a date and is a dry run unless --apply is given. `treasury [--apply]` is one too: the
-Treasury workspace of the Cash Position report, a dry run unless --apply is given."""
+books up to a date and is a dry run unless --apply is given."""
 import csv
 import datetime
-import hashlib
 import json
 import os
 import sys
@@ -593,114 +591,6 @@ def gebuev():
     frappe.db.commit()
 
 
-# The Treasury workspace: the Cash Position report of bi_finance (its balances and CHF values come
-# from the GL), a total card, one card per Bank or Cash account and the month-end chart. The cards
-# are named after the accounts, so the account names come from the site, never from this file.
-# Not in STEPS: it writes only with --apply, after its dry run has been reviewed.
-TREASURY = "Treasury"
-TREASURY_MODULE = "BI Finance"
-TREASURY_REPORT = "Cash Position"
-TREASURY_TOTAL = "Cash Position Total CHF"
-TREASURY_CHART = "Cash Position History"
-CASH_ACCOUNT_TYPES = ["Bank", "Cash"]
-
-
-def block_id(key):
-    # The workspace layout names each block; a hash keeps the id the same on every run.
-    return hashlib.sha1(key.encode()).hexdigest()[:10]
-
-
-def treasury_docs(accounts):
-    """The Treasury documents for these account names: the number cards (the total first, then one
-    per account), the chart and the workspace. Pure, so the tests check the layout without a site."""
-    company = json.dumps({"company": COMPANY})
-    today = json.dumps({"as_of_date": "frappe.datetime.get_today()"})
-
-    def card(name, label, filters):
-        return {
-            "doctype": "Number Card", "name": name, "label": label, "type": "Report",
-            "report_name": TREASURY_REPORT, "report_field": "balance_chf",
-            "function": "Sum", "report_function": "Sum",
-            "filters_json": filters, "dynamic_filters_json": today,
-            "is_public": 1, "module": TREASURY_MODULE,
-        }
-
-    cards = [card(TREASURY_TOTAL, "Total CHF", company)]
-    cards += [card(f"Cash Position {acc}", acc, json.dumps({"company": COMPANY, "account": acc})) for acc in accounts]
-    chart = {
-        "doctype": "Dashboard Chart", "name": TREASURY_CHART, "chart_name": TREASURY_CHART,
-        "chart_type": "Report", "report_name": TREASURY_REPORT, "use_report_chart": 1, "type": "Line",
-        "filters_json": company, "dynamic_filters_json": today,
-        "is_public": 1, "module": TREASURY_MODULE,
-    }
-    blocks = [{"id": block_id(c["name"]), "type": "number_card", "data": {"number_card_name": c["name"], "col": 4}}
-              for c in cards]
-    blocks.append({"id": block_id(TREASURY_CHART), "type": "chart", "data": {"chart_name": TREASURY_CHART, "col": 12}})
-    workspace = {
-        "doctype": "Workspace", "name": TREASURY, "label": TREASURY, "title": TREASURY,
-        "module": TREASURY_MODULE, "public": 1, "is_hidden": 0, "icon": "wallet",
-        "content": json.dumps(blocks),
-        "number_cards": [{"number_card_name": c["name"], "label": c["label"]} for c in cards],
-        "charts": [{"chart_name": TREASURY_CHART, "label": TREASURY_CHART}],
-    }
-    return cards + [chart, workspace]
-
-
-def treasury_changes(doc, want):
-    """The fields of `want` that differ from the saved doc. A child table is compared by its rows."""
-    changed = []
-    for key, value in want.items():
-        if key in ("doctype", "name"):
-            continue
-        if isinstance(value, list):
-            saved = doc.get(key) or []
-            # each saved row is compared on the fields its wanted row names
-            have = [{k: r.get(k) for k in row} for row, r in zip(value, saved)]
-            if have != value or len(saved) != len(value):
-                changed.append(key)
-        elif doc.get(key) != value:
-            changed.append(key)
-    return changed
-
-
-def treasury(apply):
-    if not frappe.db.exists("Report", TREASURY_REPORT) or not frappe.db.exists("Module Def", TREASURY_MODULE):
-        message = "treasury: the report and the module come with bi_finance's migrate; migrate first"
-        if apply:
-            sys.exit(f"STOP: {message}")
-        say(message)
-    accounts = frappe.get_all(
-        "Account", filters={"company": COMPANY, "account_type": ["in", CASH_ACCOUNT_TYPES], "is_group": 0},
-        pluck="name", order_by="account_number, name",
-    )
-    say(f"treasury: {len(accounts)} Bank and Cash accounts, one number card each")
-    counts = {"create": 0, "update": 0, "in place": 0}
-    for want in treasury_docs(accounts):
-        doctype, name = want["doctype"], want["name"]
-        if not frappe.db.exists(doctype, name):
-            action = "create"
-            if apply:
-                frappe.get_doc(want).insert()
-        else:
-            doc = frappe.get_doc(doctype, name)
-            changed = treasury_changes(doc, want)
-            action = "update" if changed else "in place"
-            if changed and apply:
-                for key in changed:
-                    doc.set(key, want[key])
-                doc.save()
-        counts[action] += 1
-        if action != "in place":
-            verb = {"create": "created", "update": "updated"}[action] if apply else "would " + action
-            say(f"treasury: {verb} {doctype} {name}")
-    if apply:
-        frappe.db.commit()
-        say(f"treasury: applied; created {counts['create']}, updated {counts['update']}, in place {counts['in place']}")
-    else:
-        say(f"treasury: dry run, nothing changed; would create {counts['create']}, update {counts['update']}, "
-            f"in place {counts['in place']}; add --apply to write")
-
-
 def freeze(date, apply):
     # Accounts frozen till a date: no posting dated on or before it. The role
     # that may still post there is set by hand, not here. Dry run unless
@@ -734,8 +624,6 @@ if __name__ == "__main__":
     try:
         if args[:1] == ["freeze"]:
             freeze(*parse_freeze(args[1:]))
-        elif args[:1] == ["treasury"]:
-            treasury("--apply" in args)
         elif check:
             vat_check()
         else:

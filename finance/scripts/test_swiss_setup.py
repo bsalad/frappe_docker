@@ -4,7 +4,6 @@ Run with: python3 -m unittest discover -s finance/scripts -p 'test_*.py'
 """
 
 import importlib.util
-import json
 import os
 import sys
 import unittest
@@ -86,95 +85,6 @@ class StepsTest(unittest.TestCase):
     def test_gebuev_is_a_step_and_freeze_is_not(self):
         self.assertIn("gebuev", swiss_setup.STEPS)
         self.assertNotIn("freeze", swiss_setup.STEPS)
-
-    def test_treasury_is_not_a_step_so_no_run_writes_it_unseen(self):
-        self.assertNotIn("treasury", swiss_setup.STEPS)
-
-
-class TreasuryDocsTest(unittest.TestCase):
-    # Invented account names, as the site would hold them.
-    ACCOUNTS = ["1000 - Test Cash - bic", "1020 - Test Bank - bic"]
-
-    def docs(self, accounts=ACCOUNTS):
-        return swiss_setup.treasury_docs(accounts)
-
-    def by_doctype(self, docs, doctype):
-        return [d for d in docs if d["doctype"] == doctype]
-
-    def test_one_number_card_per_account_after_the_total(self):
-        cards = self.by_doctype(self.docs(), "Number Card")
-        self.assertEqual([c["name"] for c in cards], [
-            swiss_setup.TREASURY_TOTAL,
-            "Cash Position 1000 - Test Cash - bic",
-            "Cash Position 1020 - Test Bank - bic",
-        ])
-
-    def test_account_card_filters_on_its_account_and_the_total_does_not(self):
-        cards = {c["name"]: json.loads(c["filters_json"]) for c in self.by_doctype(self.docs(), "Number Card")}
-        self.assertNotIn("account", cards[swiss_setup.TREASURY_TOTAL])
-        self.assertEqual(cards["Cash Position 1020 - Test Bank - bic"]["account"], "1020 - Test Bank - bic")
-
-    def test_cards_sum_the_chf_column_of_the_report(self):
-        for card in self.by_doctype(self.docs(), "Number Card"):
-            self.assertEqual(card["type"], "Report")
-            self.assertEqual(card["report_name"], "Cash Position")
-            self.assertEqual(card["report_field"], "balance_chf")
-            self.assertEqual(card["function"], "Sum")
-            self.assertEqual(card["report_function"], "Sum")
-
-    def test_the_chart_is_the_report_chart(self):
-        (chart,) = self.by_doctype(self.docs(), "Dashboard Chart")
-        self.assertEqual(chart["name"], chart["chart_name"])
-        self.assertEqual(chart["chart_type"], "Report")
-        self.assertEqual(chart["report_name"], "Cash Position")
-        self.assertEqual(chart["use_report_chart"], 1)
-
-    def test_workspace_layout_has_a_block_for_each_card_and_the_chart(self):
-        (ws,) = self.by_doctype(self.docs(), "Workspace")
-        blocks = json.loads(ws["content"])
-        cards = [b["data"]["number_card_name"] for b in blocks if b["type"] == "number_card"]
-        charts = [b["data"]["chart_name"] for b in blocks if b["type"] == "chart"]
-        self.assertEqual(cards, [c["name"] for c in self.by_doctype(self.docs(), "Number Card")])
-        self.assertEqual(charts, [swiss_setup.TREASURY_CHART])
-        self.assertEqual([r["number_card_name"] for r in ws["number_cards"]], cards)
-        self.assertEqual([r["chart_name"] for r in ws["charts"]], charts)
-
-    def test_block_ids_are_unique_and_the_same_on_every_run(self):
-        first = json.loads(self.by_doctype(self.docs(), "Workspace")[0]["content"])
-        second = json.loads(self.by_doctype(self.docs(), "Workspace")[0]["content"])
-        self.assertEqual(first, second)
-        ids = [b["id"] for b in first]
-        self.assertEqual(len(ids), len(set(ids)))
-
-    def test_no_accounts_leaves_the_total_card_and_the_chart(self):
-        docs = self.docs(accounts=[])
-        self.assertEqual([c["name"] for c in self.by_doctype(docs, "Number Card")], [swiss_setup.TREASURY_TOTAL])
-        self.assertEqual(len(json.loads(self.by_doctype(docs, "Workspace")[0]["content"])), 2)
-
-    def test_the_chart_covers_every_account_so_its_filter_names_none(self):
-        (chart,) = self.by_doctype(self.docs(), "Dashboard Chart")
-        self.assertEqual(json.loads(chart["filters_json"]), {"company": swiss_setup.COMPANY})
-
-
-class TreasuryChangesTest(unittest.TestCase):
-    class Doc(dict):
-        def get(self, key, default=None):
-            return dict.get(self, key, default)
-
-    def test_no_change_when_the_saved_doc_matches(self):
-        want = {"doctype": "Number Card", "name": "n", "label": "L", "filters_json": "{}", "rows": [{"a": 1}]}
-        doc = self.Doc(label="L", filters_json="{}", rows=[{"a": 1, "extra": 9}])
-        self.assertEqual(swiss_setup.treasury_changes(doc, want), [])
-
-    def test_an_extra_saved_row_is_a_change(self):
-        want = {"doctype": "Workspace", "name": "w", "charts": [{"chart_name": "c"}]}
-        doc = self.Doc(charts=[{"chart_name": "c"}, {"chart_name": "old"}])
-        self.assertEqual(swiss_setup.treasury_changes(doc, want), ["charts"])
-
-    def test_reports_each_field_and_child_table_that_differs(self):
-        want = {"doctype": "Workspace", "name": "w", "content": "[1]", "charts": [{"chart_name": "c"}]}
-        doc = self.Doc(content="[]", charts=[{"chart_name": "other"}])
-        self.assertEqual(swiss_setup.treasury_changes(doc, want), ["content", "charts"])
 
 
 # Invented IBANs and account names only: the test data is not company data.
