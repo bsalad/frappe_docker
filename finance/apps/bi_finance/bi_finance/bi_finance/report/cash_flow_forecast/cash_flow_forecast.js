@@ -15,6 +15,13 @@ frappe.query_reports["Cash Flow Forecast"] = {
 			default: frappe.datetime.get_today(),
 			reqd: 1,
 		},
+		{
+			// off: the forecast of the documents alone, without the receipts of invoices not issued yet
+			fieldname: "include_run_rate",
+			label: __("Include new sales run-rate"),
+			fieldtype: "Check",
+			default: 1,
+		},
 	],
 	formatter(value, row, column, data, default_formatter) {
 		value = default_formatter(value, row, column, data);

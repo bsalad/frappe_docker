@@ -6,7 +6,8 @@ decides the dates and the sums, so it can be tested with invented data. Pure Pyt
 Weeks run from the as-of date: week 1 is the as-of day and the six after it, week 13 the last seven days of
 the horizon. A line due before the as-of date is overdue and falls in week 1: it is still owed.
 
-Kinds of line: receipt (a customer pays an open Sales Invoice), bill (an open Purchase Invoice), recurring
+Kinds of line: receipt (a customer pays an open Sales Invoice, or the new sales run-rate of invoices not issued yet),
+bill (an open Purchase Invoice), recurring
 (a cost that repeats per supplier), payroll (the monthly salary run), vat (the VAT the books owe, or a refund).
 Only receipts come in; the others go out. A refund is a vat line with a negative amount, so it comes in.
 """
@@ -58,6 +59,8 @@ MONTH_WORDS = frozenset((
 PAYROLL_VAT_STEMS = ("lohn", "salär", "salar", "gehalt", "ahv", "mwst", "vat", "estv", "steuerverwaltung")
 # A bank line is a purchase bill's payment when a bill of the same amount is dated this close to it.
 BILL_MATCH_DAYS = 5
+# The new sales run-rate: the receipts of the last this many 13-week windows, from the invoices issued in the same window.
+RUN_RATE_WINDOWS = 4
 
 
 def add_months(day, months):
@@ -292,6 +295,22 @@ def vat_lines(as_of, owed_closed, owed_this_quarter):
 def expected_receipt(due, late_days):
     """The day a customer's open invoice is expected to be paid: its due date moved by the customer's days late."""
     return due + datetime.timedelta(days=late_days)
+
+
+def run_rate(payments, as_of):
+    """payments: (invoice date, payment date, amount) of the Sales Invoices paid in the last RUN_RATE_WINDOWS windows.
+    A window is WEEKS weeks, and the windows run back from as_of with no gap. Its receipts are the amounts collected
+    inside it from the invoices issued inside it: the invoices a forecast cannot see yet, since they are not open.
+    The run-rate is the mean over the windows, spread evenly over the weeks: (weekly amount, first day of the oldest
+    window). A window with no receipts counts as 0 in the mean."""
+    length = datetime.timedelta(days=WEEKS * DAYS_PER_WEEK)
+    totals = []
+    for back in range(1, RUN_RATE_WINDOWS + 1):
+        start = as_of - length * back
+        stop = as_of - length * (back - 1)
+        totals.append(sum(amount for issued, paid, amount in payments
+                          if start <= issued < stop and start <= paid < stop))
+    return round(statistics.mean(totals) / WEEKS, 2), as_of - length * RUN_RATE_WINDOWS
 
 
 def forecast(as_of, opening, lines):

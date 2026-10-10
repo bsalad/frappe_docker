@@ -8,6 +8,7 @@ it in the image, as test_treasury.py does (finance/docs/erpnext-setup.md):
         sh -c 'cd /home/frappe/bi_finance_src && ../frappe-bench/env/bin/python -m unittest -v bi_finance.test_cash_flow_forecast'
 """
 
+import contextlib
 import datetime
 import types
 import unittest
@@ -104,6 +105,70 @@ class InsurerSuppliers(unittest.TestCase):
         with patch:
             self.assertEqual(cff.insurer_suppliers("Test Company"), set())
         frappe.db.sql.assert_not_called()
+
+
+class NewSalesRunRate(unittest.TestCase):
+    def patch_readers(self, stack, payments):
+        # every read of the books stubbed to nothing but the opening cash and the new sales receipts
+        stubs = {
+            "opening_cash": 1000.0, "open_documents": {}, "paid_history": {},
+            "recurring_sources": {"bills": [], "bank": []}, "personnel_postings": [], "vat_balances": {},
+            "vat_paid_since": 0.0, "sales_paid_in_windows": payments,
+        }
+        return {name: stack.enter_context(mock.patch.object(cff, name, return_value=value))
+                for name, value in stubs.items()}
+
+    def compute(self, payments, include):
+        with contextlib.ExitStack() as stack:
+            mocks = self.patch_readers(stack, payments)
+            stack.enter_context(mock.patch.object(cff, "_", lambda text: text))  # no site, so no translations
+            result = cff.compute("Test Company", AS_OF, include_run_rate=include)
+        return result, mocks
+
+    def payments(self):
+        # 1300 collected in the most recent window from an invoice issued in it: 25 a week over the 13 weeks
+        return [(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0)]
+
+    def test_the_run_rate_is_a_receipt_in_each_of_the_thirteen_weeks(self):
+        result, _mocks = self.compute(self.payments(), include=True)
+        self.assertEqual(result["run_rate"], {"weekly": 25.0, "since": AS_OF - datetime.timedelta(days=364)})
+        self.assertEqual([row["receipt"] for row in result["weeks"]], [25.0] * 13)
+        self.assertEqual(result["weeks"][-1]["closing"], 1325.0)
+
+    def test_the_filter_off_leaves_the_run_rate_out(self):
+        result, mocks = self.compute(self.payments(), include=False)
+        mocks["sales_paid_in_windows"].assert_not_called()
+        self.assertIsNone(result["run_rate"])
+        self.assertEqual([row["receipt"] for row in result["weeks"]], [0.0] * 13)
+        self.assertEqual(result["weeks"][-1]["closing"], 1000.0)
+
+    def execute(self, filters):
+        with contextlib.ExitStack() as stack:
+            self.patch_readers(stack, self.payments())
+            stack.enter_context(mock.patch.object(cff, "_", lambda text: text))  # no site, so no translations
+            stack.enter_context(mock.patch.object(cff.frappe, "get_cached_value", return_value="CHF"))
+            stack.enter_context(mock.patch.object(cff, "fmt_money", return_value="25.00 CHF"))
+            return cff.execute(filters)
+
+    def test_the_report_includes_the_run_rate_by_default_and_says_so(self):
+        _columns, rows, message, _chart, _summary = self.execute({"company": "Test Company", "as_of_date": AS_OF})
+        self.assertEqual([row["receipt"] for row in rows], [25.0] * 13)
+        self.assertIn("New sales are in the forecast at 25.00 CHF a week", message)
+
+    def test_the_receipts_are_payment_entries_against_sales_invoices_over_the_four_windows(self):
+        with mock.patch.object(cff, "frappe") as frappe:
+            frappe.db.sql.return_value = [(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0)]
+            rows = cff.sales_paid_in_windows("Test Company", AS_OF)
+        self.assertEqual(rows, [(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0)])
+        sql, args = frappe.db.sql.call_args.args
+        self.assertIn("ple.voucher_type = 'Payment Entry'", sql)
+        self.assertEqual(args, ("Test Company", AS_OF - datetime.timedelta(days=364), AS_OF))
+
+    def test_the_report_filter_off_shows_the_documents_alone(self):
+        _columns, rows, message, _chart, _summary = self.execute(
+            {"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0})
+        self.assertEqual([row["receipt"] for row in rows], [0.0] * 13)
+        self.assertIsNone(message)
 
 
 if __name__ == "__main__":

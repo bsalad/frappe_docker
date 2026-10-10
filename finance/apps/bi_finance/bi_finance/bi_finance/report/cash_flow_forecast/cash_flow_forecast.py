@@ -4,6 +4,9 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
 - opening: the Bank and Cash accounts' balance in the company currency, as Cash Position reads it;
 - receipts: the open Sales Invoices (Payment Ledger), on the due date moved by the customer's average days late
   over the last year, from the invoices paid in that year;
+- new sales: receipts from invoices not yet issued on the as-of date, a run-rate: the receipts collected in each of
+  the last four 13-week windows from the invoices issued in the same window, averaged and spread over the weeks.
+  The report's "Include new sales run-rate" filter leaves it out, to see the forecast of the documents alone;
 - bills: the open Purchase Invoices, on the due date;
 - recurring costs, from two sources, each over the last year and repeating monthly, quarterly or yearly:
   - the suppliers whose purchase bills repeat, unless an open bill of theirs falls due within a couple of weeks of
@@ -30,7 +33,7 @@ import datetime
 
 import frappe
 from frappe import _
-from frappe.utils import escape_html, flt, getdate, nowdate
+from frappe.utils import cint, escape_html, flt, fmt_money, getdate, nowdate
 
 from bi_finance import cash_forecast as cf
 
@@ -77,6 +80,21 @@ def _invoice_dates(doctype, names):
         return {}
     found = frappe.get_all(doctype, filters={"name": ["in", names]}, fields=["name", "due_date", "posting_date"])
     return {invoice.name: invoice.due_date or invoice.posting_date for invoice in found}
+
+
+def sales_paid_in_windows(company, as_of):
+    """(invoice date, payment date, amount) of the Sales Invoices paid by a Payment Entry in the last run-rate windows,
+    in the company currency. The receipts the Payment Ledger shows against the invoices, as paid_history reads them."""
+    since = as_of - datetime.timedelta(days=cf.WEEKS * cf.DAYS_PER_WEEK * cf.RUN_RATE_WINDOWS)
+    rows = frappe.db.sql(
+        """select inv.posting_date, ple.posting_date, -sum(ple.amount)
+        from `tabPayment Ledger Entry` ple join `tabSales Invoice` inv on inv.name = ple.against_voucher_no
+        where ple.company = %s and ple.against_voucher_type = 'Sales Invoice' and ple.voucher_type = 'Payment Entry'
+          and ple.delinked = 0 and ple.posting_date between %s and %s
+        group by ple.against_voucher_no, inv.posting_date, ple.posting_date""",
+        (company, since, as_of),
+    )
+    return [(issued, paid, flt(amount)) for issued, paid, amount in rows]
 
 
 def paid_history(company, as_of, doctype, open_names):
@@ -311,9 +329,10 @@ def line(kind, day, amount, party, doctype, name, note):
             "doctype": doctype, "name": name, "note": note}
 
 
-def compute(company, as_of):
+def compute(company, as_of, include_run_rate=True):
     """The forecast for the company as of the date: the weeks, the lowest week, the lines in the horizon, and
-    the counts the messages tell."""
+    the counts the messages tell. include_run_rate: the new sales run-rate's lines are in the forecast (see the
+    module's docstring); run_rate is its weekly amount and the first day of its oldest window, None when left out."""
     horizon = cf.horizon_end(as_of)
     opening = opening_cash(company, as_of)
     receivables = open_documents(company, as_of, "Sales Invoice")
@@ -332,6 +351,15 @@ def compute(company, as_of):
 
     for name, (party, amount, due) in payables.items():
         lines.append(line("bill", due, amount, party, "Purchase Invoice", name, _("due {0}").format(due)))
+
+    run_rate = None
+    if include_run_rate:
+        # the invoices not issued yet on the as-of date: a receipt every week, the mean of the recent windows
+        weekly, since = cf.run_rate(sales_paid_in_windows(company, as_of), as_of)
+        note = _("new sales run-rate: the mean of the last four 13-week windows since {0}, the receipts from the invoices issued in each window, a thirteenth each week").format(since)
+        for week in range(1, cf.WEEKS + 1):
+            lines.append(line(cf.RECEIPT, cf.week_bounds(week, as_of)[0], weekly, "", "", "", note))
+        run_rate = {"weekly": weekly, "since": since}
 
     open_due = collections.defaultdict(list)
     for _name, (party, _amount, due) in payables.items():
@@ -377,6 +405,7 @@ def compute(company, as_of):
         "beyond": beyond,
         "lines": sorted((l for l in lines if "week" in l), key=lambda l: (l["week"], l["day"])),
         "without_history": len(without_history),
+        "run_rate": run_rate,
     }
 
 
@@ -385,7 +414,7 @@ def execute(filters=None):
     company = filters.company or frappe.defaults.get_user_default("company")
     as_of = getdate(filters.as_of_date or nowdate())
     currency = frappe.get_cached_value("Company", company, "default_currency")
-    result = compute(company, as_of)
+    result = compute(company, as_of, include_run_rate=cint(filters.get("include_run_rate", 1)))
     weeks, lowest, opening = result["weeks"], result["lowest"], result["opening"]
 
     rows = [
@@ -421,6 +450,9 @@ def execute(filters=None):
     }
 
     messages = []
+    if result["run_rate"]:
+        messages.append(_("New sales are in the forecast at {0} a week: the mean of the last four 13-week windows since {1}, receipts from the invoices issued in each window.").format(
+            fmt_money(result["run_rate"]["weekly"], currency=currency), result["run_rate"]["since"]))
     if result["beyond"]:
         messages.append(_("{0} lines fall after week {1} and are not in the forecast.").format(result["beyond"], len(weeks)))
     if result["without_history"]:

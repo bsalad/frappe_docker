@@ -340,5 +340,39 @@ class Forecast(unittest.TestCase):
         self.assertEqual([line.get("week") for line in lines], [1, 1, 2, None])
 
 
+class RunRate(unittest.TestCase):
+    def test_a_receipt_counts_in_its_window_when_the_invoice_and_the_payment_fall_inside_it(self):
+        # the most recent window is the 91 days before as-of: an invoice of day -80 paid on day -20 is in it
+        weekly, since = cf.run_rate([(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0)], AS_OF)
+        # 1300 in one of four windows: the mean is 325, a thirteenth of it each week
+        self.assertEqual(weekly, 25.0)
+        self.assertEqual(since, AS_OF - datetime.timedelta(days=364))
+
+    def test_an_invoice_paid_in_another_window_than_it_was_issued_is_not_counted(self):
+        # issued in the second window (day -170), paid in the first (day -20): neither window holds both
+        weekly, _ = cf.run_rate([(AS_OF - datetime.timedelta(days=170), AS_OF - datetime.timedelta(days=20), 1300.0)], AS_OF)
+        self.assertEqual(weekly, 0.0)
+
+    def test_an_invoice_issued_before_the_four_windows_is_not_counted(self):
+        weekly, _ = cf.run_rate([(AS_OF - datetime.timedelta(days=400), AS_OF - datetime.timedelta(days=30), 1300.0)], AS_OF)
+        self.assertEqual(weekly, 0.0)
+
+    def test_the_windows_are_contiguous_and_a_window_starts_on_its_first_day(self):
+        # day -91 starts the most recent window; day -92 is the last day of the one before it
+        start = AS_OF - datetime.timedelta(days=91)
+        weekly, _ = cf.run_rate([(start, AS_OF - datetime.timedelta(days=10), 910.0)], AS_OF)
+        self.assertEqual(weekly, 17.5)
+        weekly, _ = cf.run_rate([(start - datetime.timedelta(days=1), AS_OF - datetime.timedelta(days=10), 910.0)], AS_OF)
+        self.assertEqual(weekly, 0.0)
+
+    def test_the_mean_counts_an_empty_window_as_zero(self):
+        # 1300 in the most recent window and 2600 in the third: the mean over four windows is 975, 75 a week
+        payments = [(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0),
+                    (AS_OF - datetime.timedelta(days=260), AS_OF - datetime.timedelta(days=200), 2600.0)]
+        weekly, _ = cf.run_rate(payments, AS_OF)
+        self.assertEqual(weekly, 75.0)
+        self.assertEqual(round(weekly * cf.WEEKS, 2), 975.0)
+
+
 if __name__ == "__main__":
     unittest.main()
