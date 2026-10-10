@@ -9,6 +9,8 @@ docker compose -f pwd.yml -f finance-copy.yml config -q
 # The bi_finance layout and stamp guard, stdlib only (no frappe), so it runs on the host.
 # A synced JSON changed without a newer 'modified' fails here; see test_layout.py.
 (cd finance/apps/bi_finance && python3 -m unittest bi_finance.test_layout)
+# The bi_payroll formulas (invented employees) and its layout and stamp guard, stdlib only.
+(cd finance/apps/bi_payroll && python3 -m unittest bi_payroll.test_swiss_payroll bi_payroll.test_layout)
 # The bexio importers' unit tests, stdlib only, about half a second.
 (cd finance/bexio && python3 -m unittest discover -s . -p "test_*.py")
 # The image app lists (live without hrms, copy with it) and build-image.sh's modes; no docker.

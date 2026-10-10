@@ -1,0 +1,234 @@
+{
+ "actions": [],
+ "creation": "2026-10-10 14:00:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "section_ahv",
+  "swiss_ahv_ee",
+  "swiss_ahv_ag",
+  "swiss_alv_ee",
+  "swiss_alv_ag",
+  "swiss_alv_ceiling",
+  "section_bvg",
+  "swiss_bvg_threshold",
+  "swiss_bvg_coordination",
+  "swiss_bvg_ee_25",
+  "swiss_bvg_ee_35",
+  "swiss_bvg_ee_45",
+  "swiss_bvg_ee_55",
+  "swiss_bvg_ag_25",
+  "swiss_bvg_ag_35",
+  "swiss_bvg_ag_45",
+  "swiss_bvg_ag_55",
+  "section_insurers",
+  "swiss_uvg_max",
+  "swiss_uvg_ag",
+  "swiss_nbu_ee",
+  "swiss_ktg_ee",
+  "swiss_ktg_ag",
+  "swiss_fak_ag"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_ahv",
+   "label": "AHV/IV/EO and ALV",
+   "fieldtype": "Section Break",
+   "collapsible": 0
+  },
+  {
+   "fieldname": "swiss_ahv_ee",
+   "label": "AHV/IV/EO employee share (%)",
+   "fieldtype": "Percent",
+   "default": "5.3",
+   "description": "Public 2026 rate, of gross salary. Check with the Ausgleichskasse.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_ahv_ag",
+   "label": "AHV/IV/EO employer share (%)",
+   "fieldtype": "Percent",
+   "default": "5.3",
+   "description": "Public 2026 rate, of gross salary.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_alv_ee",
+   "label": "ALV employee share (%)",
+   "fieldtype": "Percent",
+   "default": "1.1",
+   "description": "Public 2026 rate, up to the ceiling below.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_alv_ag",
+   "label": "ALV employer share (%)",
+   "fieldtype": "Percent",
+   "default": "1.1",
+   "description": "Public 2026 rate, up to the ceiling below.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_alv_ceiling",
+   "label": "ALV ceiling (yearly salary)",
+   "fieldtype": "Currency",
+   "default": "148200",
+   "description": "No ALV above this yearly salary (2026)."
+  },
+  {
+   "fieldname": "section_bvg",
+   "label": "BVG (Pensionskasse)",
+   "fieldtype": "Section Break",
+   "collapsible": 0
+  },
+  {
+   "fieldname": "swiss_bvg_threshold",
+   "label": "BVG entry threshold (yearly)",
+   "fieldtype": "Currency",
+   "default": "22680",
+   "description": "Public 2026 value. No BVG below the insured salary."
+  },
+  {
+   "fieldname": "swiss_bvg_coordination",
+   "label": "BVG coordination deduction (yearly)",
+   "fieldtype": "Currency",
+   "default": "26460",
+   "description": "Public 2026 value, taken from the insured salary."
+  },
+  {
+   "fieldname": "swiss_bvg_ee_25",
+   "label": "BVG employee % age 25-34",
+   "fieldtype": "Percent",
+   "default": "3.5",
+   "description": "PLACEHOLDER: half of the statutory minimum total (BVG Art. 16: 7/10/15/18 percent by age band, split 50/50). Replace with the fund's plan rate from private/payroll-insurance/.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_bvg_ee_35",
+   "label": "BVG employee % age 35-44",
+   "fieldtype": "Percent",
+   "default": "5",
+   "description": "PLACEHOLDER: half of the statutory minimum total (BVG Art. 16: 7/10/15/18 percent by age band, split 50/50). Replace with the fund's plan rate from private/payroll-insurance/.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_bvg_ee_45",
+   "label": "BVG employee % age 45-54",
+   "fieldtype": "Percent",
+   "default": "7.5",
+   "description": "PLACEHOLDER: half of the statutory minimum total (BVG Art. 16: 7/10/15/18 percent by age band, split 50/50). Replace with the fund's plan rate from private/payroll-insurance/.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_bvg_ee_55",
+   "label": "BVG employee % age 55-64",
+   "fieldtype": "Percent",
+   "default": "9",
+   "description": "PLACEHOLDER: half of the statutory minimum total (BVG Art. 16: 7/10/15/18 percent by age band, split 50/50). Replace with the fund's plan rate from private/payroll-insurance/.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_bvg_ag_25",
+   "label": "BVG employer % age 25-34",
+   "fieldtype": "Percent",
+   "default": "3.5",
+   "description": "PLACEHOLDER: half of the statutory minimum total (BVG Art. 16: 7/10/15/18 percent by age band, split 50/50). Replace with the fund's plan rate from private/payroll-insurance/.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_bvg_ag_35",
+   "label": "BVG employer % age 35-44",
+   "fieldtype": "Percent",
+   "default": "5",
+   "description": "PLACEHOLDER: half of the statutory minimum total (BVG Art. 16: 7/10/15/18 percent by age band, split 50/50). Replace with the fund's plan rate from private/payroll-insurance/.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_bvg_ag_45",
+   "label": "BVG employer % age 45-54",
+   "fieldtype": "Percent",
+   "default": "7.5",
+   "description": "PLACEHOLDER: half of the statutory minimum total (BVG Art. 16: 7/10/15/18 percent by age band, split 50/50). Replace with the fund's plan rate from private/payroll-insurance/.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_bvg_ag_55",
+   "label": "BVG employer % age 55-64",
+   "fieldtype": "Percent",
+   "default": "9",
+   "description": "PLACEHOLDER: half of the statutory minimum total (BVG Art. 16: 7/10/15/18 percent by age band, split 50/50). Replace with the fund's plan rate from private/payroll-insurance/.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "section_insurers",
+   "label": "Insurers (open: empty until the policy sheets are in)",
+   "fieldtype": "Section Break",
+   "collapsible": 0
+  },
+  {
+   "fieldname": "swiss_uvg_max",
+   "label": "UVG/NBU maximum insured salary (yearly)",
+   "fieldtype": "Currency",
+   "description": "Open. From the insurer's policy."
+  },
+  {
+   "fieldname": "swiss_uvg_ag",
+   "label": "UVG employer share (BU, %)",
+   "fieldtype": "Percent",
+   "description": "Open. From the insurer's policy.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_nbu_ee",
+   "label": "NBU employee share (%)",
+   "fieldtype": "Percent",
+   "description": "Open. From the insurer's policy.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_ktg_ee",
+   "label": "KTG employee share (%)",
+   "fieldtype": "Percent",
+   "description": "Open. From the insurer's policy.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_ktg_ag",
+   "label": "KTG employer share (%)",
+   "fieldtype": "Percent",
+   "description": "Open. From the insurer's policy.",
+   "precision": "2"
+  },
+  {
+   "fieldname": "swiss_fak_ag",
+   "label": "FAK employer share (%)",
+   "fieldtype": "Percent",
+   "description": "Open. From the fund's rate for the canton.",
+   "precision": "2"
+  }
+ ],
+ "issingle": 1,
+ "modified": "2026-10-10 14:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "BI Payroll",
+ "name": "Payroll Swiss Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "print": 0,
+   "read": 1,
+   "report": 0,
+   "role": "System Manager",
+   "share": 0,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

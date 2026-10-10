@@ -126,9 +126,12 @@ slot that ledgerdemain gives (`erpnext-setup.md`).
    list stays without it) and build the copy image as `swiss.md` does. Install on a copy of the site after a backup. Check that
    erpnextswiss and bi_finance still migrate and their tests pass.
 3. **Swiss salary components and structure.** Components with the formulas above, as
-   fixtures of the `bi_finance` app (its files go under `finance/apps/bi_finance/bi_finance/bi_finance/`).
-   The rates are settings, not constants in code, so a 2027 change is a settings edit.
-   Invented-data tests for each formula, with the ALV ceiling and the BVG threshold.
+   fixtures of the new app `bi_payroll` (`finance/apps/bi_payroll/`), not `bi_finance`: HRMS is not
+   on the live site, and a fixture that names an HRMS doctype would break the live migrate. The app
+   requires `hrms` and is installed on the copy only. The rates are the doctype Payroll Swiss
+   Settings, not constants in code, so a 2027 change is a settings edit; each Salary Slip keeps
+   the rates it was computed with. Invented-data tests for each formula, with the ALV ceiling and
+   the BVG threshold (`python3 -m unittest bi_payroll.test_swiss_payroll` in the app folder).
 4. **Employee load from the bexio export.** Offline importer, the same shape as
    `import_master.py`, writing only Employee and the AHV number. Mocked data in tests.
 5. **History loader.** One submitted Salary Slip per employee and month, `payroll_entry`
@@ -165,7 +168,7 @@ Risks:
 ## Recommendation
 
 Go with HRMS `v16.50.0`, pinned as a tag. Write the Swiss deductions as Salary Components
-with formulas (AHV, ALV, BVG, UVG/NBU, KTG, FAK) as settings in the `bi_finance` fixtures.
+with formulas (AHV, ALV, BVG, UVG/NBU, KTG, FAK) as settings, in the `bi_payroll` app (its fixtures and Payroll Swiss Settings).
 Use erpnextswiss's Salary Certificate for the Lohnausweis, after its field layout is checked
 against the 2026 Form 11. Load the bexio history as submitted Salary Slips with no
 `payroll_entry`, so no GL is posted twice. Do not start the live site
