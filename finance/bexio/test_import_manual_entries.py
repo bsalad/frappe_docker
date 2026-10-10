@@ -400,6 +400,22 @@ class EntryOfLinesTest(unittest.TestCase):
         entries = [entry("m-1"), entry("m-2", lines=[dict(line(21, 11, 100), id=5)])]
         self.assertEqual(ime.entry_of_lines(entries, [journal_line(6, 22, 21, 8.10)]), {6: "m-2"})
 
+    def test_a_vat_line_booked_after_other_rows_goes_to_the_row_whose_gross_it_completes(self):
+        # bexio booked m-1's VAT line (id 30) after other rows, so it is not the row id + 1 of its row, and m-2 has a row of the
+        # same date and text: the row whose net line plus this VAT line is its gross (120.00 = 111.00 + 9.00) owns it
+        entries = [entry("m-1", lines=[line(21, 11, 120.00, description="Sample service", id=10)]),
+                   entry("m-2", lines=[line(21, 11, 150.00, description="Sample service", id=20)])]
+        journal = [journal_line(10, 21, 11, 111.00, description="Sample service"), journal_line(20, 21, 11, 140.00, description="Sample service"),
+                   journal_line(30, 22, 21, 9.00, description="Sample service")]
+        self.assertEqual(ime.entry_of_lines(entries, journal), {10: "m-1", 20: "m-2", 30: "m-1"})
+
+    def test_a_vat_line_whose_gross_two_rows_both_complete_belongs_to_neither(self):
+        entries = [entry("m-1", lines=[line(21, 11, 120.00, description="Sample service", id=10)]),
+                   entry("m-2", lines=[line(21, 11, 120.00, description="Sample service", id=20)])]
+        journal = [journal_line(10, 21, 11, 111.00, description="Sample service"), journal_line(20, 21, 11, 111.00, description="Sample service"),
+                   journal_line(30, 22, 21, 9.00, description="Sample service")]
+        self.assertEqual(ime.entry_of_lines(entries, journal), {10: "m-1", 20: "m-2"})
+
     def test_document_lines_are_not_an_entrys(self):
         self.assertEqual(ime.entry_of_lines([entry("m-1")], [journal_line(1, 21, 11, 100, ref_class="KbInvoice")]), {})
 

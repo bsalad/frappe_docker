@@ -398,12 +398,15 @@ def entry_of_lines(entries, journal):
     """{journal line id: manual entry id} of the bexio journal lines an entry books: a line whose id is one of an entry's
     row ids, and a VAT line of a row, found by the entry's date and the row's description (posting_plan's pairing). A
     line that two entries could claim is left out. The document lines (invoices, bills, payments) are not an entry's."""
-    by_id, by_text = {}, collections.defaultdict(set)
+    by_id, by_text, rows_by_text = {}, collections.defaultdict(set), collections.defaultdict(list)
     for entry in entries:
         for row in entry.get("entries") or []:
             if row.get("id") is not None:
                 by_id[row["id"]] = str(entry["id"])
-                by_text[(str(entry["date"])[:10], row.get("description"))].add(str(entry["id"]))
+                key = (str(entry["date"])[:10], row.get("description"))
+                by_text[key].add(str(entry["id"]))
+                rows_by_text[key].append(row)
+    amounts = {line["id"]: _money(line["base_currency_amount"]) for line in journal}
     owner = {}
     for line in journal:
         if line["ref_class"] in DOCUMENT_CLASSES:
@@ -411,13 +414,26 @@ def entry_of_lines(entries, journal):
         if line["id"] in by_id:
             owner[line["id"]] = by_id[line["id"]]
             continue
-        claimants = by_text.get((line["date"][:10], line.get("description")), set())
+        key = (line["date"][:10], line.get("description"))
+        claimants = by_text.get(key, set())
         if len(claimants) == 1:
             owner[line["id"]] = next(iter(claimants))
         elif by_id.get(line["id"] - 1) in claimants:
             # two entries of the day carry the same text; bexio numbers a row's VAT line right after the row, so the row before decides
             owner[line["id"]] = by_id[line["id"] - 1]
+        else:
+            # bexio can book a row's VAT line later, after other rows: then the row whose gross is its net line and this line decides
+            grossed = {by_id[row["id"]] for row in rows_by_text[key]
+                       if row["id"] in amounts and _gross_matches(row, amounts[row["id"]], amounts[line["id"]])}
+            if len(grossed) == 1:
+                owner[line["id"]] = next(iter(grossed))
     return owner
+
+
+def _gross_matches(row, net, vat):
+    """Whether the row's amount is its journal net line plus the VAT line (base currency, to the tolerance)."""
+    gross = _money(row.get("base_currency_amount", row.get("amount")))
+    return abs(abs(gross) - abs(net) - abs(vat)) <= TOLERANCE
 
 
 def journal_check(entries, totals, journal, lookups):
