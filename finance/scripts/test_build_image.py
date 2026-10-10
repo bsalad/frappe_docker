@@ -113,5 +113,119 @@ class BuildImageModes(unittest.TestCase):
             self.assertEqual(run.returncode, 2, args)
 
 
+APPLY = os.path.join(ROOT, "finance", "scripts", "apply-patches.sh")
+PATCH_DIR = os.path.join(ROOT, "finance", "patches", "erpnextswiss")
+
+# The lines of erpnextswiss item_tools.py at the pin around the stray comma (its line 43):
+# the context of the real patch, so the patch applies to this invented file as to the app.
+ITEM_TOOLS = [
+    "def get_voucher_value(voucher_code, customer):",
+    '    value = frappe.db.sql("""',
+    "                SELECT ...",
+    "                WHERE ",
+    "                    `item_code` = %(voucher)s",
+    "                    AND `parent` IN (SELECT `name` FROM `tabSales Invoice` WHERE `docstatus` = 1 AND `customer` = %(customer)s);\"\"\",",
+    "            ,",
+    "            {",
+    "                'voucher': voucher_code,",
+    "                'customer': customer",
+    "            },",
+    "            as_dict=True)",
+]
+
+
+def git(cwd, *args):
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid", *args],
+        cwd=cwd, check=True, capture_output=True, text=True,
+    )
+
+
+class PatchStep(unittest.TestCase):
+    """apply-patches.sh, the image build's patch step, on invented trees: no docker, no network."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.app = os.path.join(self.tmp, "app")
+        self.patches = os.path.join(self.tmp, "patches")
+        os.makedirs(self.app)
+        os.makedirs(self.patches)
+        git(self.app, "init", "-q")
+
+    def commit(self, name, text):
+        """Write a file into the app and commit it: the app at its pin."""
+        os.makedirs(os.path.dirname(os.path.join(self.app, name)), exist_ok=True)
+        with open(os.path.join(self.app, name), "w") as f:
+            f.write(text)
+        git(self.app, "add", name)
+        git(self.app, "commit", "-q", "-m", "pin")
+
+    def patch(self, name, text):
+        with open(os.path.join(self.patches, name), "w") as f:
+            f.write(text)
+
+    def apply(self, patch_dir=None):
+        return subprocess.run(
+            ["sh", APPLY, patch_dir or self.patches, self.app],
+            capture_output=True, text=True,
+        )
+
+    def read(self, name):
+        with open(os.path.join(self.app, name)) as f:
+            return f.read()
+
+    def test_applies_in_name_order(self):
+        self.commit("tool.py", "VALUE = 1\nOTHER = 2\n")
+        self.patch("0001-value.patch", "--- a/tool.py\n+++ b/tool.py\n@@ -1,2 +1,2 @@\n-VALUE = 1\n+VALUE = 3\n OTHER = 2\n")
+        # Applies only after 0001: its context reads VALUE = 3.
+        self.patch("0002-value-again.patch", "--- a/tool.py\n+++ b/tool.py\n@@ -1,2 +1,2 @@\n-VALUE = 3\n+VALUE = 5\n OTHER = 2\n")
+        run = self.apply()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.read("tool.py"), "VALUE = 5\nOTHER = 2\n")
+        self.assertIn("applied: " + os.path.join(self.patches, "0002-value-again.patch"), run.stdout)
+
+    def test_a_patch_that_does_not_apply_stops_the_step_and_names_it(self):
+        self.commit("tool.py", "VALUE = 1\nOTHER = 2\n")
+        self.patch("0001-broken.patch", "--- a/tool.py\n+++ b/tool.py\n@@ -1,2 +1,2 @@\n-VALUE = 9\n+VALUE = 3\n OTHER = 2\n")
+        run = self.apply()
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("patch does not apply to " + self.app + ": " + os.path.join(self.patches, "0001-broken.patch"), run.stderr)
+        self.assertEqual(self.read("tool.py"), "VALUE = 1\nOTHER = 2\n")
+
+    def test_relative_paths_work(self):
+        # Regression: a relative patch path was read from the app's directory, not the caller's.
+        self.commit("tool.py", "VALUE = 1\nOTHER = 2\n")
+        self.patch("0001-value.patch", "--- a/tool.py\n+++ b/tool.py\n@@ -1,2 +1,2 @@\n-VALUE = 1\n+VALUE = 3\n OTHER = 2\n")
+        run = subprocess.run(
+            ["sh", APPLY, os.path.relpath(self.patches, self.tmp), os.path.relpath(self.app, self.tmp)],
+            cwd=self.tmp, capture_output=True, text=True,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.read("tool.py"), "VALUE = 3\nOTHER = 2\n")
+
+    def test_no_patches_is_a_no_op(self):
+        self.commit("tool.py", "VALUE = 1\n")
+        run = self.apply()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.read("tool.py"), "VALUE = 1\n")
+
+    def test_wrong_arguments_are_a_usage_error(self):
+        run = subprocess.run(["sh", APPLY, self.patches], capture_output=True, text=True)
+        self.assertEqual(run.returncode, 2)
+
+    def test_our_item_tools_patch_fixes_the_stray_comma(self):
+        # Regression: at the pin, item_tools.py does not compile (line 43, a bare comma).
+        source = "\n".join(ITEM_TOOLS) + "\n"
+        with self.assertRaises(SyntaxError):
+            compile(source, "item_tools.py", "exec")
+        # The patch names the file from the repository root: erpnextswiss/scripts/item_tools.py.
+        path = "erpnextswiss/scripts/item_tools.py"
+        self.commit(path, source)
+        run = subprocess.run(["sh", APPLY, PATCH_DIR, self.app], capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        compile(self.read(path), path, "exec")
+
+
 if __name__ == "__main__":
     unittest.main()

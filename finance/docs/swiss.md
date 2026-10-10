@@ -232,11 +232,14 @@ then the site was dropped.
 
 **Policy.**
 
-- No vendor patch in the image. We do not edit erpnextswiss in the Containerfile or
-  in a layer. A patched copy would no longer match the pin.
+- Our own fixes to erpnextswiss are patches, kept in `finance/patches/erpnextswiss/` and
+  applied right after the app is fetched in the image build. Nothing is edited by hand in
+  the image, and nothing goes upstream (Benchi, 2026-10-10). The patches and the pin they
+  apply to are listed in `finance/docs/erpnextswiss-patches.md`. A pin change may stop a
+  patch from applying; the build then fails and names the patch.
 - Bump the pin when upstream fixes it. At each image build, check the branch:
   `git ls-remote https://github.com/libracore/erpnextswiss refs/heads/v16`. The build
   script already stops when the branch has moved from the pin. A fix is a new commit,
   so treat the bump as a full test (Risks 4).
-- The upstream bug report for item 1 is drafted in
-  `finance/docs/erpnextswiss-upstream-report.md`. It is not posted; Benchi decides.
+- Item 1 is fixed by patch `0001-item-tools-syntax.patch`; see
+  `finance/docs/erpnextswiss-patches.md`.

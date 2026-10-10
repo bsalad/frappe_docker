@@ -1,0 +1,12 @@
+diff --git a/erpnextswiss/scripts/item_tools.py b/erpnextswiss/scripts/item_tools.py
+index ca8d131..e28cc12 100644
+--- a/erpnextswiss/scripts/item_tools.py
++++ b/erpnextswiss/scripts/item_tools.py
+@@ -40,7 +40,6 @@ def get_voucher_value(voucher_code, customer):
+                 WHERE 
+                     `item_code` = %(voucher)s
+                     AND `parent` IN (SELECT `name` FROM `tabSales Invoice` WHERE `docstatus` = 1 AND `customer` = %(customer)s);""",
+-            ,
+             {
+                 'voucher': voucher_code,
+                 'customer': customer
