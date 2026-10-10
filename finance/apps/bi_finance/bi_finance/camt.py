@@ -166,7 +166,12 @@ def _transaction(entry, txd, single):
     refs = _first(txd, "Refs")
     reference = next((ref for ref in (_text(refs, name) for name in ("UETR", "AcctSvcrRef", "TxId", "PmtInfId")) if ref), None)
     if reference is None and single:
-        reference = _entry_reference(entry)
+        reference = _text(entry, "AcctSvcrRef")
+        ntry = _text(entry, "NtryRef")
+        if reference is None and ntry:
+            # NtryRef counts the entries of one statement (1, 2, 3 ...), so it repeats from file to file:
+            # with the booking date and the amount it is not mistaken for an entry of another statement.
+            reference = "{}-{}-{}".format(ntry, booking, amount)
 
     remittance = _first(txd, "RmtInf")
     text = " ".join(_texts(remittance, "Ustrd")) or " ".join(_texts(entry, "AddtlNtryInf"))

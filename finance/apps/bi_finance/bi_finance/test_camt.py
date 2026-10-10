@@ -178,6 +178,14 @@ class Transactions(unittest.TestCase):
         self.assertTrue(first[0]["reference"].startswith("camt-"))
         self.assertEqual([tx["reference"] for tx in first], [tx["reference"] for tx in camt.parse(twice)["transactions"]])
 
+    def test_entry_number_alone_does_not_repeat_across_statements(self):
+        def numbered(booked):
+            return statement_xml("camt.053.001.08", [entry("camt.053.001.08", "9.00", "DBIT", booked, booked, "<NtryRef>1</NtryRef>")])
+        first = camt.parse(numbered("2026-09-01"))["transactions"][0]["reference"]
+        second = camt.parse(numbered("2026-10-01"))["transactions"][0]["reference"]
+        self.assertNotEqual(first, second)
+        self.assertEqual(first, camt.parse(numbered("2026-09-01"))["transactions"][0]["reference"])
+
     def test_description_is_cut(self):
         long = entry("camt.053.001.08", "1.00", "CRDT", "2026-10-02", "2026-10-02", "<AcctSvcrRef>AS-L</AcctSvcrRef>", "", "<AddtlNtryInf>{}</AddtlNtryInf>".format("x" * 300))
         tx = camt.parse(statement_xml("camt.053.001.08", [long]))["transactions"][0]
