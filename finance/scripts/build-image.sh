@@ -75,7 +75,7 @@ for app in json.load(open(sys.argv[1])):
     ).stdout.split()
     head = out[0] if out else ""
     if head != pinned:
-        sys.exit(f"{app['url']} {app['branch']} is at {head or 'nothing'}, apps.json pins {pinned}")
+        sys.exit(f"{app['url']} {app['branch']} is at {head or 'nothing'}, the list pins {pinned}")
     print(f"pinned: {app['url']} {app['branch']} @ {pinned}")
 PY
 
