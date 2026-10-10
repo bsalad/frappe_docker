@@ -151,6 +151,12 @@ class ClassifyTest(unittest.TestCase):
     def test_document_not_in_erpnext(self):
         self.assertEqual(self.outcome("f-1", ["10"], meta("f-1", "a.pdf", b"x"), imf.Lookups({}, {})), "no document")
 
+    def test_a_row_without_name_or_size_is_no_content_even_next_to_other_files(self):
+        # a bill attachment whose download failed (export.py) has neither; the other files of the document must not matter
+        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": None, "file_size": None, "description": ""}]})
+        row = {"id": "u-1", "uuid": "u-1", "bill_id": "10"}
+        self.assertEqual(self.outcome("u-1", ["10"], row, lookups), "no content")
+
     def test_content_missing_on_disk(self):
         lookups = imf.Lookups({"10": "PINV-1"}, {})
         self.assertEqual(self.outcome("f-1", ["10"], meta("f-1", "a.pdf", b"x"), lookups), "no content")

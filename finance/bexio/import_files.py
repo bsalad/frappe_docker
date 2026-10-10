@@ -100,7 +100,8 @@ def already_attached(file_id, meta, files):
     # the marker is compared whole: "bexio file 1" must not match "bexio file 12"
     return any(
         f.get("description") == MARKER.format(file_id)
-        or (f.get("file_name") == meta["name"] and f.get("file_size") == meta.get("size_in_bytes"))
+        # a bill attachment whose download failed has no name or size: it matches nothing by them
+        or (meta.get("name") and f.get("file_name") == meta["name"] and f.get("file_size") == meta.get("size_in_bytes"))
         for f in files
     )
 
