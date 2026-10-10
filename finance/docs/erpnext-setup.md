@@ -136,10 +136,14 @@ Checked on a draft Sales Invoice (not saved) with the former 8.1 % template:
 100.00 net gives 8.10 tax on 2200 and 108.10 total. The same numbers apply to
 `UN81`.
 
-Method: ERPNext books VAT on the invoice date. The effective method on
-payments received (vereinnahmte Entgelte) is therefore a matter of the VAT
-statement, not of these templates; it is not built or tested yet (`swiss.md`
-lists erpnextswiss's MWST declaration as untested).
+Method: ERPNext books VAT on the invoice date, on 2202 (sales) and 1172 (bills).
+bexio declares on payments received (vereinnahmte Entgelte): the VAT moves to
+2200 (sales), 1170 or 1171 (purchases) on the payment date. ERPNext makes the
+same moves as one Journal Entry per bexio journal line, on that date. So the
+VAT accounts 2200, 1170, 1171 and 2203 are the payment basis, and they agree
+with bexio's journal per quarter (`finance/bexio/mwst_compare.py`, read only).
+The per-rate Ziffern of the form (base and tax per code) are not compared yet;
+see `swiss.md`, "VAT per quarter against bexio".
 
 **fiscal.** Calendar years 2015 to 2026. 2026 existed; the others were added,
 and each gets a row for BI Concepts.
@@ -320,5 +324,5 @@ Not reconciled, and not in the GL: 34 bank transactions in a foreign currency
 (no GL entry is made for them), and 73 bank transactions that are not reconciled
 with a voucher. Both wait for confirmation.
 
-Not done here: no period is locked or frozen. The MWST per period against bexio's
-declarations is a separate check.
+Not done here: no period is locked or frozen. The MWST per quarter against bexio
+is in `swiss.md`, "VAT per quarter against bexio".

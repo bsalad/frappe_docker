@@ -49,7 +49,7 @@ Pinned in `finance/apps.json`:
 | Need | erpnextswiss v16 | Evidence |
 | --- | --- | --- |
 | QR-bill on sales invoices | Yes, with a caveat | Print format `qr_sales_invoice`, and `templates/qrr_invoice`. The QR image is rendered by an external server (see Risks). |
-| MWST declaration, effective method | Yes | `doctype/vat_declaration` with `vat_type` `effective` or `flat`, and effective-method rates on the net amount. |
+| MWST declaration, effective method | Partly | `doctype/vat_declaration` with `vat_type` `effective` or `flat`, and effective-method rates on the net amount (not tested here). The VAT accounts per quarter agree with bexio, see below; the form's rows per rate do not yet. |
 | MWST declaration, received | Partly | Report `kontrolle_mwst` and the Swiss MWST page (`kt_swiss_route_schweizer_mwst`). Not tested here. |
 | Swiss chart of accounts | Yes | `erpnextswiss/coa_import/accounts_template.csv`, 180 rows. Root groups follow the KMU numbering: 1 Aktiven, 2 Passiven, 3 Betriebsertrag, 4 Aufwand Material/Waren/Dienstleistungen, 5 Personalaufwand, 6 Sonstiger Betriebsaufwand, 7 Nebenerfolg, 9 Abschluss. Not tested against our data. |
 | camt.053 import | Yes | Bank import page, CAMT.053 format; a profile for Aargauische Kantonalbank. |
@@ -58,6 +58,33 @@ Pinned in `finance/apps.json`:
 | ESR/QR reference matching | Yes | `scripts/esr_qr_tools.py`; ESR/QR fields on Payment Entry and Purchase Invoice. |
 | Incoming QR and ZUGFeRD invoices | Yes | `zugferd/`, `qr_reader.py`, `factur-x`. |
 | Missing or not checked | - | QR-bill layout against the current Swiss standard (not checked); EBICS against a real bank (not possible here); MWST received path (not tested); data migration from `swiss_accounting_software` (the README says not to uninstall it until the flows are validated). |
+
+## VAT per quarter against bexio
+
+bexio declares on payments received (vereinnahmte Entgelte), so the VAT of a
+sale is due in the quarter of the receipt, and the input VAT of a bill in the
+quarter of its payment. ERPNext books the same moves on the same dates
+(`erpnext-setup.md`, "Method"). `finance/bexio/mwst_compare.py` compares the
+payment-basis accounts per quarter, bexio's journal against the ERPNext General
+Ledger, read only: 2200 (Ziffer 399), 1170 and 1171 (Vorsteuer, Ziffer 400 to 420)
+and 2203 (Bezugsteuer). Result: 27 quarters (2020 Q2 to 2026 Q4), 67 account-quarters,
+no difference after the two rules below.
+
+Explained, not a difference in the books:
+
+- **1 January carry-forward.** bexio's journal repeats the closing balance of
+  the year on 1 January as a line "provisorischer Saldovortrag" (1170, 1171 against
+  273). ERPNext holds that balance from the year before and does not book it
+  again. The comparison leaves those lines out of bexio's side, so the balance
+  is counted once.
+- **Rappen.** bexio's journal amounts carry more than two decimals in some
+  lines; each line is rounded to the rappen, as ERPNext posts it.
+
+Not compared yet: the form's rows per rate (200, 302 to 343), the base of each
+Ziffer, and the split of the Vorsteuer in 400 and 405. They need each receipt
+split over the VAT rates of its invoices, from bexio's invoices and receipts.
+The filed declarations (bexio's MWST-Abrechnung) are not read; they would show
+any correction made in the form itself.
 
 ## Alternatives
 
