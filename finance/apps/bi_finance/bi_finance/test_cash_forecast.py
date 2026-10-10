@@ -162,6 +162,15 @@ class BankRecurringCosts(unittest.TestCase):
         self.assertTrue(cf.mostly_regular(dates, "monthly"))
         self.assertFalse(cf.mostly_regular(dates[:3] + [D(2026, 3, 20), D(2026, 4, 8), D(2026, 5, 1)], "monthly"))
 
+    def test_lines_of_one_group_on_one_day_are_one_monthly_occurrence(self):
+        # a month-end run of three fee lines: the gaps between them are 0 days, the sum repeats every month
+        days = [D(2026, 7, 31), D(2026, 8, 31), D(2026, 9, 30)]
+        bank = [("fees invented", day, amount, f"BT-{n}")
+                for n, (day, amount) in enumerate([(day, a) for day in days for a in (10.0, 20.0, 30.0)], 1)]
+        found = cf.recurring_costs(bank, AS_OF, strict=True)
+        self.assertEqual([(item["period"], item["amount"], item["count"], item["last_bill"]) for item in found],
+                         [("monthly", 60.0, 9, "BT-9")])
+
     def test_a_one_off_payment_is_not_recurring(self):
         bank = [(cf.description_key("Furniture Invented Store"), D(2026, 4, 2), 900.0, "BT-9")]
         self.assertEqual(cf.recurring_costs(bank, AS_OF), [])

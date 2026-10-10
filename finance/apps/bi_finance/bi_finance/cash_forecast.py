@@ -135,18 +135,34 @@ def mostly_regular(dates, period):
     return sum(low <= gap <= high for gap in gaps) >= REGULAR_SHARE * len(gaps)
 
 
+def merge_same_day(rows):
+    """rows: (day, amount, name) sorted by day. One row per day: the amounts summed, the last name kept."""
+    merged = []
+    for day, amount, name in rows:
+        if merged and merged[-1][0] == day:
+            merged[-1] = (day, merged[-1][1] + amount, name)
+        else:
+            merged.append((day, amount, name))
+    return merged
+
+
 def recurring_costs(bills, as_of, strict=False):
     """bills: (supplier, posting date, amount, bill name) of the look-back window, in the company currency.
     One dict per supplier with a fixed period: supplier, period, amount, count (the bills behind it), last_date,
     last_bill (the name of its last bill, as its source). A supplier whose last bill is older than two periods
     has stopped and is left out. strict: the gaps must also mostly fall in the period (see mostly_regular); the
-    bank lines are passed strict, since a group of them, keyed by description, can mix several payees."""
+    bank lines are passed strict, since a group of them, keyed by description, can mix several payees; the lines
+    of one group on one day are then one occurrence (their sum), as a month-end run of fees is one cost, and
+    count stays the number of lines."""
     by_supplier = {}
     for supplier, day, amount, name in bills:
         by_supplier.setdefault(supplier, []).append((day, amount, name))
     found = []
     for supplier, rows in sorted(by_supplier.items()):
         rows.sort()
+        lines = len(rows)
+        if strict:
+            rows = merge_same_day(rows)
         dates = [day for day, _, _ in rows]
         detected = detect_period(dates, [amount for _, amount, _ in rows])
         if detected is None or (strict and not mostly_regular(dates, detected[0])):
@@ -157,7 +173,7 @@ def recurring_costs(bills, as_of, strict=False):
         if add_months(last_date, 2 * months) < as_of:
             continue
         found.append({
-            "supplier": supplier, "period": period, "amount": round(amount, 2), "count": len(rows),
+            "supplier": supplier, "period": period, "amount": round(amount, 2), "count": lines,
             "last_date": last_date, "last_bill": last_bill,
         })
     return found

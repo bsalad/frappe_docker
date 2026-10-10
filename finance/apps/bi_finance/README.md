@@ -51,7 +51,8 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   after), the running balance and the lowest week. Pure Python.
   The bank lines left out of the recurring costs: a payroll or VAT word, a payroll or VAT Journal Entry, a
   Payment Entry of a Purchase Invoice, or a bill of the same amount dated within five days.
-  A bank group must have 80% of its gaps in its period, a bill group only its median gap in it.
+  A bank group must have 80% of its gaps in its period, a bill group only its median gap in it; the lines of a
+  bank group on one day count as one occurrence, their sum.
 - `bi_finance/bi_finance/report/cash_flow_forecast/`: the "Cash Flow Forecast" report (weeks, chart, lowest point) and
   `bi_finance/bi_finance/report/cash_flow_forecast_lines/`: the "Cash Flow Forecast Lines" report, each line with its source document.
   Both read the books through the Payment Ledger and the GL and call `cash_forecast.py`. Both are shortcuts

@@ -12,7 +12,8 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
     A line is left out when a payroll or VAT word is in its description, when it is reconciled to a payroll or VAT
     Journal Entry (accounts 5xxx, 2200, 2202), when it is reconciled to a Payment Entry of a Purchase Invoice, or
     when a purchase bill of the same amount is dated within five days of it. A group needs 80% of its gaps in its
-    period, since a key can mix payees; its amount is the median of its lines;
+    period, since a key can mix payees; lines of a group on one day are one occurrence, their sum; its amount
+    is the median of its occurrences;
 - payroll: the salary accounts (group 5) of the last year, the average of the last three months, paid on the 25th
   (the Friday before when the 25th is a weekend);
 - VAT: the balance of 2200 and 2202 less 1170 to 1172, split at the start of the current quarter: the quarter closed
