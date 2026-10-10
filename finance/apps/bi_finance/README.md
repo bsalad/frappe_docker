@@ -31,10 +31,12 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
 - `bi_finance/test_cash_position.py`, `bi_finance/test_treasury.py`: offline tests, run in the image
   (see `finance/docs/erpnext-setup.md`).
 - Wise sync (read-only API): `bi_finance/bi_finance/doctype/wise_settings` (the token, the profile, hourly on/off),
-  `bi_finance/wise_client.py` (the three GET calls and the statement rows), `bi_finance/bank_feed.py` (the
+  `bi_finance/wise_client.py` (the GET calls: balances, activities, transfers, quotes; the feed rows and the amount
+  parsing; no statements, which answer 403 for this profile), `bi_finance/bank_feed.py` (the
   shared feed: rows written once by transaction id, deduplicated against imported lines by account, date and
   amount; PayPal reuses it), `bi_finance/wise.py` (balances as Bank Accounts, the sync, the hourly job).
-  `bi_finance/test_wise.py` is offline (fake HTTP), run in the image with `bi_finance.test_wise`.
+  `bi_finance/test_wise_client.py` is offline (fake HTTP, host gate); `bi_finance/test_wise.py` (dedupe, CHF, rates)
+  runs in the image with `bi_finance.test_wise`.
   CHF rates: a live run stores the day rates of each Wise currency as Currency Exchange rows, from frankfurter.dev v2
   (the source set in Currency Exchange Settings), one request per currency and range; a dry run stores none.
 - `bi_finance/bi_finance/doctype/bank_statement_upload/`: the doctype "Bank Statement Upload" (module BI Finance,

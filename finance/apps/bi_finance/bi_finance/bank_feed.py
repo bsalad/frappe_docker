@@ -1,6 +1,6 @@
 """The bank feed shared by the bank APIs (Wise and PayPal): feed rows written as submitted Bank Transactions.
 
-A row is the dict wise_client.statement_rows gives: transaction_id, date, deposit, withdrawal, currency, description,
+A row is the dict wise_client.feed_rows gives: transaction_id, date, deposit, withdrawal, currency, description,
 reference_number. Its transaction_id is the external id. A Bank Transaction with that id is left alone on every later
 run, so a second run writes nothing.
 
@@ -26,6 +26,8 @@ import frappe
 from frappe import _
 
 RATE_URL = "https://api.frankfurter.dev/v2/rates"
+
+RATE_USER_AGENT = "bi_finance-wise-feed/1.0"
 
 RATE_TIMEOUT_SECONDS = 60
 
@@ -197,9 +199,9 @@ def fetch_start(start, latest):
 def fetch_rates(currency, start, end, opener=urllib.request.urlopen):
     """The CHF rate the source gives for each day from start to end: {day: rate}, days as YYYY-MM-DD. One request."""
     params = {"from": str(start), "to": str(end), "base": currency, "quotes": "CHF"}
-    request = urllib.request.Request(
-        RATE_URL + "?" + urllib.parse.urlencode(params), headers={"Accept": "application/json"}, method="GET"
-    )
+    # the source answers 403 to urllib's default agent, so the request names itself
+    headers = {"Accept": "application/json", "User-Agent": RATE_USER_AGENT}
+    request = urllib.request.Request(RATE_URL + "?" + urllib.parse.urlencode(params), headers=headers, method="GET")
     try:
         with opener(request, timeout=RATE_TIMEOUT_SECONDS) as response:
             payload = json.load(response)
