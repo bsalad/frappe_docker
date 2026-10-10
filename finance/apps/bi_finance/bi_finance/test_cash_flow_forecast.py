@@ -346,13 +346,17 @@ class NewSalesRunRate(unittest.TestCase):
                 self.patch_readers(stack, self.payments())
                 stack.enter_context(mock.patch.object(cff, "_", lambda text: text))
                 stack.enter_context(mock.patch.object(lines_report, "_", lambda text: text))
-                _columns, rows = lines_report.execute(filters)
-            return rows
+                stack.enter_context(mock.patch.object(cff.frappe, "get_cached_value", return_value="CHF"))
+                stack.enter_context(mock.patch.object(cff, "fmt_money", side_effect=money))
+                _columns, rows, message = lines_report.execute(filters)
+            return rows, message
 
-        rows = run({"company": "Test Company", "as_of_date": AS_OF})
+        rows, message = run({"company": "Test Company", "as_of_date": AS_OF})
+        # the closing cash with its band has no line of its own: the lines report says it in its message
+        self.assertIn("End of week 13 the closing cash is 1650.00 CHF, between 1000.00 CHF and 2300.00 CHF", message)
         receipts = [row for row in rows if row["type"] == "Expected receipts from new sales"]
         self.assertEqual([row["amount"] for row in receipts], [50.0] * 13)
-        self.assertEqual(run({"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0, "include_new_purchases": 0}), [])
+        self.assertEqual(run({"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0, "include_new_purchases": 0}), ([], None))
 
 
 class LedgerFixture(unittest.TestCase):
@@ -488,14 +492,16 @@ class NewPurchasesRunRate(LedgerFixture):
                     stack.enter_context(mock.patch.object(cff, name, return_value=value))
                 stack.enter_context(mock.patch.object(cff, "_", lambda text: text))
                 stack.enter_context(mock.patch.object(lines_report, "_", lambda text: text))
-                _columns, rows = lines_report.execute(filters)
-            return rows
+                stack.enter_context(mock.patch.object(lines_report.frappe, "get_cached_value", return_value="CHF"))
+                stack.enter_context(mock.patch.object(cff, "fmt_money", side_effect=money))
+                _columns, rows, message = lines_report.execute(filters)
+            return rows, message
 
-        rows = run({"company": "Test Company", "as_of_date": AS_OF})
+        rows, _message = run({"company": "Test Company", "as_of_date": AS_OF})
         purchases = [row for row in rows if row["type"] == "Expected payments for new purchase bills"]
         # both payments of the window, 1300 and 900, a thirteenth of the mean of the two windows each week: an outflow
         self.assertEqual([row["amount"] for row in purchases], [-round(2200 / 2 / cf.WEEKS, 2)] * 13)
-        self.assertEqual([row for row in run({"company": "Test Company", "as_of_date": AS_OF, "include_new_purchases": 0})
+        self.assertEqual([row for row in run({"company": "Test Company", "as_of_date": AS_OF, "include_new_purchases": 0})[0]
                           if row["type"] == "Expected payments for new purchase bills"], [])
 
 

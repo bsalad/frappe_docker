@@ -436,6 +436,12 @@ class Bases(unittest.TestCase):
         falling = [paid_in_window(80 + 91 * i, amount) for i, amount in enumerate([0.0, 400.0, 800.0, 1200.0])]
         self.assertEqual(cf.basis_total(falling, AS_OF, "trend")[0], 0.0)
 
+    def test_the_band_of_a_run_rate_holds_its_point_when_the_trend_runs_past_the_windows(self):
+        rate = cf.run_rate(self.payments(), AS_OF, "trend")
+        # the point is 1200 of the 13-week total, above the most of the windows (1000)
+        self.assertEqual((rate["low"], rate["weekly"], rate["high"]), (30.77, 92.31, 92.31))
+        self.assertEqual(cf.closing_band(0.0, rate, None), (round(-13 * (92.31 - 30.77), 2), 0.0))
+
     def test_an_unknown_basis_is_an_error(self):
         with self.assertRaises(ValueError):
             cf.basis_total(self.payments(), AS_OF, "median")

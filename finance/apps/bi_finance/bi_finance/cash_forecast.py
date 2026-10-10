@@ -407,9 +407,11 @@ def basis_total(payments, as_of, basis):
 def run_rate(payments, as_of, basis=RUN_RATE_BASIS):
     """payments: (invoice date, payment date, amount) of the Sales Invoices paid in the last RUN_RATE_LOOKBACK_DAYS.
     The run-rate is the 13-week total of basis_total spread evenly over the weeks. Returns a dict: weekly (the amount
-    of each week), low and high (the same for the band of the basis), since (the first day the basis reads), and
+    of each week), low and high (the same for the band of the basis, which always holds the point), since (the first day the basis reads), and
     basis (the name of the basis, for the basis note)."""
     total, low, high = basis_total(payments, as_of, basis)
+    # the band holds the point, whatever the basis: a trend can run past the windows it reads
+    low, high = min(low, total), max(high, total)
     return {
         "weekly": round(total / WEEKS, 2), "low": round(low / WEEKS, 2), "high": round(high / WEEKS, 2),
         "since": as_of - datetime.timedelta(days=BASIS_DAYS[basis]), "basis": basis,

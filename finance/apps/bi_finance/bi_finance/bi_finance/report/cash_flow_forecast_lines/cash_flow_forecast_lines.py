@@ -6,16 +6,17 @@ day it is expected, the party and the source document. Inflows are positive, out
 
 import frappe
 from frappe import _
-from frappe.utils import cint, getdate, nowdate
+from frappe.utils import cint, escape_html, getdate, nowdate
 
 from bi_finance import cash_forecast as cf
-from bi_finance.bi_finance.report.cash_flow_forecast.cash_flow_forecast import compute, kind_label
+from bi_finance.bi_finance.report.cash_flow_forecast.cash_flow_forecast import closing_band_messages, compute, kind_label
 
 
 def execute(filters=None):
     filters = frappe._dict(filters or {})
     company = filters.company or frappe.defaults.get_user_default("company")
     as_of = getdate(filters.as_of_date or nowdate())
+    currency = frappe.get_cached_value("Company", company, "default_currency")
     result = compute(company, as_of, include_run_rate=cint(filters.get("include_run_rate", 1)),
                      include_new_purchases=cint(filters.get("include_new_purchases", 1)),
                      include_owner_accounts=cint(filters.get("include_owner_accounts", 1)))
@@ -33,7 +34,9 @@ def execute(filters=None):
             "amount": sign * line["amount"],
             "note": line["note"],
         })
-    return columns(), rows
+    # the band of each run-rate is in its lines' note; the closing cash with its band has no line of its own
+    message = "<br>".join(escape_html(m) for m in closing_band_messages(result, currency)) or None
+    return columns(), rows, message
 
 
 def columns():

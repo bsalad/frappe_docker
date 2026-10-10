@@ -5,11 +5,12 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
 - receipts: the open Sales Invoices (Payment Ledger), on the due date moved by the customer's average days late
   over the last year, from the invoices paid in that year;
 - new sales: receipts from invoices not yet issued on the as-of date, a run-rate: the receipts collected in each of
-  the last four 13-week windows from the invoices issued in the same window, averaged and spread over the weeks.
+  the last 13-week windows the run-rate basis reads (RUN_RATE_BASIS in cash_forecast.py) from the invoices issued in
+  the same window, averaged and spread over the weeks, with a low and a high.
   The report's "Include new sales run-rate" filter leaves it out, to see the forecast of the documents alone;
 - bills: the open Purchase Invoices, on the due date;
 - new purchases: payments of bills not yet posted on the as-of date, the mirror of new sales: the payments made in each
-  of the last four 13-week windows against the bills posted in the same window, averaged and spread over the weeks.
+  of the windows of the same basis against the bills posted in the same window, averaged and spread over the weeks.
   The suppliers the recurring costs forecast, and the insurers' bills (items on 2270-2279, their own recurring bills),
   are left out so nothing is counted twice. The report's "Include new purchases run-rate" filter leaves it out;
 - recurring costs, from two sources, each over the last year and repeating monthly, quarterly or yearly:
@@ -555,6 +556,17 @@ def compute(company, as_of, include_run_rate=True, include_new_purchases=True, i
     }
 
 
+def closing_band_messages(result, currency):
+    """The closing cash at the end of the horizon with its low and high, as a list of one message (empty when neither
+    run-rate is in the forecast). The forecast report and the lines report both show it."""
+    if not (result["run_rate"] or result["new_purchases"]):
+        return []
+    low, high = result["closing_band"]
+    return [_("End of week {0} the closing cash is {1}, between {2} and {3} with the run-rates at their low and high.").format(
+        len(result["weeks"]), fmt_money(result["weeks"][-1]["closing"], currency=currency),
+        fmt_money(low, currency=currency), fmt_money(high, currency=currency))]
+
+
 def execute(filters=None):
     filters = frappe._dict(filters or {})
     company = filters.company or frappe.defaults.get_user_default("company")
@@ -615,10 +627,7 @@ def execute(filters=None):
             fmt_money(result["new_purchases"]["weekly"], currency=currency), fmt_money(result["new_purchases"]["low"], currency=currency),
             fmt_money(result["new_purchases"]["high"], currency=currency), basis_label(result["new_purchases"]["basis"]),
             result["new_purchases"]["since"], result["new_purchases"]["excluded"]))
-    if result["run_rate"] or result["new_purchases"]:
-        messages.append(_("End of week {0} the closing cash is {1}, between {2} and {3} with the run-rates at their low and high.").format(
-            len(weeks), fmt_money(final_closing, currency=currency),
-            fmt_money(result["closing_band"][0], currency=currency), fmt_money(result["closing_band"][1], currency=currency)))
+    messages.extend(closing_band_messages(result, currency))
     if result["beyond"]:
         messages.append(_("{0} lines fall after week {1} and are not in the forecast.").format(result["beyond"], len(weeks)))
     if result["without_history"]:
