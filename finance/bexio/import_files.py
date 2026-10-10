@@ -45,8 +45,9 @@ CONTENT_DIR = "files"
 PROBLEMS_FILE = "bexio-files-dry-run.txt"
 MARKER = "bexio file {}"
 
-ATTACH, ATTACHED = "attach", "attached"
+ATTACH, ATTACHED, REENCODED = "attach", "attached", "re-encoded"
 PROBLEMS = ("unlinked", "shared", "no metadata", "no document", "no content", "size differs")
+IMAGES = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 
 
 class Lookups:
@@ -118,6 +119,13 @@ def already_attached(file_id, meta, files):
     )
 
 
+def reencoded(meta, files):
+    # Frappe strips the EXIF data of an uploaded image, so the File's bytes and size differ from the export's
+    # while its name stays: the same picture, not a missing one. Only images, so a PDF of another size still differs.
+    name = meta.get("name")
+    return bool(name) and name.lower().endswith(IMAGES) and any(f.get("file_name") == name for f in files)
+
+
 def classify(file_id, meta, holders, lookups, export_dir):
     """What the live run does with one file: its outcome, and the Purchase Invoice it goes to."""
     if not holders:
@@ -130,8 +138,11 @@ def classify(file_id, meta, holders, lookups, export_dir):
         return "no document", None
     if meta is None:
         return "no metadata", document
-    if already_attached(file_id, meta, lookups.attached.get(document, [])):
+    files = lookups.attached.get(document, [])
+    if already_attached(file_id, meta, files):
         return ATTACHED, document
+    if reencoded(meta, files):
+        return REENCODED, document
     path = content_path(export_dir, meta)
     if not os.path.isfile(path):
         return "no content", document
@@ -171,14 +182,14 @@ def report(rows, export_dir, has_files, applied=False):
     for doctype in sorted({r["doctype"] for r in rows}):
         group = [r for r in rows if r["doctype"] == doctype]
         todo = [r for r in group if r["outcome"] == ATTACH]
-        done = [r for r in group if r["outcome"] == ATTACHED]
+        done = [r for r in group if r["outcome"] in (ATTACHED, REENCODED)]
         problems = [r for r in group if r["outcome"] in PROBLEMS]
         lines.append("{:<18}{:>7}{:>14}{:>9}{:>14}{:>10}{:>10}".format(
             doctype, len(group), _bytes(group, has_files), len(todo), _bytes(todo, has_files), len(done), len(problems)))
     counts = {}
     for r in rows:
         counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1
-    for outcome in (ATTACH, ATTACHED) + PROBLEMS:
+    for outcome in (ATTACH, ATTACHED, REENCODED) + PROBLEMS:
         if counts.get(outcome):
             lines.append("  {:<14}{:>6}".format(outcome, counts[outcome]))
     lines.append("applied: the files marked attach are uploaded" if applied else "dry run: nothing was written")
@@ -257,11 +268,17 @@ def main(argv):
         return 2
     print(report(rows, export_dir, has_files, applied=args.apply))
     problems = [r for r in rows if r["outcome"] in PROBLEMS]
-    if problems:
-        ip.write_private(os.path.join(im.PRIVATE, PROBLEMS_FILE),
-                         ["file {}: {}".format(r["file"], r["outcome"]) for r in problems])
-        print("{} file(s) listed by bexio id in {}".format(len(problems), os.path.join(im.PRIVATE, PROBLEMS_FILE)), file=sys.stderr)
+    listed = [r for r in rows if r["outcome"] in PROBLEMS or r["outcome"] == REENCODED]
+    if listed:
+        ip.write_private(os.path.join(im.PRIVATE, PROBLEMS_FILE), [problem_line(r) for r in listed])
+        print("{} file(s) listed by bexio id in {}".format(len(listed), os.path.join(im.PRIVATE, PROBLEMS_FILE)), file=sys.stderr)
     return 1 if problems else 0
+
+
+def problem_line(row):
+    if row["outcome"] == REENCODED:
+        return "file {}: attached, re-encoded by Frappe (size differs)".format(row["file"])
+    return "file {}: {}".format(row["file"], row["outcome"])
 
 
 if __name__ == "__main__":

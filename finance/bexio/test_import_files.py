@@ -200,6 +200,19 @@ class ClassifyTest(unittest.TestCase):
         lookups = imf.Lookups({"10": "PINV-1"}, {})
         self.assertEqual(self.outcome("f-1", ["10"], meta("f-1", "a.pdf", b"x"), lookups), "size differs")
 
+    def test_image_re_encoded_by_frappe_is_attached_not_attached_again(self):
+        # Frappe strips the EXIF of an uploaded image: the File keeps the name, not the size
+        write_export(self.root, contents={"f-1": ("a.jpg", b"exif-invented-bytes")})
+        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "a.jpg", "file_size": 10, "description": ""}]})
+        self.assertEqual(imf.classify("f-1", meta("f-1", "a.jpg", b"exif-invented-bytes"), ["10"], lookups, self.root),
+                         (imf.REENCODED, "PINV-1"))
+
+    def test_a_pdf_of_another_size_under_the_same_name_is_still_a_difference(self):
+        # the content on disk is two bytes, the metadata says four: a PDF is not re-encoded, so this is a difference
+        write_export(self.root, contents={"f-1": ("a.pdf", b"xx")})
+        lookups = imf.Lookups({"10": "PINV-1"}, {"PINV-1": [{"file_name": "a.pdf", "file_size": 10, "description": ""}]})
+        self.assertEqual(self.outcome("f-1", ["10"], meta("f-1", "a.pdf", b"four"), lookups), "size differs")
+
 
 class PlanTest(unittest.TestCase):
     def test_one_row_per_referenced_or_described_file(self):
@@ -224,6 +237,19 @@ class ReportTest(unittest.TestCase):
             {"file": "f-2", "outcome": "attached", "doctype": "Purchase Invoice", "document": "PINV-2", "size": 50},
             {"file": "f-3", "outcome": "unlinked", "doctype": "-", "document": None, "size": 7},
         ]
+
+    def test_a_re_encoded_image_counts_as_attached_not_as_a_problem(self):
+        rows = self.rows() + [{"file": "f-4", "outcome": imf.REENCODED, "doctype": "Purchase Invoice", "document": "PINV-3", "size": 30}]
+        text = imf.report(rows, "/private/export", True)
+        pi = next(line for line in text.splitlines() if line.startswith("Purchase Invoice"))
+        # files, bytes, to attach, bytes, attached (the re-encoded one too), problems
+        self.assertEqual(pi[len("Purchase Invoice"):].split(), ["3", "180", "1", "100", "2", "0"])
+        self.assertNotIn(imf.REENCODED, imf.PROBLEMS)
+
+    def test_the_problems_file_says_a_re_encoded_file_is_attached(self):
+        self.assertEqual(imf.problem_line({"file": "f-4", "outcome": imf.REENCODED}),
+                         "file f-4: attached, re-encoded by Frappe (size differs)")
+        self.assertEqual(imf.problem_line({"file": "f-5", "outcome": "unlinked"}), "file f-5: unlinked")
 
     def test_totals_per_doctype_with_bytes(self):
         text = imf.report(self.rows(), "/private/export", True)
