@@ -28,3 +28,8 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   (`dashboard_chart/`) show it; migrate syncs them.
 - `bi_finance/test_cash_position.py`, `bi_finance/test_treasury.py`: offline tests, run in the image
   (see `finance/docs/erpnext-setup.md`).
+- Wise sync (read-only API): `bi_finance/doctype/wise_settings` (the token, the profile, hourly on/off),
+  `bi_finance/wise_client.py` (the three GET calls and the statement rows), `bi_finance/bank_feed.py` (the
+  shared feed: rows written once by transaction id, deduplicated against imported lines by account, date and
+  amount; PayPal reuses it), `bi_finance/wise.py` (balances as Bank Accounts, the sync, the hourly job).
+  `bi_finance/test_wise.py` is offline (fake HTTP), run in the image with `bi_finance.test_wise`.

@@ -26,3 +26,8 @@ jinja = {
         "bi_finance.qrbill.sales_invoice_slip_spacer",
     ]
 }
+
+# Wise sync: a live run each hour when Wise Settings has sync on (wise.sync_scheduled checks it)
+scheduler_events = {
+    "hourly": ["bi_finance.wise.sync_scheduled"],
+}

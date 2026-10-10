@@ -1,0 +1,73 @@
+{
+ "actions": [],
+ "creation": "2026-10-10 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "api_token",
+  "profile_id",
+  "sync_enabled",
+  "backfill_from",
+  "last_sync"
+ ],
+ "fields": [
+  {
+   "description": "A read-only token from Wise Business. Stored as a Password field; the code reads it with get_password.",
+   "fieldname": "api_token",
+   "fieldtype": "Password",
+   "label": "API token",
+   "reqd": 0
+  },
+  {
+   "description": "The profile of the Wise business account. Test connection lists the profiles the token can see.",
+   "fieldname": "profile_id",
+   "fieldtype": "Data",
+   "label": "Profile id"
+  },
+  {
+   "default": "0",
+   "description": "Sync every hour. Off until the token is entered and a dry run was reviewed.",
+   "fieldname": "sync_enabled",
+   "fieldtype": "Check",
+   "label": "Sync hourly"
+  },
+  {
+   "default": "2015-01-01",
+   "description": "The first day statements are read from on the first sync. Later syncs read from a week before the last one.",
+   "fieldname": "backfill_from",
+   "fieldtype": "Date",
+   "label": "Backfill from"
+  },
+  {
+   "fieldname": "last_sync",
+   "fieldtype": "Datetime",
+   "label": "Last sync",
+   "read_only": 1
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-10 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "BI Finance",
+ "name": "Wise Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 0,
+   "role": "System Manager",
+   "share": 0,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
