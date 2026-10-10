@@ -15,5 +15,11 @@ frappe.query_reports["Cash Flow Forecast Lines"] = {
 			default: frappe.datetime.get_today(),
 			reqd: 1,
 		},
+		{
+			fieldname: "include_run_rate",
+			label: __("Include new sales run-rate"),
+			fieldtype: "Check",
+			default: 1,
+		},
 	],
 };

@@ -6,10 +6,10 @@ decides the dates and the sums, so it can be tested with invented data. Pure Pyt
 Weeks run from the as-of date: week 1 is the as-of day and the six after it, week 13 the last seven days of
 the horizon. A line due before the as-of date is overdue and falls in week 1: it is still owed.
 
-Kinds of line: receipt (a customer pays an open Sales Invoice, or the new sales run-rate of invoices not issued yet),
-bill (an open Purchase Invoice), recurring
+Kinds of line: receipt (a customer pays an open Sales Invoice), new_sales (the run-rate of receipts from invoices not
+issued yet), bill (an open Purchase Invoice), recurring
 (a cost that repeats per supplier), payroll (the monthly salary run), vat (the VAT the books owe, or a refund).
-Only receipts come in; the others go out. A refund is a vat line with a negative amount, so it comes in.
+Only receipts and new sales come in; the others go out. A refund is a vat line with a negative amount, so it comes in.
 """
 
 import calendar
@@ -36,6 +36,8 @@ PERIODS = {
 # off (a duplicate, a late run), not more.
 REGULAR_SHARE = 0.8
 RECEIPT = "receipt"
+NEW_SALES = "new_sales"
+INFLOW_KINDS = (RECEIPT, NEW_SALES)
 OUTFLOW_KINDS = ("bill", "recurring", "payroll", "vat")
 # The salary accounts by number, inclusive (5000 Loehne, 5003 and the rest of the 50xx run). The payroll line is
 # the salary run only: the 57xx social contributions are paid through the insurers' bills, the 58xx other personnel
@@ -321,7 +323,7 @@ def forecast(as_of, opening, lines):
     weeks = []
     for week in range(1, WEEKS + 1):
         start, end = week_bounds(week, as_of)
-        weeks.append({"week": week, "start": start, "end": end, "receipt": 0.0, "bill": 0.0,
+        weeks.append({"week": week, "start": start, "end": end, "receipt": 0.0, "new_sales": 0.0, "bill": 0.0,
                       "recurring": 0.0, "payroll": 0.0, "vat": 0.0})
     beyond = 0
     for line in lines:
@@ -335,8 +337,9 @@ def forecast(as_of, opening, lines):
     for row in weeks:
         for kind in OUTFLOW_KINDS:
             row[kind] = round(row[kind], 2)
-        row["receipt"] = round(row["receipt"], 2)
-        row["net"] = round(row["receipt"] - sum(row[kind] for kind in OUTFLOW_KINDS), 2)
+        for kind in INFLOW_KINDS:
+            row[kind] = round(row[kind], 2)
+        row["net"] = round(sum(row[kind] for kind in INFLOW_KINDS) - sum(row[kind] for kind in OUTFLOW_KINDS), 2)
         balance = round(balance + row["net"], 2)
         row["closing"] = balance
     lowest = min(weeks, key=lambda row: row["closing"])["week"]

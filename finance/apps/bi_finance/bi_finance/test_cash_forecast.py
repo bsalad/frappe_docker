@@ -319,6 +319,10 @@ class Forecast(unittest.TestCase):
         self.assertEqual((weeks[1]["bill"], weeks[1]["closing"]), (200.0, 1000.0))
         self.assertEqual(beyond, 1)
 
+    def test_new_sales_come_in_apart_from_the_receipts(self):
+        weeks, _lowest, _beyond = cf.forecast(AS_OF, 1000.0, [self.line("receipt", AS_OF, 500.0), self.line("new_sales", AS_OF, 40.0)])
+        self.assertEqual((weeks[0]["receipt"], weeks[0]["new_sales"], weeks[0]["net"], weeks[0]["closing"]), (500.0, 40.0, 540.0, 1540.0))
+
     def test_the_lowest_week_is_the_earliest_on_a_tie(self):
         weeks, lowest, _ = cf.forecast(AS_OF, 1000.0, self.lines())
         self.assertEqual(lowest, 2)

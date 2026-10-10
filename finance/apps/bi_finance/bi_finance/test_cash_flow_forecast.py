@@ -132,14 +132,15 @@ class NewSalesRunRate(unittest.TestCase):
     def test_the_run_rate_is_a_receipt_in_each_of_the_thirteen_weeks(self):
         result, _mocks = self.compute(self.payments(), include=True)
         self.assertEqual(result["run_rate"], {"weekly": 25.0, "since": AS_OF - datetime.timedelta(days=364)})
-        self.assertEqual([row["receipt"] for row in result["weeks"]], [25.0] * 13)
+        self.assertEqual([row["new_sales"] for row in result["weeks"]], [25.0] * 13)
+        self.assertEqual([row["receipt"] for row in result["weeks"]], [0.0] * 13)
         self.assertEqual(result["weeks"][-1]["closing"], 1325.0)
 
     def test_the_filter_off_leaves_the_run_rate_out(self):
         result, mocks = self.compute(self.payments(), include=False)
         mocks["sales_paid_in_windows"].assert_not_called()
         self.assertIsNone(result["run_rate"])
-        self.assertEqual([row["receipt"] for row in result["weeks"]], [0.0] * 13)
+        self.assertEqual([row["new_sales"] for row in result["weeks"]], [0.0] * 13)
         self.assertEqual(result["weeks"][-1]["closing"], 1000.0)
 
     def execute(self, filters):
@@ -152,7 +153,7 @@ class NewSalesRunRate(unittest.TestCase):
 
     def test_the_report_includes_the_run_rate_by_default_and_says_so(self):
         _columns, rows, message, _chart, _summary = self.execute({"company": "Test Company", "as_of_date": AS_OF})
-        self.assertEqual([row["receipt"] for row in rows], [25.0] * 13)
+        self.assertEqual([row["new_sales"] for row in rows], [25.0] * 13)
         self.assertIn("New sales are in the forecast at 25.00 CHF a week", message)
 
     def test_the_receipts_are_payment_entries_against_sales_invoices_over_the_four_windows(self):
@@ -167,8 +168,23 @@ class NewSalesRunRate(unittest.TestCase):
     def test_the_report_filter_off_shows_the_documents_alone(self):
         _columns, rows, message, _chart, _summary = self.execute(
             {"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0})
-        self.assertEqual([row["receipt"] for row in rows], [0.0] * 13)
+        self.assertEqual([row["new_sales"] for row in rows], [0.0] * 13)
         self.assertIsNone(message)
+
+    def test_the_lines_report_lists_the_run_rate_as_an_inflow_and_the_filter_leaves_it_out(self):
+        from bi_finance.bi_finance.report.cash_flow_forecast_lines import cash_flow_forecast_lines as lines_report
+
+        def run(filters):
+            with contextlib.ExitStack() as stack:
+                self.patch_readers(stack, self.payments())
+                stack.enter_context(mock.patch.object(cff, "_", lambda text: text))
+                stack.enter_context(mock.patch.object(lines_report, "_", lambda text: text))
+                _columns, rows = lines_report.execute(filters)
+            return rows
+
+        rows = run({"company": "Test Company", "as_of_date": AS_OF})
+        self.assertEqual([(row["type"], row["amount"]) for row in rows], [("Expected receipts from new sales", 25.0)] * 13)
+        self.assertEqual(run({"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0}), [])
 
 
 if __name__ == "__main__":

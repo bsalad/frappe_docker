@@ -6,7 +6,7 @@ day it is expected, the party and the source document. Inflows are positive, out
 
 import frappe
 from frappe import _
-from frappe.utils import getdate, nowdate
+from frappe.utils import cint, getdate, nowdate
 
 from bi_finance import cash_forecast as cf
 from bi_finance.bi_finance.report.cash_flow_forecast.cash_flow_forecast import compute, kind_label
@@ -16,11 +16,11 @@ def execute(filters=None):
     filters = frappe._dict(filters or {})
     company = filters.company or frappe.defaults.get_user_default("company")
     as_of = getdate(filters.as_of_date or nowdate())
-    result = compute(company, as_of)
+    result = compute(company, as_of, include_run_rate=cint(filters.get("include_run_rate", 1)))
 
     rows = []
     for line in result["lines"]:
-        sign = 1 if line["kind"] == cf.RECEIPT else -1
+        sign = 1 if line["kind"] in cf.INFLOW_KINDS else -1
         rows.append({
             "week": line["week"],
             "expected": line["day"],

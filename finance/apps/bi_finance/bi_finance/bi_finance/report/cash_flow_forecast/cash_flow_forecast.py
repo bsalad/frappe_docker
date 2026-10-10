@@ -47,6 +47,7 @@ def kind_label(kind):
     """The line kind's label, translated when asked for (a module-level _() would run before any language is set)."""
     return {
         cf.RECEIPT: _("Customer receipt"),
+        cf.NEW_SALES: _("Expected receipts from new sales"),
         "bill": _("Supplier bill"),
         "recurring": _("Recurring cost"),
         "payroll": _("Payroll"),
@@ -358,7 +359,7 @@ def compute(company, as_of, include_run_rate=True):
         weekly, since = cf.run_rate(sales_paid_in_windows(company, as_of), as_of)
         note = _("new sales run-rate: the mean of the last four 13-week windows since {0}, the receipts from the invoices issued in each window, a thirteenth each week").format(since)
         for week in range(1, cf.WEEKS + 1):
-            lines.append(line(cf.RECEIPT, cf.week_bounds(week, as_of)[0], weekly, "", "", "", note))
+            lines.append(line(cf.NEW_SALES, cf.week_bounds(week, as_of)[0], weekly, "", "", "", note))
         run_rate = {"weekly": weekly, "since": since}
 
     open_due = collections.defaultdict(list)
@@ -420,7 +421,7 @@ def execute(filters=None):
     rows = [
         {
             "week": row["week"], "from": row["start"], "to": row["end"],
-            "receipt": row["receipt"], "bill": row["bill"], "recurring": row["recurring"],
+            "receipt": row["receipt"], "new_sales": row["new_sales"], "bill": row["bill"], "recurring": row["recurring"],
             "payroll": row["payroll"], "vat": row["vat"], "net": row["net"], "closing": row["closing"],
             "lowest": _("lowest") if row["week"] == lowest else None,
         }
@@ -467,6 +468,7 @@ def columns(currency):
         {"label": _("From"), "fieldname": "from", "fieldtype": "Date", "width": 110},
         {"label": _("To"), "fieldname": "to", "fieldtype": "Date", "width": 110},
         {"label": _("Receipts"), "fieldname": "receipt", "fieldtype": "Float", "precision": 2, "width": 130},
+        {"label": _("New sales"), "fieldname": "new_sales", "fieldtype": "Float", "precision": 2, "width": 120},
         {"label": _("Supplier bills"), "fieldname": "bill", "fieldtype": "Float", "precision": 2, "width": 130},
         {"label": _("Recurring costs"), "fieldname": "recurring", "fieldtype": "Float", "precision": 2, "width": 130},
         {"label": _("Payroll"), "fieldname": "payroll", "fieldtype": "Float", "precision": 2, "width": 120},
