@@ -16,6 +16,7 @@ A changed file must carry a newer stamp; the builder then updates the manifest w
 import hashlib
 import json
 import os
+import re
 import unittest
 from datetime import datetime
 
@@ -83,6 +84,16 @@ class Layout(unittest.TestCase):
                 continue
             stray += [os.path.join(root, d) for d in dirs if d in SYNCED]
         self.assertEqual(stray, [])
+
+
+class Package(unittest.TestCase):
+    def test_pyproject_names_this_app_so_the_image_installs_it(self):
+        # the layer runs pip install -e; flit looks for a module named after the project, so a
+        # project named after another app (bi_finance) fails the build
+        with open(os.path.join(APP, "pyproject.toml"), encoding="utf-8") as f:
+            name = re.search(r'^name = "([^"]+)"', f.read(), re.M).group(1)
+        self.assertEqual(name, "bi_payroll")
+        self.assertTrue(os.path.isfile(os.path.join(PACKAGE, "__init__.py")))
 
 
 class Stamps(unittest.TestCase):

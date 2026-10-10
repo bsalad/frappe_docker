@@ -1,7 +1,7 @@
 [project]
-name = "bi_finance"
+name = "bi_payroll"
 version = "0.0.1"
-description = "Swiss QR-bill for Sales Invoice, drawn on our own server"
+description = "Swiss payroll components for HRMS (AHV, ALV, BVG, UVG/NBU, KTG, FAK)"
 requires-python = ">=3.14"
 dependencies = []
 
