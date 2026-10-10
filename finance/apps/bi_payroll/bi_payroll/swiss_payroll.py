@@ -126,13 +126,17 @@ def formula_gaps(rows):
 def structure_rows(components):
     # A structure row keeps its formula only as it was typed: HRMS resets it on save, to the value it had before
     # validate. A row made with no formula therefore computes 0, so each row takes its component's formula here.
+    # The statistical flag is copied too: a row that is statistical is kept off the slip (the employer shares).
     rows = []
     for name in components:
-        component = frappe.db.get_value("Salary Component", name, ["formula", "amount_based_on_formula"], as_dict=True)
+        component = frappe.db.get_value(
+            "Salary Component", name, ["formula", "amount_based_on_formula", "statistical_component"], as_dict=True
+        )
         rows.append({
             "salary_component": name,
             "formula": component.formula or "",
             "amount_based_on_formula": component.amount_based_on_formula,
+            "statistical_component": component.statistical_component,
         })
     return rows
 

@@ -7,7 +7,7 @@ from this app's directory. The slips and their Salary Detail lines are made here
 
 import unittest
 
-from bi_payroll.hand_over import COMPONENTS, hand_over
+from bi_payroll.hand_over import AMOUNTS, COMPONENTS, LOHNAUSWEIS, hand_over, lohnausweis
 
 
 def slip(name, month, gross, net, employee="EMP-TEST-001"):
@@ -69,6 +69,10 @@ class Components(unittest.TestCase):
         self.assertEqual(row["uvg_employer"], 30)
         self.assertEqual(row["fak_employer"], 60)
 
+    def test_the_basic_salary_is_an_amount_of_its_own(self):
+        (row,) = hand_over([MONTH_1], LINES, by_month=False)
+        self.assertEqual(row["basic"], 8000)
+
     def test_quellensteuer_is_zero_until_its_component_exists(self):
         (row,) = hand_over([MONTH_1], LINES, by_month=False)
         self.assertEqual(row["quellensteuer"], 0)
@@ -90,6 +94,51 @@ class Components(unittest.TestCase):
     def test_the_components_are_the_fixture_names(self):
         self.assertEqual(COMPONENTS["ahv_employee"], "AHV/IV/EO Employee")
         self.assertEqual(COMPONENTS["fak_employer"], "FAK Employer")
+
+
+class Lohnausweis(unittest.TestCase):
+    def line(self, lines=LINES):
+        (row,) = hand_over([MONTH_1], lines, by_month=False)
+        (line,) = lohnausweis([row])
+        return line
+
+    def test_line_1_is_the_basic_salary(self):
+        self.assertEqual(self.line()["line_1"], 8000)
+
+    def test_line_8_and_11_are_the_slips_gross_and_net(self):
+        line = self.line()
+        self.assertEqual(line["line_8"], 8000)
+        self.assertEqual(line["line_11"], 7113)
+
+    def test_line_9_is_the_employee_ahv_alv_and_nbu(self):
+        self.assertEqual(self.line()["line_9"], 424 + 88 + 40)
+
+    def test_line_10_1_is_the_employee_bvg(self):
+        self.assertEqual(self.line()["line_10_1"], 300)
+
+    def test_line_12_is_zero_until_quellensteuer_is_on_the_slip(self):
+        self.assertEqual(self.line()["line_12"], 0)
+        lines = {"SAL-1": dict(LINES["SAL-1"], **{"Quellensteuer": 250})}
+        self.assertEqual(self.line(lines)["line_12"], 250)
+
+    def test_ktg_employee_keeps_a_column_until_it_has_a_line(self):
+        self.assertEqual(self.line()["ktg_employee"], 35)
+
+    def test_the_rows_keep_the_employee_and_the_slip_count(self):
+        line = self.line()
+        self.assertEqual((line["employee"], line["slips"], line["month"]), ("EMP-TEST-001", 1, None))
+
+    def test_one_row_per_hand_over_row(self):
+        slips = [slip("SAL-1", 1, 8000, 7113), slip("SAL-2", 2, 8100, 7200)]
+        lines = {"SAL-1": LINES["SAL-1"], "SAL-2": LINES["SAL-1"]}
+        rows = lohnausweis(hand_over(slips, lines, by_month=True))
+        self.assertEqual([r["month"] for r in rows], [1, 2])
+        self.assertEqual([r["line_8"] for r in rows], [8000, 8100])
+
+    def test_every_column_sums_amounts_the_rows_carry(self):
+        for column, _, keys in LOHNAUSWEIS:
+            with self.subTest(column=column):
+                self.assertTrue(set(keys) <= set(AMOUNTS))
 
 
 class Payslips(unittest.TestCase):

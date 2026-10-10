@@ -4,8 +4,9 @@ The rows are read from the submitted Salary Slips of the company and their Salar
 payslips' own amounts. Export them from the report (Excel or CSV) and send them to the trustee; the payroll data
 stays out of the repository (finance/docs/hrms.md).
 
-This is a list of amounts, not a Lohnausweis: the form's line numbers are not mapped here. That mapping is the
-Salary Certificate's, and it is checked against the 2026 form before use (finance/docs/hrms.md, step 6).
+The view 'Lohnausweis' sums the same rows into the form's lines (hand_over.LOHNAUSWEIS). It is not the certificate:
+the lines not in payroll are not in it, and the mapping is checked against the 2026 form before use
+(finance/docs/hrms.md, step 6).
 """
 
 import calendar
@@ -15,13 +16,15 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
-from bi_payroll.hand_over import COMPONENTS, EMPLOYER_SHARES, hand_over
+from bi_payroll.hand_over import COMPONENTS, EMPLOYER_SHARES, LOHNAUSWEIS, hand_over, lohnausweis
 
 
 def execute(filters=None):
     filters = frappe._dict(filters or {})
     year = int(filters.year)
     by_month = bool(filters.month)
+    as_lohnausweis = filters.view == "Lohnausweis"
+    columns_of = lohnausweis_columns if as_lohnausweis else columns
     if by_month:
         month = int(filters.month)
         start = datetime.date(year, month, 1)
@@ -36,7 +39,7 @@ def execute(filters=None):
         order_by="start_date asc",
     )
     if not slips:
-        return columns(by_month), []
+        return columns_of(by_month), []
 
     ahv_numbers = {
         e.name: e.social_security_number or ""
@@ -68,7 +71,9 @@ def execute(filters=None):
         lines,
         by_month,
     )
-    return columns(by_month), rows
+    if as_lohnausweis:
+        rows = lohnausweis(rows)
+    return columns_of(by_month), rows
 
 
 def columns(by_month):
@@ -93,4 +98,21 @@ def columns(by_month):
         for key, name in COMPONENTS.items() if key in EMPLOYER_SHARES
     ]
     cols += [{"label": _("Employer total"), "fieldname": "employer_total", "fieldtype": "Currency", "width": 120}]
+    return cols
+
+
+def lohnausweis_columns(by_month):
+    # The view 'Lohnausweis': the form's lines (hand_over.LOHNAUSWEIS), not the components. Labels are the form's own.
+    cols = [
+        {"label": _("Employee"), "fieldname": "employee", "fieldtype": "Link", "options": "Employee", "width": 130},
+        {"label": _("Name"), "fieldname": "employee_name", "fieldtype": "Data", "width": 160},
+        {"label": _("AHV number"), "fieldname": "ahv_number", "fieldtype": "Data", "width": 130},
+    ]
+    if by_month:
+        cols.append({"label": _("Month"), "fieldname": "month", "fieldtype": "Int", "width": 70})
+    cols.append({"label": _("Slips"), "fieldname": "slips", "fieldtype": "Int", "width": 60})
+    cols += [
+        {"label": label, "fieldname": column, "fieldtype": "Currency", "width": 160}
+        for column, label, _keys in LOHNAUSWEIS
+    ]
     return cols

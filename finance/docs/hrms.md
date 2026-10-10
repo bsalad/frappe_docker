@@ -218,6 +218,43 @@ calculated.
 8. **Install order.** OK to install HRMS on a copy site first, and to deploy the live site
    only after the copy passes and in a slot ledgerdemain gives?
 
+## Lohnausweis map (erp-fs9c)
+
+The report `Payroll hand-over` (bi_payroll) has a view `Lohnausweis` that sums the same rows into the
+Form 11 lines. The line numbers and labels are the fields of erpnextswiss's Salary Certificate. Not yet
+checked against the 2026 form (step 6 of the plan).
+
+| Form line | Salary Component(s) on the slip | Column in view `Lohnausweis` | Status |
+|---|---|---|---|
+| 1. Lohn / Rente | Basic Salary | `line_1` | in payroll |
+| 2.1 Verpflegung und Unterkunft | none | — | not in payroll |
+| 2.2 Privatanteil Geschäftsfahrzeug | none | — | not in payroll |
+| 2.3 Weitere Gehaltsnebenleistungen | none | — | not in payroll |
+| 3. Unregelmässige Leistungen | none | — | not in payroll |
+| 4. Kapitalleistungen | none | — | not in payroll |
+| 5. Beteiligungsrechte | none | — | not in payroll |
+| 6. Verwaltungsratsentschädigungen | none | — | not in payroll |
+| 7. Andere Leistungen | none | — | not in payroll |
+| 8. Bruttolohn total | gross pay of the slip | `line_8` | in payroll |
+| 9. Beiträge AHV/IV/EO/ALV/NBUV | AHV/IV/EO Employee, ALV Employee, NBU Employee | `line_9` | in payroll |
+| 10.1 Ordentliche Beiträge berufliche Vorsorge | BVG Employee | `line_10_1` | in payroll |
+| 10.2 Beiträge Einkauf berufliche Vorsorge | none | — | not in payroll |
+| 11. Nettolohn / Rente | net pay of the slip | `line_11` | in payroll |
+| 12. Quellensteuerabzug | Quellensteuer | `line_12` | 0 until erp-6rrh lands (no component yet) |
+| 13.1.1 Effektive Spesen Reise / Verpflegung / Übernachtung | none | — | not in payroll |
+| 13.1.2 Effektive Spesen übrige | none | — | not in payroll |
+| 13.2.1 Pauschalspesen Repräsentation | none | — | not in payroll |
+| 13.2.2 Pauschalspesen Auto | none | — | not in payroll |
+| 13.2.3 Pauschalspesen übrige | none | — | not in payroll |
+| 13.3 Beiträge an die Weiterbildung | none | — | not in payroll |
+| 14. Weitere Gehaltsnebenleistungen | none | — | not in payroll |
+| 15. Bemerkungen | none (free text) | — | not in payroll |
+| (no line) | KTG Employee | `ktg_employee` | open: the trustee says where it goes |
+
+Unentgeltliche Beförderung and Kantinenverpflegung (checkboxes on the form) are not in payroll either.
+The employer shares (AHV, ALV, BVG, UVG, KTG, FAK) are not on the form's lines and stay in the
+hand-over view only.
+
 ## Copy site
 
 A copy of the live books with HRMS installed, to try the payroll work on before live. It is
