@@ -47,6 +47,8 @@ drafts, and un-marks the invoices.
   name. Each Payment Entry carries the same invoice number as its `reference_no`, so the
   camt import (erp-f5ss) matches a bank line to Payment Entries on that number and the amount.
 - The company's country code is written upper case (erpnextswiss writes it lower case).
+- An IBAN whose check digits fail (mod 97) stops the file before it is made, naming the
+  row; the bank would refuse the file otherwise. An empty IBAN is not checked here.
 - **Not verified:** that UBS e-banking accepts this file. No UBS source found
   confirms the version or the Swiss variant. Before the first live file, upload a
   test file to UBS's ISO 20022 test platform (or ask UBS, 0848 848 064) and note

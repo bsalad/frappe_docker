@@ -18,7 +18,7 @@ import jinja2
 from erpnextswiss.erpnextswiss.doctype.payment_proposal import payment_proposal as swiss
 
 from bi_finance import payment_run
-from bi_finance.payment_run import PaymentProposal, create_payment_proposal, paid_amount
+from bi_finance.payment_run import PaymentProposal, create_payment_proposal, iban_is_valid, paid_amount
 
 def setUpModule():
     # Dates and messages read the site's settings and logs; there is no site here.
@@ -140,6 +140,7 @@ class SubmitOnDownload(unittest.TestCase):
         doc = proposal([invoice("PINV-1", "Lieferant Alpha AG", 1000.0)])
         bad = {"content": "<Document/>", "file_name": "payments_x.xml", "message_id": "x"}
         with mock.patch.object(swiss.PaymentProposal, "create_bank_file", return_value=bad), \
+                mock.patch.object(PaymentProposal, "check_ibans"), \
                 mock.patch.object(PaymentProposal, "submit_payment_entries") as submit, \
                 mock.patch.object(frappe, "throw", side_effect=RuntimeError("schema")):
             with self.assertRaises(RuntimeError):
@@ -187,6 +188,41 @@ class DeskCreate(unittest.TestCase):
         self.assertIsNone(create.call_args.kwargs["include_salary_slips"])
 
 
+class IbanCheck(unittest.TestCase):
+    def test_an_invented_iban_with_right_check_digits_passes(self):
+        self.assertTrue(iban_is_valid("CH93 0076 2011 6238 5295 7"))
+        self.assertTrue(iban_is_valid("CH52 0000 0000 0123 4567 8"))
+
+    def test_a_wrong_check_digit_fails(self):
+        self.assertFalse(iban_is_valid("CH21 0900 0000 2500 9779 8"))
+
+    def test_a_malformed_string_fails_without_raising(self):
+        self.assertFalse(iban_is_valid("CH93-0076-2011-6238-5295-7"))
+        self.assertFalse(iban_is_valid(""))
+
+    def test_a_bad_debtor_iban_stops_the_file_before_it_is_rendered(self):
+        doc = proposal([])
+        doc.payments = [frappe._dict(receiver="Lieferant Alpha AG", iban="CH52 0000 0000 0123 4567 8")]
+        with mock.patch.object(frappe, "get_doc", return_value=frappe._dict(iban="CH21 0900 0000 2500 9779 8")), \
+                mock.patch.object(frappe, "throw", side_effect=RuntimeError("iban")) as throw, \
+                mock.patch.object(swiss.PaymentProposal, "create_bank_file") as render:
+            with self.assertRaises(RuntimeError):
+                doc.create_bank_file()
+        throw.assert_called_once()
+        render.assert_not_called()
+
+    def test_a_bad_creditor_iban_stops_the_file_and_names_the_row(self):
+        doc = proposal([])
+        doc.payments = [frappe._dict(receiver="Lieferant Beta GmbH", iban="CH21 0900 0000 2500 9779 8")]
+        with mock.patch.object(frappe, "get_doc", return_value=frappe._dict(iban="CH93 0076 2011 6238 5295 7")), \
+                mock.patch.object(frappe, "throw", side_effect=RuntimeError("iban")) as throw, \
+                mock.patch.object(swiss.PaymentProposal, "create_bank_file") as render:
+            with self.assertRaises(RuntimeError):
+                doc.create_bank_file()
+        self.assertIn("Lieferant Beta GmbH", throw.call_args.args[0])
+        render.assert_not_called()
+
+
 class PainFile(unittest.TestCase):
     """The file erpnextswiss renders from invented rows passes both schemas: the generic pain.001.001.09 and SIX's ch.03."""
 
@@ -194,7 +230,7 @@ class PainFile(unittest.TestCase):
         doc = proposal([])
         doc.payments = [
             frappe._dict(
-                receiver="Lieferant Alpha AG", receiver_id="SUP-A", iban="CH21 0900 0000 2500 9779 8", bic="TESTCHZZ",
+                receiver="Lieferant Alpha AG", receiver_id="SUP-A", iban="CH52 0000 0000 0123 4567 8", bic="TESTCHZZ",
                 payment_type="IBAN", receiver_address_line1="Musterweg 7", receiver_address_line2="8000 Zürich",
                 receiver_pincode="8000", receiver_city="Zürich", receiver_country="Switzerland", amount=980.0,
                 currency="CHF", reference="RE-17", execution_date=datetime.date(2026, 11, 5), esr_reference=None,
@@ -214,7 +250,7 @@ class PainFile(unittest.TestCase):
     def test_rendered_file_passes_both_schemas(self):
         doc = self.proposal_with_rows()
         settings = frappe._dict(xml_version="09", banking_region="CH", validate_xml=0, use_unidecode=1)
-        account = frappe._dict(iban="CH21 0900 0000 2500 9779 8", bic="TESTCHZZ")
+        account = frappe._dict(iban="CH93 0076 2011 6238 5295 7", bic="TESTCHZZ")
         address = frappe._dict(address_line1="Musterweg 1", pincode="8000", city="Zürich", country_code="ch")
 
         def get_doc(*args, **kwargs):

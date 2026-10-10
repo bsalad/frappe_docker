@@ -29,6 +29,9 @@ SIX_PAIN_001_XSD = "apps/erpnextswiss/erpnextswiss/public/xsd/pain.001.001.09.ch
 # is upper case. ISO 3166 codes are upper case, so the schema refuses the company's.
 LOWER_COUNTRY_CODE = re.compile(r"<Ctry>([a-z]{2})</Ctry>")
 
+# Country code, two check digits, then up to 30 letters and digits (ISO 13616).
+IBAN_SHAPE = re.compile(r"[A-Z]{2}[0-9]{2}[A-Z0-9]{1,30}")
+
 
 def paid_amount(row):
     """What the run pays for one purchase invoice row.
@@ -39,6 +42,18 @@ def paid_amount(row):
     if row.skonto_date and getdate(row.skonto_date) >= getdate():
         return flt(row.skonto_amount)
     return flt(row.amount)
+
+
+def iban_is_valid(iban):
+    """The ISO 7064 check: moved to the end, letters as 10 to 35, the number leaves remainder 1 mod 97.
+
+    A file with a wrong check digit passes the schema and the bank still refuses it, so it is caught here.
+    """
+    iban = iban.replace(" ", "").upper()
+    if not IBAN_SHAPE.fullmatch(iban):
+        return False
+    rearranged = iban[4:] + iban[:4]
+    return int("".join(str(int(c, 36)) for c in rearranged)) % 97 == 1
 
 
 class PaymentProposal(SwissPaymentProposal):
@@ -87,8 +102,19 @@ class PaymentProposal(SwissPaymentProposal):
                 }],
             }).insert()
 
+    def check_ibans(self):
+        # Checked before erpnextswiss renders the file: a wrong IBAN is refused here with its
+        # row named, not left for the bank to refuse the file.
+        debtor = frappe.get_doc("Account", self.pay_from_account).iban
+        if debtor and not iban_is_valid(debtor):
+            frappe.throw(_("The IBAN of {0} is not valid; no payment file is made.").format(self.pay_from_account))
+        for row in self.payments:
+            if row.iban and not iban_is_valid(row.iban):
+                frappe.throw(_("The IBAN of {0} is not valid; no payment file is made.").format(row.receiver))
+
     @frappe.whitelist(methods=["POST"])
     def create_bank_file(self):
+        self.check_ibans()
         # validate_xml stays off in erpnextswiss's settings: its check runs before the
         # country code is fixed below, so it would refuse every file.
         result = super().create_bank_file()
