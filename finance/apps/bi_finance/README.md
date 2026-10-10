@@ -54,6 +54,13 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   Payment Entry of a Purchase Invoice, or a bill of the same amount dated within five days.
   A bank group must have 80% of its gaps in its period, a bill group only its median gap in it; the lines of a
   bank group on one day count as one occurrence, their sum.
+  A third source groups the bank outflows booked by Journal Entry by their contra account (`journal_occurrences`):
+  one line per account with a regular series, labelled with the account's name from the chart. Left out as another line
+  carries them: 5xxx and 1091 (payroll), 2270 to 2279 (insurers), 1170 to 1172, 2200 and 2202 (VAT), 2000 (bills), bank
+  and cash accounts (transfers) and entries reconciled to a purchase invoice. The owners' current accounts (2100, 2121)
+  are labelled "(average, discretionary)" and the filter "Include owner accounts" leaves them out. A bank group every
+  line of which a Journal Entry reconciles to is left out of the bank source (`counted_by_contra`); a group with
+  other lines stays whole, so some bank lines are counted by both sources (the dry run measures it).
 - `bi_finance/bi_finance/report/cash_flow_forecast/`: the "Cash Flow Forecast" report (weeks, chart, lowest point) and
   `bi_finance/bi_finance/report/cash_flow_forecast_lines/`: the "Cash Flow Forecast Lines" report, each line with its source document.
   Both read the books through the Payment Ledger and the GL and call `cash_forecast.py`. Both are shortcuts
