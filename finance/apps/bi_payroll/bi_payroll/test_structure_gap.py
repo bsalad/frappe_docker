@@ -39,9 +39,13 @@ class FakeDb:
         if doctype == "Employee":
             return self.employee
         if doctype == "Salary Component":
-            # every component has a formula, named by it, so a row's formula can be checked against it
+            # every component has a formula, named by it, so a row's formula can be checked against it;
+            # statistical_component 0: none of these components is statistical (the employer shares are
+            # test_swiss_payroll's subject), and structure_rows copies the flag onto every row
             formula = f"FORMULA-{name}"
-            return types.SimpleNamespace(formula=formula, amount_based_on_formula=1) if as_dict else formula
+            return types.SimpleNamespace(
+                formula=formula, amount_based_on_formula=1, statistical_component=0
+            ) if as_dict else formula
         return "SS-1" if doctype == "Salary Structure" else None
 
     def exists(self, doctype, filters=None):
