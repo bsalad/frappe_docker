@@ -42,9 +42,9 @@ Benchi decided on 2026-10-10:
 
 The hand-over rows are checked against invented employees (`python3 -m unittest
 bi_payroll.test_hand_over`) and were run on a throwaway site with invented slips (erp-fs9c: rows
-equal the slips per year and per month). Two parts are open and stay so: Quellensteuer has no
-component yet (its column is 0), and the Lohnausweis line mapping (below) is not checked against
-the 2026 form (step 6).
+equal the slips per year and per month). Two parts are open and stay so: Quellensteuer (in payroll since erp-6rrh,
+a component set from the gross) was not yet on the site the proof ran on, so its column there is 0, and the
+Lohnausweis line mapping (below) is not checked against the 2026 form (step 6).
 
 ## Versions
 
@@ -241,7 +241,7 @@ checked against the 2026 form (step 6 of the plan).
 | 10.1 Ordentliche Beiträge berufliche Vorsorge | BVG Employee | `line_10_1` | in payroll |
 | 10.2 Beiträge Einkauf berufliche Vorsorge | none | — | not in payroll |
 | 11. Nettolohn / Rente | net pay of the slip | `line_11` | in payroll |
-| 12. Quellensteuerabzug | Quellensteuer | `line_12` | 0 until erp-6rrh lands (no component yet) |
+| 12. Quellensteuerabzug | Quellensteuer Employee | `line_12` | in payroll since erp-6rrh (the tax is set on the slip from the gross, per canton tariff) |
 | 13.1.1 Effektive Spesen Reise / Verpflegung / Übernachtung | none | — | not in payroll |
 | 13.1.2 Effektive Spesen übrige | none | — | not in payroll |
 | 13.2.1 Pauschalspesen Repräsentation | none | — | not in payroll |
