@@ -17,7 +17,7 @@ LOOKUPS = {
     "receivable": {"CHF": "1100 - Forderungen - bic", "USD": "1101 - Forderungen USD - bic"},
     "exchange": {("USD", "CHF"): [("2025-06-30", Decimal("0.90")), ("2024-01-01", Decimal("0.85"))]},
     "invoice": {"500": "ACC-SINV-0001"},
-    "gl": {"2030": "2030 - Erhaltene Anzahlungen - bic", "4906": "4906 - Kursdifferenzen - bic"},
+    "gl": {"2030": "2030 - Erhaltene Anzahlungen - bic", "3806": "3806 - Kursdifferenzen - bic", "3203": "3203 - Provisionsbeiträge - bic"},
     "cost_center": "Main - bic",
 }
 
@@ -300,7 +300,7 @@ class ChfBooked(unittest.TestCase):
         doc, received = ipi.map_payment(USD_PAYMENT, INVOICE_USD, chf_booked("179.98"), Decimal("180.00"))
         self.assertEqual(received, Decimal("179.98"))
         self.assertEqual(doc["references"][0]["allocated_amount"], 180.0)
-        self.assertEqual(doc["deductions"], [{"account": "4906 - Kursdifferenzen - bic", "cost_center": "Main - bic", "amount": 0.02}])
+        self.assertEqual(doc["deductions"], [{"account": "3806 - Kursdifferenzen - bic", "cost_center": "Main - bic", "amount": 0.02}])
 
     def test_a_larger_gap_is_left_open_and_not_booked_as_a_difference(self):
         doc, _ = ipi.map_payment(USD_PAYMENT, INVOICE_USD, chf_booked("170.00"), Decimal("180.00"))
@@ -308,6 +308,34 @@ class ChfBooked(unittest.TestCase):
         self.assertNotIn("deductions", doc)
         results = ipi.plan(export([USD_PAYMENT]), chf_booked("170.00"))
         self.assertIn("stays open", results[0]["note"])
+
+    def test_a_larger_gap_bexio_booked_to_another_account_is_a_deduction_to_that_account(self):
+        lk = lookups(invoice_erp=CHF_ERP, booked_chf={"811": Decimal("170.00")},
+                     booked_deductions={"811": (4598, "3203", Decimal("10.00"))})
+        doc, received = ipi.map_payment(USD_PAYMENT, INVOICE_USD, lk, Decimal("180.00"))
+        self.assertEqual(doc["references"][0]["allocated_amount"], 180.0)
+        self.assertEqual(doc["deductions"], [{"account": "3203 - Provisionsbeiträge - bic", "cost_center": "Main - bic", "amount": 10.0}])
+        self.assertEqual(received, Decimal("170.00"))
+
+    def test_a_bexio_deduction_of_another_amount_does_not_settle_the_gap(self):
+        lk = lookups(invoice_erp=CHF_ERP, booked_chf={"811": Decimal("170.00")},
+                     booked_deductions={"811": (4598, "3203", Decimal("5.00"))})
+        doc, _ = ipi.map_payment(USD_PAYMENT, INVOICE_USD, lk, Decimal("180.00"))
+        self.assertEqual(doc["references"][0]["allocated_amount"], 170.0)
+        self.assertNotIn("deductions", doc)
+
+    def test_a_bexio_deduction_to_an_account_the_chart_lacks_is_unmapped(self):
+        lk = lookups(invoice_erp=CHF_ERP, booked_chf={"811": Decimal("170.00")},
+                     booked_deductions={"811": (4598, "3299", Decimal("10.00"))})
+        with self.assertRaisesRegex(ipi.Unmapped, "no account 3299"):
+            ipi.map_payment(USD_PAYMENT, INVOICE_USD, lk, Decimal("180.00"))
+
+    def test_the_journal_line_of_a_booked_deduction_is_the_one_the_plan_covers(self):
+        lk = lookups(invoice_erp=CHF_ERP, booked_chf={"811": Decimal("170.00")},
+                     booked_deductions={"811": (4598, "3203", Decimal("10.00"))})
+        results = ipi.plan(export([USD_PAYMENT]), lk)
+        self.assertEqual(results[0]["journal_line"], 4598)
+        self.assertIsNone(results[0]["error"])
 
     def test_more_than_the_chf_outstanding_is_unmapped(self):
         with self.assertRaisesRegex(ipi.Unmapped, ipi.OVER_ALLOCATED):
@@ -376,6 +404,11 @@ class VatOnPayment(unittest.TestCase):
         journal = [self.line(7, 77, 93, "100.00"), self.line(5, 129, 127, "19.50"), self.line(9, 93, 99, "100.82")]
         accounts = self.ACCOUNTS + [{"id": 99, "account_no": "3203"}, {"id": 123, "account_no": "2030"}]
         self.assertEqual([x["id"] for x in ipi.left_lines(journal, accounts, {"811"})], [9])
+
+    def test_a_receipt_line_bexio_booked_from_the_receivable_to_another_account_is_a_deduction(self):
+        journal = [self.line(4, 99, 93, "0"), self.line(7, 77, 93, "170.00"), self.line(9, 99, 93, "10.00")]
+        accounts = self.ACCOUNTS + [{"id": 99, "account_no": "3203"}, {"id": 123, "account_no": "2030"}]
+        self.assertEqual(ipi.bank_booked_deductions(journal, accounts, {"811"}), {"811": (9, "3203", Decimal("10.00"))})
 
     def test_vat_of_a_receipt_not_handed_over_is_no_journal_entry(self):
         results = ipi.plan(export([row(PAYMENT)]), LOOKUPS)

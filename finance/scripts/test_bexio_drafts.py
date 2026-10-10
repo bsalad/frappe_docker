@@ -24,6 +24,7 @@ class FakeStore:
         self.calls = []
         self.commits = 0
         self.rollbacks = 0
+        self.has_field = True       # whether the doctype has the bexio_id field
         for doctype, name, fields in docs or []:
             self.docs[(doctype, name)] = dict(fields)
 
@@ -69,6 +70,18 @@ class FakeStore:
 
     def rollback(self):
         self.rollbacks += 1
+
+    def has_bexio_id(self, doctype):
+        return self.has_field
+
+    def journal_entries(self, posting_date, user_remark):
+        return [{"name": name, "docstatus": f["docstatus"], "bexio_id": f.get("bexio_id") or "", "amount": f["amount"]}
+                for (dt, name), f in self.docs.items()
+                if dt == "Journal Entry" and f.get("posting_date") == posting_date and f.get("user_remark") == user_remark]
+
+    def set_bexio_id(self, doctype, name, bexio_id):
+        self.calls.append(("set_bexio_id", doctype, name))
+        self.docs[(doctype, name)]["bexio_id"] = bexio_id
 
 
 def invoice(bexio_id="500", name="RE-1001", **changes):
@@ -239,6 +252,83 @@ class SeriesNames(unittest.TestCase):
         counts, _ = loader.apply_plan(plan(self.payment()), store, submit=True)
         self.assertEqual(counts[("Payment Entry", "skipped")], 1)
         self.assertEqual(len(store.calls), 2)
+
+
+class Relink(unittest.TestCase):
+    """Journal Entries an earlier run loaded without a bexio_id: found by date, remark and amount, linked once."""
+
+    REMARK = "VAT on payment: bexio receipt 18 on RE-1001"
+
+    def journal(self, item_id="5", amount=19.5):
+        values = {"posting_date": "2024-03-01", "user_remark": self.REMARK, "bexio_id": item_id,
+                  "accounts": [{"account": "2202", "debit_in_account_currency": amount},
+                               {"account": "2200", "credit_in_account_currency": amount}]}
+        return {"doctype": "Journal Entry", "name": None, "bexio_id": item_id, "values": values}
+
+    def entry(self, name="ACC-JV-1", amount=19.5, docstatus=1, bexio_id=None):
+        fields = {"posting_date": "2024-03-01", "user_remark": self.REMARK, "amount": amount, "docstatus": docstatus}
+        if bexio_id is not None:
+            fields["bexio_id"] = bexio_id
+        return ("Journal Entry", name, fields)
+
+    def test_a_submitted_entry_that_matches_once_is_linked_to_its_bexio_id(self):
+        store = FakeStore([self.entry()])
+        counts, problems = loader.relink(plan(self.journal()), store)
+        self.assertEqual(problems, [])
+        self.assertEqual(counts["linked"], 1)
+        self.assertEqual(store.docs[("Journal Entry", "ACC-JV-1")]["bexio_id"], "5")
+        self.assertEqual(store.calls, [("set_bexio_id", "Journal Entry", "ACC-JV-1")])
+
+    def test_a_rerun_links_nothing(self):
+        store = FakeStore([self.entry()])
+        loader.relink(plan(self.journal()), store)
+        store.calls = []
+        counts, problems = loader.relink(plan(self.journal()), store)
+        self.assertEqual((counts["already linked"], counts.get("linked", 0), problems), (1, 0, []))
+        self.assertEqual(store.calls, [])
+
+    def test_a_single_item_without_exactly_one_match_stops_the_run_with_nothing_written(self):
+        store = FakeStore([self.entry("ACC-JV-1"), self.entry("ACC-JV-2", amount=7.0)])
+        matched, other = self.journal("5"), self.journal("6", amount=99.0)
+        counts, problems = loader.relink(plan(matched, other), store)
+        self.assertEqual(problems, [("Journal Entry", "6", "0 matches, need exactly one")])
+        self.assertEqual(store.calls, [])
+
+    def test_two_matching_entries_are_ambiguous_and_nothing_is_linked(self):
+        store = FakeStore([self.entry("ACC-JV-1"), self.entry("ACC-JV-2")])
+        counts, problems = loader.relink(plan(self.journal()), store)
+        self.assertEqual(problems, [("Journal Entry", "5", "2 matches, need exactly one")])
+        self.assertEqual(store.calls, [])
+
+    def test_a_draft_entry_is_not_a_match(self):
+        store = FakeStore([self.entry(docstatus=0)])
+        _, problems = loader.relink(plan(self.journal()), store)
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(store.calls, [])
+
+    def test_an_entry_linked_to_another_bexio_id_is_not_taken(self):
+        store = FakeStore([self.entry(bexio_id="9")])
+        _, problems = loader.relink(plan(self.journal()), store)
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(store.calls, [])
+
+    def test_the_amount_must_match_to_the_half_cent(self):
+        store = FakeStore([self.entry(amount=19.6)])
+        _, problems = loader.relink(plan(self.journal()), store)
+        self.assertEqual(len(problems), 1)
+
+    def test_check_reports_what_would_be_linked_and_writes_nothing(self):
+        store = FakeStore([self.entry()])
+        counts, problems = loader.relink(plan(self.journal()), store, write=False)
+        self.assertEqual((counts["to link"], problems), (1, []))
+        self.assertEqual(store.calls, [])
+
+    def test_a_doctype_without_the_bexio_id_field_is_a_problem_and_nothing_is_written(self):
+        store = FakeStore([self.entry()])
+        store.has_field = False
+        counts, problems = loader.relink(plan(self.journal()), store)
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(store.calls, [])
 
 
 class Rates(unittest.TestCase):

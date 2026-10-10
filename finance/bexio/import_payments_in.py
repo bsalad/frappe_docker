@@ -65,9 +65,9 @@ BANK_ACCOUNTS = ("1020", "1021")
 RECEIVABLE = "1100"
 ADVANCE = "2030"  # Erhaltene Anzahlungen von Dritten: money received before any invoice it settles
 VAT_FROM, VAT_TO = "2202", "2200"  # VAT moved on payment: Abrechnungskonto to Geschuldete MWST
-# the exchange difference account of an invoice in CHF that is received at another CHF amount; bexio's
-# journal names no account for it, so the choice is the one the decision of erp-hrkj names (see its note)
-EXCHANGE_DIFFERENCE = "4906"
+# the exchange difference account of a customer receipt that is received at another CHF amount: the revenue-side
+# Kursdifferenzen of the KMU chart. bexio's journal names no account for it; 4906 is for supplier payments (erp-9h1k)
+EXCHANGE_DIFFERENCE = "3806"
 # the CHF gap a foreign-currency receipt may leave against its invoice and still be an exchange difference
 TOLERANCE = Decimal("0.05")
 
@@ -208,7 +208,9 @@ def _map_chf_booked(row, erp, customer, bank, lookups, owing):
 
     The receipt is the CHF bexio booked to the bank for it, and it settles the invoice's CHF outstanding. A gap of
     up to TOLERANCE is an exchange difference: a deduction on Kursdifferenzen, so the invoice is paid. A larger gap
-    is not booked: the receipt is allocated at its own amount and the rest stays open, for erp-fd93 to settle.
+    that bexio booked to another account on the receipt (a commission, say; bank_booked_deductions) is a deduction to
+    that account, so the invoice is paid too. Any other larger gap is not booked: the receipt is allocated at its own
+    amount and the rest stays open, for erp-fd93 to settle.
     """
     booked = lookups.get("booked_chf", {}).get(str(row["id"]))
     if booked is None:
@@ -217,7 +219,10 @@ def _map_chf_booked(row, erp, customer, bank, lookups, owing):
     gap = owing - paid
     if gap < -TOLERANCE:
         raise Unmapped(OVER_ALLOCATED)
-    difference = gap if abs(gap) <= TOLERANCE else ZERO
+    difference, deduct_to = (gap, EXCHANGE_DIFFERENCE) if abs(gap) <= TOLERANCE else (ZERO, None)
+    deduction = lookups.get("booked_deductions", {}).get(str(row["id"]))
+    if deduction and abs(gap) > TOLERANCE and abs(deduction[2] - gap) <= CENT:
+        difference, deduct_to = gap, deduction[1]
     receivable = lookups["receivable"].get(BASE_CURRENCY)
     if receivable is None:
         raise Unmapped("no receivable account in CHF")
@@ -228,10 +233,10 @@ def _map_chf_booked(row, erp, customer, bank, lookups, owing):
         "outstanding_amount": float(owing),
     }]
     if difference:
-        exchange = lookups["gl"].get(EXCHANGE_DIFFERENCE)
-        if exchange is None:
-            raise Unmapped("no Kursdifferenzen account")
-        doc["deductions"] = [{"account": exchange, "cost_center": lookups["cost_center"], "amount": float(difference)}]
+        account = lookups["gl"].get(deduct_to)
+        if account is None:
+            raise Unmapped("no account {} for the deduction".format(deduct_to))
+        doc["deductions"] = [{"account": account, "cost_center": lookups["cost_center"], "amount": float(difference)}]
     return doc, paid
 
 
@@ -257,6 +262,24 @@ def bank_booked_chf(journal, accounts, row_ids):
     return dict(booked)
 
 
+def bank_booked_deductions(journal, accounts, row_ids):
+    """What bexio took off each receipt beyond the bank: payment row id -> (journal line id, account number, CHF).
+
+    A receipt line that is not the bank against the receivable, nor one against the advance, nor VAT on payment, is money
+    bexio moved from the receivable to another account, a debit there and a credit on the receivable. That account is
+    where the gap of such a receipt goes, as a deduction on its Payment Entry.
+    """
+    ids = account_ids(accounts)
+    numbers = {v: str(k) for k, v in ids.items()}
+    deductions = {}
+    for line in left_lines(journal, accounts, row_ids):
+        amount = _money(_dec(line["base_currency_amount"]))
+        # a zero line moves nothing, so it is no deduction, whichever line of the receipt comes first
+        if line["credit_account_id"] == ids[RECEIVABLE] and line["debit_account_id"] in numbers and amount != ZERO:
+            deductions.setdefault(str(line["ref_id"]), (line["id"], numbers[line["debit_account_id"]], amount))
+    return deductions
+
+
 def vat_lines(journal, accounts, row_ids):
     """The journal lines that move VAT on payment, 2202 to 2200, on a receipt: every one, zero amounts included."""
     ids = account_ids(accounts)
@@ -278,7 +301,8 @@ def plan(data, lookups):
     rows = sorted((row for p in data["payments"] for row in p["rows"]), key=lambda r: (r["date"], r["id"]))
     if "journal" in data:
         row_ids = {str(row["id"]) for row in rows}
-        lookups = dict(lookups, booked_chf=bank_booked_chf(data["journal"], data["accounts"], row_ids))
+        lookups = dict(lookups, booked_chf=bank_booked_chf(data["journal"], data["accounts"], row_ids),
+                       booked_deductions=bank_booked_deductions(data["journal"], data["accounts"], row_ids))
     owing = {}  # bexio invoice id -> what it still owes, after the mapped payments
     results = []
     for row in rows:
@@ -297,6 +321,10 @@ def plan(data, lookups):
             settled = sum((_dec(ref["allocated_amount"]) for ref in doc.get("references", [])), ZERO)
             owing[key] = remaining - settled
             result.update(doc=doc, chf=received)
+            deduction = lookups.get("booked_deductions", {}).get(result["bexio_id"])
+            if deduction and doc.get("deductions") and doc["deductions"][0]["account"] == lookups["gl"].get(deduction[1]):
+                # the journal line this deduction books: not left for erp-fd93 to import a second time
+                result["journal_line"] = deduction[0]
             if chf_in_erpnext(invoice, lookups) and remaining - settled > TOLERANCE:
                 # a gap beyond TOLERANCE is not booked here: the invoice stays open, listed for erp-fd93
                 result["note"] = "CHF {} of the invoice stays open after this receipt; not an exchange difference".format(
@@ -493,8 +521,11 @@ def main(argv):
             r["unknown"] = unknown_fields(r["doc"], metas)
     lines = detail_lines(results, reconciliation(results, data))
     row_ids = {r["bexio_id"] for r in results}
+    covered = {r["journal_line"] for r in results if r.get("journal_line")}
     lines += ["journal line {} on receipt {}: not booked here, for erp-fd93: {} CHF".format(line["id"], line["ref_id"], line["base_currency_amount"])
-              for line in left_lines(data["journal"], data["accounts"], row_ids)]
+              for line in left_lines(data["journal"], data["accounts"], row_ids) if line["id"] not in covered]
+    lines += ["journal line {} on receipt {}: booked as the deduction of its Payment Entry; erp-fd93 must not import it".format(
+        r["journal_line"], r["bexio_id"]) for r in results if r.get("journal_line")]
     lines += ["Payment Entry {}: ERPNext has no field {}".format(r["bexio_id"], f)
               for r in results if r["doc"] for f in r["unknown"]]
     print("payments from {}".format(export_dir))

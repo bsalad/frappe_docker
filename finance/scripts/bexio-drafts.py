@@ -130,6 +130,44 @@ def apply_plan(plan, store, submit=False):
     return counts, failures
 
 
+def relink(plan, store, write=True):
+    """Set bexio_id on the submitted Journal Entries that an earlier run loaded without one: (counts, problems).
+
+    A Journal Entry of the plan is found in ERPNext by its posting date and user remark, and by its amount: exactly one
+    submitted entry without a bexio_id must match it. Any other count, for any item, stops the run with nothing written,
+    so a rerun cannot link the wrong entry. An entry already linked to the item's bexio id counts as linked. Only the
+    bexio_id field is set: the entry is not cancelled or amended, and its GL entries do not change.
+    """
+    counts, problems, links = Counter(), [], []
+    if not store.has_bexio_id("Journal Entry"):
+        return counts, [("Journal Entry", "-", "Journal Entry has no bexio_id field")]
+    for item in plan["documents"]:
+        if item["doctype"] != "Journal Entry":
+            continue
+        bexio_id = str(item["bexio_id"])
+        values = item["values"]
+        amount = sum(float(line.get("debit_in_account_currency") or 0) for line in values["accounts"])
+        found = store.journal_entries(values["posting_date"], values["user_remark"])
+        if any(entry["bexio_id"] == bexio_id for entry in found):
+            counts["already linked"] += 1
+            continue
+        match = [e for e in found if e["docstatus"] == 1 and not e["bexio_id"] and abs(e["amount"] - amount) < 0.005]
+        if len(match) == 1:
+            links.append((match[0]["name"], bexio_id))
+        else:
+            problems.append(("Journal Entry", bexio_id, "{} matches, need exactly one".format(len(match))))
+    if problems:
+        return counts, problems
+    if not write:
+        counts["to link"] = len(links)
+        return counts, problems
+    for name, bexio_id in links:
+        store.set_bexio_id("Journal Entry", name, bexio_id)
+        store.commit()
+        counts["linked"] += 1
+    return counts, problems
+
+
 class FrappeStore:
     """The database calls of apply_plan, through frappe. Only used inside the backend container."""
 
@@ -177,6 +215,24 @@ class FrappeStore:
     def rollback(self):
         self.frappe.db.rollback()
 
+    def has_bexio_id(self, doctype):
+        return bool(self.frappe.get_meta(doctype).has_field("bexio_id"))
+
+    def journal_entries(self, posting_date, user_remark):
+        """The Journal Entries on the date with the remark, each with its docstatus, bexio_id and debit total."""
+        rows = self.frappe.get_all("Journal Entry", filters={"posting_date": posting_date, "user_remark": user_remark},
+                                   fields=["name", "docstatus", "bexio_id"])
+        entries = []
+        for row in rows:
+            debit = self.frappe.db.sql("select coalesce(sum(debit_in_account_currency), 0) from `tabJournal Entry Account` "
+                                       "where parent = %s", row.name)[0][0]
+            entries.append({"name": row.name, "docstatus": row.docstatus, "bexio_id": row.bexio_id or "", "amount": float(debit)})
+        return entries
+
+    def set_bexio_id(self, doctype, name, bexio_id):
+        # no modified stamp: the entry is the same document, only its bexio key is set
+        self.frappe.db.set_value(doctype, name, "bexio_id", bexio_id, update_modified=False)
+
 
 def main(stdin):
     import frappe  # the backend container's; the core above runs without it
@@ -185,8 +241,12 @@ def main(stdin):
     frappe.init(site=SITE)
     frappe.connect()
     frappe.set_user("Administrator")
-    submit = os.environ.get("MODE") == "submit"
-    counts, failures = apply_plan(plan, FrappeStore(frappe), submit=submit)
+    mode = os.environ.get("MODE")
+    if mode in ("relink", "check"):
+        # check reports what relink would link; neither writes when a single item does not match exactly once
+        counts, failures = relink(plan, FrappeStore(frappe), write=mode == "relink")
+    else:
+        counts, failures = apply_plan(plan, FrappeStore(frappe), submit=mode == "submit")
     for key in sorted(counts, key=str):
         if isinstance(key, tuple):
             print("{:<18}{:<12}{:>6}".format(key[0], key[1], counts[key]))

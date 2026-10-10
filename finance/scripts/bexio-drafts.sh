@@ -8,14 +8,17 @@
 #
 # Without the second argument the documents stay drafts. With submit, each one is submitted after it is loaded
 # (its GL entries are written), in posting date order.
+#
+# relink sets bexio_id on the submitted Journal Entries an earlier run loaded without one (see relink in the loader);
+# check does the same matching and writes nothing.
 set -eu
 
 # Compose files live at the repo root, two levels up from this script.
 cd "$(dirname "$0")/../.."
 
-plan="${1:?usage: bexio-drafts.sh <plan.json> [submit]}"
+plan="${1:?usage: bexio-drafts.sh <plan.json> [draft|submit|relink|check]}"
 mode="${2:-draft}"
-case "$mode" in draft | submit) ;; *) echo "mode is draft or submit, not $mode" >&2; exit 2 ;; esac
+case "$mode" in draft | submit | relink | check) ;; *) echo "mode is draft, submit, relink or check, not $mode" >&2; exit 2 ;; esac
 LOADER=$(cat finance/scripts/bexio-drafts.py)
 export LOADER
 
