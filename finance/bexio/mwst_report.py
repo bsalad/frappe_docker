@@ -568,8 +568,7 @@ def reconcile_lines(totals, gl):
             declared_owed, gl_sales, declared_owed - gl_sales, declared_input, gl_input, declared_input - gl_input))
     else:
         lines.append("settlement: settled: no")
-    lines.append("differences come from manual journal entries with tax, from the bases not in a checked Ziffer, and, "
-                 "for Ziffer 420, from the direct input tax that the payment mode does not read yet")
+    lines.append("differences come from manual journal entries with tax and from the bases not in a checked Ziffer")
     return lines
 
 

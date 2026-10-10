@@ -110,13 +110,16 @@ credit notes, which post their transit VAT to 2202 directly, as bexio does; thei
 every quarter. The invoice-date mirrors (vatfix-invoice, vatfix-bill) are ERPNext-only
 on 2200, 1170 and 1171 and net against the invoices.
 
-Not explained yet (the gross differences, 5 in 5 quarters, all on 1171): bexio holds
-the direct card and bank input tax against 2010 and 1020/1021, and ERPNext holds it
-against the expense accounts or not at all, as far as checked. That is the direct input
-tax, left for its own bead (erp-9fkd). The cause is not proven on these quarters. The
-settlement's input leg differs from the ERPNext input sum in 13 of 21 settled quarters,
-which the same direct input tax would explain; the settlement's sales leg differs in 3,
-two of them by the same amount in adjacent quarters (2022 Q2 and Q3).
+Not explained yet (the gross differences, 5 in 5 quarters, all on 1171): bexio's direct
+card and bank input tax is in ERPNext and matches bexio per day in every quarter. The
+differences sit on 12 days (2023 Q4 1, 2024 Q2 6, 2025 Q1 2, 2026 Q1 2, 2026 Q2 1), and
+on each of them the ERPNext line is a `vatfix-manual-<id>` entry whose 1171 debit differs
+from bexio's 1171 debits of that day; other `vatfix-manual` days match. So the gap is in
+those correction entries (erp-f6ab), not in the direct input tax and not in the
+comparison. The settlement's input leg differs from the ERPNext input sum in 13 of 21
+settled quarters, which the first run attributed to the direct input tax; that is not
+proven (the payment-mode report reads the direct input tax since erp-9fkd). The settlement's
+sales leg differs in 3, two of them by the same amount in adjacent quarters (2022 Q2 and Q3).
 
 Not compared yet: the form's rows per rate (200, 302 to 343), the base of each
 Ziffer, and the split of the Vorsteuer in 400 and 405. They need each receipt
