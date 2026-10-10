@@ -10,6 +10,7 @@ import json
 import os
 import tempfile
 import unittest
+from decimal import Decimal
 from unittest import mock
 
 import import_bank as ib
@@ -19,8 +20,8 @@ import import_master as im
 LOOKUPS = {
     "currency": {"1": "CHF", "2": "EUR"},
     "bank_account": {
-        "11": {"name": "Hauptkonto - Testbank AG", "currency": "CHF"},
-        "12": {"name": "Fremdwaehrung - Zweitbank AG", "currency": "EUR"},
+        "11": {"name": "Hauptkonto - Testbank AG", "currency": "CHF", "account": "1020 - Testbank - X"},
+        "12": {"name": "Fremdwaehrung - Zweitbank AG", "currency": "EUR", "account": "1021 - Zweitbank - X"},
     },
 }
 
@@ -44,11 +45,18 @@ def record(base, **changes):
 
 
 class FakeErp:
-    """Answers the one read the lookups make: the Bank Accounts that have a bexio_id."""
+    """The reads the importer makes: the Bank Accounts that have a bexio_id, the GL rows and the vouchers given to it."""
+
+    def __init__(self, gl=None, vouchers=None):
+        self.gl = gl or []
+        self.vouchers = vouchers or {}
 
     def list(self, doctype, filters=None, fields=("name",)):
-        assert doctype == "Bank Account", doctype
-        return [{"name": "Hauptkonto - Testbank AG", "bexio_id": "11"}]
+        if doctype == "Bank Account":
+            return [{"name": "Hauptkonto - Testbank AG", "bexio_id": "11", "account": "1020 - Testbank - X"}]
+        if doctype == "GL Entry":
+            return self.gl
+        return self.vouchers.get(doctype, [])
 
 
 class MappingTest(unittest.TestCase):
@@ -136,7 +144,8 @@ class LookupTest(unittest.TestCase):
         data = {"currencies": [{"id": 1, "name": "CHF"}, {"id": 2, "name": "EUR"}],
                 "bank_accounts": [{"id": 11, "currency_id": 1}, {"id": 12, "currency_id": 2}]}
         lookups = ib.lookups_from_erp(FakeErp(), data)
-        self.assertEqual(lookups["bank_account"], {"11": {"name": "Hauptkonto - Testbank AG", "currency": "CHF"}})
+        self.assertEqual(lookups["bank_account"], {"11": {"name": "Hauptkonto - Testbank AG", "currency": "CHF",
+                                                          "account": "1020 - Testbank - X"}})
         self.assertEqual(lookups["currency"], {"1": "CHF", "2": "EUR"})
 
 
@@ -166,9 +175,10 @@ class MainTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as export:
             self._export(export, [CHF_IN, record(CHF_IN, id=9009, bank_account_id=99)])
             report = os.path.join(export, "report.txt")
+            unmatched = os.path.join(export, "unmatched.txt")
             with mock.patch.object(im.Erp, "from_file", return_value=self._erp_fields()), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
-                code = ib.main(["--dry-run", "--export", export, "--report", report])
+                code = ib.main(["--dry-run", "--export", export, "--report", report, "--unmatched", unmatched])
             with open(report) as f:
                 self.assertEqual(f.read(), "Bank Transaction 9009: unmapped: bank account 99 has no Bank Account with that bexio_id\n")
             self.assertFalse(os.path.exists(os.path.join(export, "bank-docs.json")))
@@ -181,9 +191,10 @@ class MainTest(unittest.TestCase):
             self._export(export, [CHF_IN, CHF_OUT])
             docs = os.path.join(export, "bank-docs.json")
             report = os.path.join(export, "report.txt")
+            unmatched = os.path.join(export, "unmatched.txt")
             with mock.patch.object(im.Erp, "from_file", return_value=self._erp_fields()), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
-                code = ib.main(["--write", docs, "--export", export, "--report", report])
+                code = ib.main(["--write", docs, "--export", export, "--report", report, "--unmatched", unmatched])
             with open(docs) as f:
                 written = json.load(f)["documents"]
         self.assertEqual(code, 0)
@@ -196,6 +207,211 @@ class MainTest(unittest.TestCase):
     def test_a_run_without_dry_run_or_write_is_refused(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             ib.main([])
+
+
+ACCOUNT = "1020 - Testbank - X"
+
+
+def tx(bexio_id, amount, date="2026-03-31", booked=True):
+    """A mapped transaction as match takes it; the amount is in minus out."""
+    return {"bexio_id": bexio_id, "account": ACCOUNT, "date": date, "amount": Decimal(amount), "booked": booked}
+
+
+def voucher(name, amount, doctype="Payment Entry", date="2026-03-31", account=ACCOUNT, bexio_id="b"):
+    """A voucher's bank-side line, as read_vouchers gives it; the amount is money in positive."""
+    return {"doctype": doctype, "name": name, "bexio_id": bexio_id, "account": account, "date": date, "amount": Decimal(amount)}
+
+
+class MatchTest(unittest.TestCase):
+    def test_one_voucher_of_the_same_account_date_and_amount_is_a_pass_one_match(self):
+        matches = ib.match([tx("1", "1500.00")], [voucher("PE-1", "1500.00")])
+        self.assertEqual(matches["1"], (1, [voucher("PE-1", "1500.00")], ""))
+
+    def test_an_unbooked_transaction_is_not_matched_at_all(self):
+        self.assertEqual(ib.match([tx("1", "1500.00", booked=False)], [voucher("PE-1", "1500.00")]), {})
+
+    def test_the_voucher_must_be_on_the_same_day_and_account(self):
+        matches = ib.match([tx("1", "1500.00", date="2026-03-30")], [voucher("PE-1", "1500.00")])
+        self.assertEqual(matches["1"], (None, [], "no candidate"))
+        matches = ib.match([tx("1", "1500.00")], [voucher("PE-1", "1500.00", account="1021 - Zweitbank - X")])
+        self.assertEqual(matches["1"], (None, [], "no candidate"))
+
+    def test_the_sign_is_part_of_the_amount(self):
+        matches = ib.match([tx("1", "-1500.00")], [voucher("PE-1", "1500.00")])
+        self.assertEqual(matches["1"], (None, [], "no candidate"))
+
+    def test_two_vouchers_with_the_same_key_leave_the_transaction_unmatched(self):
+        matches = ib.match([tx("1", "1500.00")], [voucher("PE-1", "1500.00"), voucher("JE-1", "1500.00", doctype="Journal Entry")])
+        self.assertEqual(matches["1"], (None, [], "2 candidates"))
+
+    def test_a_combined_transfer_of_the_days_payments_is_a_pass_two_match_when_unique(self):
+        pays = [voucher("PE-700", "700.00"), voucher("PE-800", "800.00"), voucher("PE-50", "50.00")]
+        matches = ib.match([tx("1", "1500.00")], pays)
+        self.assertEqual(matches["1"], (2, [pays[0], pays[1]], ""))
+
+    def test_several_combinations_of_the_days_payments_leave_it_unmatched(self):
+        pays = [voucher("PE-500a", "500.00"), voucher("PE-1000a", "1000.00"),
+                voucher("PE-500b", "500.00"), voucher("PE-1000b", "1000.00")]
+        matches = ib.match([tx("1", "1500.00")], pays)
+        self.assertEqual(matches["1"], (None, [], "4 combinations of the day's payments"))
+
+    def test_only_payment_entries_are_combined(self):
+        pays = [voucher("PE-700", "700.00"), voucher("PE-900", "900.00"),
+                voucher("JE-300", "300.00", doctype="Journal Entry")]
+        matches = ib.match([tx("1", "1000.00")], pays)
+        self.assertEqual(matches["1"], (None, [], "no candidate"))
+
+    def test_a_voucher_matched_alone_is_not_used_in_a_combination(self):
+        pays = [voucher("PE-300", "300.00"), voucher("PE-700", "700.00")]
+        matches = ib.match([tx("1", "300.00"), tx("2", "1000.00")], pays)
+        self.assertEqual(matches["1"][0], 1)
+        self.assertEqual(matches["2"], (None, [], "no candidate"))
+
+    def test_a_day_with_too_many_payments_is_not_searched(self):
+        pays = [voucher("PE-{}".format(n), "1.00") for n in range(ib.COMBINE_LIMIT + 1)]
+        matches = ib.match([tx("1", "2.00")], pays)
+        self.assertEqual(matches["1"], (None, [], "{} payments that day: too many to combine".format(ib.COMBINE_LIMIT + 1)))
+
+    def test_a_voucher_that_two_transactions_claim_takes_neither(self):
+        matches = ib.match([tx("1", "1500.00"), tx("2", "1500.00")], [voucher("PE-1", "1500.00")])
+        self.assertEqual(matches["1"], (None, [], "a voucher that another transaction also matches"))
+        self.assertEqual(matches["2"], (None, [], "a voucher that another transaction also matches"))
+
+    def test_the_result_does_not_depend_on_the_order_of_the_transactions(self):
+        pays = [voucher("PE-700", "700.00"), voucher("PE-800", "800.00"), voucher("PE-50", "50.00")]
+        forward = ib.match([tx("1", "1500.00"), tx("2", "850.00")], pays)
+        backward = ib.match([tx("2", "850.00"), tx("1", "1500.00")], pays)
+        self.assertEqual(forward, backward)
+
+
+class VoucherTest(unittest.TestCase):
+    def test_a_voucher_is_one_bexio_keyed_document_and_account_with_its_net_debit(self):
+        gl = [{"voucher_type": "Payment Entry", "voucher_no": "PE-1", "account": ACCOUNT, "posting_date": "2026-03-31",
+               "debit": 1500.0, "credit": 0.0},
+              {"voucher_type": "Journal Entry", "voucher_no": "JE-1", "account": ACCOUNT, "posting_date": "2026-04-02",
+               "debit": 300.0, "credit": 0.0},
+              {"voucher_type": "Journal Entry", "voucher_no": "JE-1", "account": ACCOUNT, "posting_date": "2026-04-02",
+               "debit": 0.0, "credit": 100.0},
+              {"voucher_type": "Journal Entry", "voucher_no": "JE-9", "account": ACCOUNT, "posting_date": "2026-04-02",
+               "debit": 165.66, "credit": 0.0},
+              {"voucher_type": "Payment Entry", "voucher_no": "PE-NOKEY", "account": ACCOUNT, "posting_date": "2026-04-02",
+               "debit": 0.0, "credit": 10.0}]
+        vouchers = {"Payment Entry": [{"name": "PE-1", "bexio_id": "pay-1"}, {"name": "PE-7", "bexio_id": "pay-7"}],
+                    "Journal Entry": [{"name": "JE-1", "bexio_id": "manual-7"},
+                                      {"name": "JE-9", "bexio_id": "manual-1099-correction"}]}
+        found = ib.read_vouchers(FakeErp(gl=gl, vouchers=vouchers), [ACCOUNT])
+        self.assertEqual([(v["name"], str(v["amount"]), v["bexio_id"]) for v in found],
+                         [("PE-1", "1500.00", "pay-1"), ("JE-1", "200.00", "manual-7")])
+
+    def test_the_gl_account_name_gives_its_number(self):
+        self.assertEqual(ib.account_number("1020 - UBS Kontokorrent - bic"), "1020")
+
+    def test_match_transactions_takes_the_gl_account_and_the_signed_amount(self):
+        results = ib.plan([CHF_IN, CHF_OUT], LOOKUPS)
+        mapped = ib.match_transactions(results, LOOKUPS)
+        self.assertEqual([(t["bexio_id"], t["account"], str(t["amount"]), t["booked"]) for t in mapped],
+                         [("9001", "1020 - Testbank - X", "1500.00", True), ("9002", "1020 - Testbank - X", "-250.50", False)])
+
+
+class BalanceTest(unittest.TestCase):
+    def test_year_end_balances_are_cumulative_per_account(self):
+        lines = [("1020", "2021-02-01", Decimal("100.00")), ("1020", "2023-05-01", Decimal("-40.00")),
+                 ("1021", "2021-06-01", Decimal("7.00"))]
+        balances = ib.year_end_balances(lines, ["2021", "2022", "2023"])
+        self.assertEqual(balances[("1020", "2021")], Decimal("100.00"))
+        self.assertEqual(balances[("1020", "2022")], Decimal("100.00"))
+        self.assertEqual(balances[("1020", "2023")], Decimal("60.00"))
+        self.assertEqual(balances[("1021", "2023")], Decimal("7.00"))
+
+    def test_journal_bank_lines_leave_out_the_carry_forward_lines_and_sign_the_sides(self):
+        accounts = [{"id": 77, "account_no": 1020}, {"id": 144, "account_no": 3200}]
+        journal = [{"date": "2021-01-01T00:00:00+01:00", "debit_account_id": 77, "credit_account_id": 144,
+                    "base_currency_amount": 500, "description": "provisorischer Saldovortrag"},
+                   {"date": "2021-03-02T00:00:00+01:00", "debit_account_id": 144, "credit_account_id": 77,
+                    "base_currency_amount": "250.5", "description": "Miete"}]
+        self.assertEqual(ib.journal_bank_lines(journal, accounts, {"1020"}), [("1020", "2021-03-02", Decimal("-250.50"))])
+
+    def test_balance_lines_compare_the_ledger_with_the_journal_per_year_end(self):
+        gl = [{"account": ACCOUNT, "posting_date": "2021-03-31", "debit": 100.0, "credit": 0.0},
+              {"account": ACCOUNT, "posting_date": "2021-04-30", "debit": 0.0, "credit": 30.0}]
+        lookups = {"bank_account": {"11": {"account": ACCOUNT}}}
+        journal = [{"date": "2021-03-31T00:00:00+02:00", "debit_account_id": 77, "credit_account_id": 144,
+                    "base_currency_amount": 100, "description": "Einzahlung"},
+                   {"date": "2021-04-30T00:00:00+02:00", "debit_account_id": 144, "credit_account_id": 77,
+                    "base_currency_amount": 30, "description": "Miete"}]
+        accounts = [{"id": 77, "account_no": 1020}, {"id": 144, "account_no": 3200}]
+        with tempfile.TemporaryDirectory() as export:
+            for name, body in (("journal", journal), ("accounts", accounts)):
+                with open(os.path.join(export, name + ".json"), "w") as f:
+                    json.dump(body, f)
+            text = ib.balance_lines(FakeErp(gl=gl), lookups, export)
+        self.assertEqual([line.split() for line in text.splitlines()[1:]], [["1020", "2021", "70.00", "70.00", "0.00"]])
+
+
+class ReconcileOutputTest(unittest.TestCase):
+    def test_only_matched_transactions_are_reconciled_and_only_booked_ones_are_listed_as_unmatched(self):
+        results = ib.plan([CHF_IN, CHF_OUT], LOOKUPS)
+        matches = {"9001": (None, [], "no candidate")}
+        self.assertEqual(ib.reconcile_lines(matches), [])
+        self.assertEqual(ib.unmatched_lines(results, matches), ["Bank Transaction 9001: no candidate"])
+
+    def test_reconcile_lines_name_each_voucher_by_doctype_and_name(self):
+        pays = [voucher("PE-700", "700.00"), voucher("PE-800", "800.00")]
+        matches = ib.match([tx("1", "1500.00")], pays)
+        self.assertEqual(ib.reconcile_lines(matches),
+                         [{"bexio_id": "1", "vouchers": [{"doctype": "Payment Entry", "name": "PE-700"},
+                                                         {"doctype": "Payment Entry", "name": "PE-800"}]}])
+
+    def test_the_written_file_carries_the_reconciliations_for_the_loader(self):
+        results = ib.plan([CHF_IN], LOOKUPS)
+        reconcile = [{"bexio_id": "9001", "vouchers": [{"doctype": "Payment Entry", "name": "PE-1"}]}]
+        with tempfile.TemporaryDirectory() as export:
+            path = os.path.join(export, "docs.json")
+            self.assertEqual(ib.write_documents(results, path, reconcile), 1)
+            with open(path) as f:
+                written = json.load(f)
+        self.assertEqual(written["reconcile"], reconcile)
+        self.assertEqual(len(written["documents"]), 1)
+
+    def test_the_match_summary_counts_per_account_and_year_and_names_no_voucher(self):
+        results = ib.plan([CHF_IN, CHF_OUT], LOOKUPS)
+        matches = ib.match(ib.match_transactions(results, LOOKUPS), [voucher("PE-1500", "1500.00")])
+        text = ib.match_summary(results, matches)
+        rows = [line.split() for line in text.splitlines()[1:] if line.split()[0] == "11"]
+        self.assertEqual(rows, [["11", "2026", "1", "0", "0", "1"]])
+        self.assertNotIn("PE-1500", text)
+
+
+class LiveCheckTest(unittest.TestCase):
+    def _row(self, bexio_id, **changes):
+        row = {"name": "BTN-" + bexio_id, "bexio_id": bexio_id, "bank_account": "Hauptkonto - Testbank AG",
+               "date": "2026-03-31", "deposit": 1500.0, "withdrawal": 0.0, "status": "Reconciled", "docstatus": 1}
+        row.update(changes)
+        return row
+
+    def test_a_right_document_is_no_difference_and_a_wrong_status_is_listed_by_bexio_id(self):
+        results = ib.plan([CHF_IN, CHF_OUT], LOOKUPS)
+        matches = {"9001": (1, [voucher("PE-1", "1500.00")], "")}
+        rows = [self._row("9001"), self._row("9002", date="2026-04-02", deposit=0.0, withdrawal=250.5)]
+        lines, differences = ib.live_check(rows, results, matches, LOOKUPS)
+        self.assertEqual(differences, ["Bank Transaction 9002: differs (status Reconciled, submitted True)"])
+        self.assertEqual(lines[-1], "differences by bexio id: 1")
+
+    def test_the_table_shows_count_reconciled_and_sums_as_dry_run_over_erpnext(self):
+        results = ib.plan([CHF_IN, CHF_OUT], LOOKUPS)
+        matches = {"9001": (1, [voucher("PE-1", "1500.00")], "")}
+        rows = [self._row("9001"), self._row("9002", date="2026-04-02", deposit=0.0, withdrawal=250.5, status="Unreconciled")]
+        lines, _ = ib.live_check(rows, results, matches, LOOKUPS)
+        self.assertEqual([line.split() for line in lines[1:-1]],
+                         [["11", "2026", "2", "/", "2", "1", "/", "1", "1,500.00", "/", "1,500.00", "250.50", "/", "250.50"]])
+
+    def test_a_missing_document_and_an_extra_one_are_listed(self):
+        results = ib.plan([CHF_IN], LOOKUPS)
+        matches = {"9001": (None, [], "no candidate")}
+        rows = [self._row("9009", status="Unreconciled")]
+        _, differences = ib.live_check(rows, results, matches, LOOKUPS)
+        self.assertEqual(differences, ["Bank Transaction 9001: not in ERPNext",
+                                       "Bank Transaction 9009: in ERPNext, not in the export"])
 
 
 if __name__ == "__main__":

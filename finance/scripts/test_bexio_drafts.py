@@ -359,5 +359,86 @@ class Differs(unittest.TestCase):
         self.assertTrue(loader.differs(have, {"items": [{"qty": 1}, {"qty": 2}]}))
 
 
+class ReconcileStore(FakeStore):
+    """The reconciliation calls: a Bank Transaction takes its vouchers, and ends in the status given."""
+
+    def __init__(self, docs=None, status="Reconciled"):
+        super().__init__(docs)
+        self.allocations = {}   # name -> {(doctype, name)}
+        self.status = status
+
+    def allocated(self, name):
+        return set(self.allocations.get(name, set()))
+
+    def reconcile(self, name, vouchers):
+        self.calls.append(("reconcile", "Bank Transaction", name))
+        self.allocations.setdefault(name, set()).update((v["doctype"], v["name"]) for v in vouchers)
+        return self.status
+
+
+def bank_transaction(bexio_id="9001", name="BTN-1", docstatus=1):
+    return ("Bank Transaction", name, {"bexio_id": bexio_id, "docstatus": docstatus})
+
+
+def reconcile_plan(*items):
+    return {"documents": [], "reconcile": list(items)}
+
+
+def item(bexio_id="9001", *vouchers):
+    return {"bexio_id": bexio_id, "vouchers": [{"doctype": dt, "name": n} for dt, n in vouchers]}
+
+
+class Reconcile(unittest.TestCase):
+    def test_a_submitted_transaction_is_allocated_to_its_vouchers_and_reconciled(self):
+        store = ReconcileStore(docs=[bank_transaction()])
+        counts, failures = loader.apply_reconcile(
+            reconcile_plan(item("9001", ("Payment Entry", "PE-1"), ("Payment Entry", "PE-2"))), store)
+        self.assertEqual(counts["reconciled"], 1)
+        self.assertEqual(failures, [])
+        self.assertEqual(store.allocations["BTN-1"], {("Payment Entry", "PE-1"), ("Payment Entry", "PE-2")})
+
+    def test_a_second_run_reconciles_nothing(self):
+        store = ReconcileStore(docs=[bank_transaction()])
+        plan = reconcile_plan(item("9001", ("Journal Entry", "JE-7")))
+        loader.apply_reconcile(plan, store)
+        store.calls = []
+        counts, failures = loader.apply_reconcile(plan, store)
+        self.assertEqual(counts["reconciled, unchanged"], 1)
+        self.assertEqual(counts.get("reconciled", 0), 0)
+        self.assertEqual(store.calls, [])
+        self.assertEqual(failures, [])
+
+    def test_a_transaction_that_is_not_submitted_is_listed_and_nothing_is_allocated(self):
+        store = ReconcileStore(docs=[bank_transaction(docstatus=0)])
+        counts, failures = loader.apply_reconcile(reconcile_plan(item("9001", ("Journal Entry", "JE-7"))), store)
+        self.assertEqual(counts["failed"], 1)
+        self.assertEqual(failures, [("Bank Transaction", "9001", "ValueError: the Bank Transaction is not submitted")])
+        self.assertEqual(store.allocations, {})
+
+    def test_a_missing_transaction_is_listed(self):
+        counts, failures = loader.apply_reconcile(reconcile_plan(item("9999", ("Journal Entry", "JE-7"))), ReconcileStore())
+        self.assertEqual(counts["failed"], 1)
+        self.assertEqual(failures[0][:2], ("Bank Transaction", "9999"))
+
+    def test_an_allocation_that_does_not_reach_reconciled_is_rolled_back_and_listed(self):
+        store = ReconcileStore(docs=[bank_transaction()], status="Unreconciled")
+        counts, failures = loader.apply_reconcile(reconcile_plan(item("9001", ("Payment Entry", "PE-1"))), store)
+        self.assertEqual(counts["failed"], 1)
+        self.assertIn("status is Unreconciled after the allocation", failures[0][2])
+        self.assertEqual(store.rollbacks, 1)
+
+    def test_a_transaction_allocated_to_other_vouchers_is_listed_not_changed(self):
+        store = ReconcileStore(docs=[bank_transaction()])
+        store.allocations["BTN-1"] = {("Payment Entry", "PE-9")}
+        counts, failures = loader.apply_reconcile(reconcile_plan(item("9001", ("Payment Entry", "PE-1"))), store)
+        self.assertEqual(counts["failed"], 1)
+        self.assertEqual(store.allocations["BTN-1"], {("Payment Entry", "PE-9")})
+        self.assertEqual(store.calls, [])
+
+    def test_a_plan_without_reconciliations_does_nothing(self):
+        counts, failures = loader.apply_reconcile({"documents": []}, ReconcileStore())
+        self.assertEqual((dict(counts), failures), ({}, []))
+
+
 if __name__ == "__main__":
     unittest.main()

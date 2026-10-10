@@ -26,6 +26,7 @@ from collections import Counter
 
 SITE = "frontend"
 DRAFT = 0
+SUBMITTED = 1
 # fields the importers hand over that ERPNext's doctypes do not have: the files come with erp-a2ma
 DROP = ("bexio_attachment_ids",)
 
@@ -127,6 +128,42 @@ def apply_plan(plan, store, submit=False):
             store.rollback()
             counts[(item["doctype"], "failed")] += 1
             failures.append((item["doctype"], str(item["bexio_id"]), "{}: {}".format(type(err).__name__, err)))
+    return counts, failures
+
+
+def apply_reconcile(plan, store):
+    """Reconcile each Bank Transaction of the plan's reconcile list against its vouchers, once: (counts, failures).
+
+    A transaction already allocated to exactly these vouchers is unchanged, so a rerun reconciles nothing. One that is
+    not submitted, or that the vouchers do not bring to Reconciled, is rolled back and listed by bexio id. Only the
+    allocation is made: a Bank Transaction posts nothing, and the vouchers' GL entries do not change.
+    """
+    counts, failures = Counter(), []
+    for item in plan.get("reconcile", []):
+        bexio_id = str(item["bexio_id"])
+        wanted = {(v["doctype"], v["name"]) for v in item["vouchers"]}
+        try:
+            found = store.find("Bank Transaction", bexio_id)
+            if found is None:
+                raise LookupError("no Bank Transaction with that bexio_id")
+            name, docstatus = found
+            if docstatus != SUBMITTED:
+                raise ValueError("the Bank Transaction is not submitted")
+            have = store.allocated(name)
+            if have == wanted:
+                counts["reconciled, unchanged"] += 1
+                continue
+            if have:
+                raise ValueError("already allocated to other vouchers")
+            status = store.reconcile(name, item["vouchers"])
+            if status != "Reconciled":
+                raise ValueError("status is {} after the allocation, not Reconciled".format(status))
+            store.commit()
+            counts["reconciled"] += 1
+        except Exception as err:
+            store.rollback()
+            counts["failed"] += 1
+            failures.append(("Bank Transaction", bexio_id, "{}: {}".format(type(err).__name__, err)))
     return counts, failures
 
 
@@ -233,6 +270,18 @@ class FrappeStore:
         # no modified stamp: the entry is the same document, only its bexio key is set
         self.frappe.db.set_value(doctype, name, "bexio_id", bexio_id, update_modified=False)
 
+    def allocated(self, name):
+        """The vouchers a Bank Transaction is allocated to, as (doctype, name)."""
+        rows = self.frappe.get_all("Bank Transaction Payments", filters={"parent": name, "parenttype": "Bank Transaction"},
+                                   fields=["payment_document", "payment_entry"])
+        return {(row.payment_document, row.payment_entry) for row in rows}
+
+    def reconcile(self, name, vouchers):
+        """Allocate the vouchers to the Bank Transaction, as the bank reconciliation tool does; returns its status after."""
+        from erpnext.accounts.doctype.bank_reconciliation_tool.bank_reconciliation_tool import reconcile_vouchers
+        reconcile_vouchers(name, json.dumps([{"payment_doctype": v["doctype"], "payment_name": v["name"]} for v in vouchers]))
+        return self.frappe.db.get_value("Bank Transaction", name, "status")
+
 
 def main(stdin):
     import frappe  # the backend container's; the core above runs without it
@@ -247,6 +296,10 @@ def main(stdin):
         counts, failures = relink(plan, FrappeStore(frappe), write=mode == "relink")
     else:
         counts, failures = apply_plan(plan, FrappeStore(frappe), submit=mode == "submit")
+        if mode == "submit" and plan.get("reconcile"):
+            more, more_failures = apply_reconcile(plan, FrappeStore(frappe))
+            counts.update(more)
+            failures += more_failures
     for key in sorted(counts, key=str):
         if isinstance(key, tuple):
             print("{:<18}{:<12}{:>6}".format(key[0], key[1], counts[key]))

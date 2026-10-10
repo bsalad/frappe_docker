@@ -1,48 +1,58 @@
-"""Map the exported bexio bank transactions to ERPNext Bank Transaction, offline.
+"""Map the exported bexio bank transactions to ERPNext Bank Transaction, offline, and match them to their bookings.
 
-Step four of the bexio pipeline, after import_master.py has made the Bank Accounts
-(keyed by bexio_id). Each function takes one export record and the lookups and
-returns the ERPNext Bank Transaction as a dict, not yet inserted: the live write and
-its order are erp-7avs's, after the posting plan's open decisions (finance-3qsp, D7).
-So nothing is written to ERPNext here: --dry-run reads ERPNext and prints totals only,
---write also keeps the documents in a private file for the loader.
+Step four of the bexio pipeline, after import_master.py has made the Bank Accounts (keyed by bexio_id). Each
+function takes one export record and the lookups and returns the ERPNext Bank Transaction as a dict, not yet
+inserted. nothing is written to ERPNext here: --dry-run reads ERPNext and prints totals only; --write keeps the
+documents and their reconciliations in a private file for the loader (bexio-drafts.py, submit mode).
 
-The export's bank_transactions.json has amount unsigned (always positive) and type
-CREDIT (money in) or DEBIT (money out). status says whether bexio has booked the
-transaction: reconciled and auto_reconciled are booked (against a payment or a banking
-entry, which the export does not say), unreconciled and ignored are not. The export
-has no field that names the booking, so the link is not mapped here (D7).
+The export's bank_transactions.json has amount unsigned (always positive) and type CREDIT (money in) or DEBIT
+(money out). status says whether bexio has booked the transaction: reconciled and auto_reconciled are booked
+(against a payment or a banking entry, which the export does not say), unreconciled and ignored are not. The
+export has no field that names the booking, so the link is found by match: a booked transaction reconciles
+against the one ERPNext voucher of its bank account, value date and amount, or against a combined transfer of
+the day's Payment Entries (see match). A Bank Transaction posts no GL itself; reconciling it posts nothing.
 
-A record that cannot be mapped (an unknown bank account, a currency other than its
-account's, a zero amount) raises Unmapped, and the report names it by bexio id only.
-Amounts stay in the transaction's currency: no conversion, so no CHF totals here.
+A record that cannot be mapped (an unknown bank account, a currency other than its account's, a zero amount)
+raises Unmapped, and the report names it by bexio id only. Amounts stay in the transaction's currency: no
+conversion, so no CHF totals here.
 
 Run it as:
 
-    python3 finance/bexio/import_bank.py --dry-run [--export DIR]
+    python3 finance/bexio/import_bank.py --dry-run [--export DIR] [--balances]
     python3 finance/bexio/import_bank.py --write <private>/bexio-bank-docs.json [--export DIR]
+    python3 finance/bexio/import_bank.py --check [--export DIR]     (after the loader ran: ERPNext against the dry run)
 
---export defaults to the newest directory under <private>/bexio-export/. The output
-is totals only; the unmapped records go to a file under <private>, never to the
-repository. Standard library only, plus import_master.
+--export defaults to the newest directory under <private>/bexio-export/. The output is totals only; the unmapped
+and unmatched records go to files under <private>, never to the repository. Standard library only, plus import_master
+and posting_plan.
 """
 
 import argparse
 import collections
+import itertools
 import json
 import os
 import sys
 from decimal import Decimal
 
 import import_master as im
+import posting_plan as pp
 
 COMPANY = im.COMPANY
 TRANSACTIONS = "bank_transactions"
+VOUCHER_TYPES = ("Payment Entry", "Journal Entry")
 
 # bexio's status values: these two mean bexio has booked the transaction
 BOOKED = ("reconciled", "auto_reconciled")
 
+# journal entries posted under a key that is a correction, not a bank booking (erp-fd93: the bexio 1099 entry's correction)
+CORRECTION_KEYS = ("manual-1099-correction",)
+
+# the most Payment Entries of one day and account a combined transfer is searched in (2^12 subsets at most)
+COMBINE_LIMIT = 12
+
 ZERO = Decimal("0")
+CENT = Decimal("0.01")
 
 
 class Unmapped(Exception):
@@ -51,6 +61,10 @@ class Unmapped(Exception):
 
 def _dec(value):
     return Decimal(str(value))
+
+
+def cents(value):
+    return _dec(value).quantize(CENT)
 
 
 def bank_transaction(record, lookups):
@@ -124,15 +138,137 @@ def load_export(path):
 
 
 def lookups_from_erp(erp, data):
-    """The Bank Accounts by bexio_id, read from ERPNext, with the currency the export gives each one."""
-    names = {r["bexio_id"]: r["name"] for r in erp.list("Bank Account", [["bexio_id", "is", "set"]], ["name", "bexio_id"])}
+    """The Bank Accounts by bexio_id, read from ERPNext, with the currency the export gives each one and its GL account."""
+    rows = {r["bexio_id"]: r for r in erp.list("Bank Account", [["bexio_id", "is", "set"]], ["name", "bexio_id", "account"])}
     currency = {str(c["id"]): c["name"] for c in data["currencies"]}
     accounts = {}
     for b in data["bank_accounts"]:
-        name = names.get(str(b["id"]))
-        if name is not None:
-            accounts[str(b["id"])] = {"name": name, "currency": currency.get(str(b["currency_id"]))}
+        row = rows.get(str(b["id"]))
+        if row is not None:
+            accounts[str(b["id"])] = {"name": row["name"], "currency": currency.get(str(b["currency_id"])), "account": row["account"]}
     return {"currency": currency, "bank_account": accounts}
+
+
+def read_vouchers(erp, gl_accounts):
+    """The bank-side lines of the submitted Payment Entries and Journal Entries that carry a bexio_id.
+
+    One voucher per voucher and GL account and date, with its net debit (money in positive). The amounts come from the
+    GL: the API user cannot read the rows of a Journal Entry, and the GL is what a Bank Transaction allocates against.
+    """
+    keys = {}
+    for doctype in VOUCHER_TYPES:
+        for row in erp.list(doctype, [["bexio_id", "is", "set"], ["docstatus", "=", 1]], ["name", "bexio_id"]):
+            keys[(doctype, row["name"])] = row["bexio_id"]
+    gl = erp.list("GL Entry", [["account", "in", gl_accounts], ["is_cancelled", "=", 0],
+                               ["voucher_type", "in", list(VOUCHER_TYPES)]],
+                  ["voucher_type", "voucher_no", "account", "posting_date", "debit", "credit"])
+    net = collections.OrderedDict()
+    for line in gl:
+        key = (line["voucher_type"], line["voucher_no"], line["account"], line["posting_date"])
+        net[key] = net.get(key, ZERO) + cents(line["debit"]) - cents(line["credit"])
+    vouchers = []
+    for (doctype, name, account, date), amount in net.items():
+        bexio_id = keys.get((doctype, name))
+        if bexio_id is None or bexio_id in CORRECTION_KEYS or amount == ZERO:
+            continue
+        vouchers.append({"doctype": doctype, "name": name, "bexio_id": bexio_id, "account": account, "date": date, "amount": amount})
+    return vouchers
+
+
+def match_transactions(results, lookups):
+    """The mapped transactions as match takes them: the GL account, the value date, and the amount in minus out."""
+    return [{"bexio_id": r["bexio_id"], "account": lookups["bank_account"][r["account"]]["account"],
+             "date": r["doc"]["date"], "amount": cents(r["in"] - r["out"]), "booked": r["booked"]}
+            for r in results if r["doc"]]
+
+
+def _key(voucher):
+    return (voucher["doctype"], voucher["name"])
+
+
+def match(transactions, vouchers):
+    """The booked transactions and the vouchers each reconciles against: {bexio_id: (pass, vouchers, reason)}.
+
+    Pass 1: exactly one voucher of the transaction's GL account, date and amount. Pass 2, for a transaction without
+    one: the only combination of two or more Payment Entries of that account and day whose sum is its amount (a
+    transfer that pays several bills). A transaction with no such match keeps pass None and the reason. A voucher
+    that two transactions claim takes neither of them.
+    """
+    by_key = collections.defaultdict(list)
+    for v in vouchers:
+        by_key[(v["account"], v["date"], v["amount"])].append(v)
+    result, single, pending = {}, set(), []
+    for t in transactions:
+        if not t["booked"]:
+            continue
+        found = by_key.get((t["account"], t["date"], t["amount"]), [])
+        if len(found) == 1:
+            result[t["bexio_id"]] = (1, found, "")
+            single.add(_key(found[0]))
+        else:
+            pending.append((t, len(found)))
+
+    pool = [v for v in vouchers if v["doctype"] == "Payment Entry" and _key(v) not in single]
+    for t, count in pending:
+        day = [v for v in pool if v["account"] == t["account"] and v["date"] == t["date"]
+               and (v["amount"] > ZERO) == (t["amount"] > ZERO)]
+        combos = []
+        if len(day) <= COMBINE_LIMIT:
+            combos = [c for n in range(2, len(day) + 1) for c in itertools.combinations(day, n)
+                      if sum((v["amount"] for v in c), ZERO) == t["amount"]]
+        if len(combos) == 1:
+            result[t["bexio_id"]] = (2, list(combos[0]), "")
+        elif len(combos) > 1:
+            result[t["bexio_id"]] = (None, [], "{} combinations of the day's payments".format(len(combos)))
+        elif len(day) > COMBINE_LIMIT:
+            result[t["bexio_id"]] = (None, [], "{} payments that day: too many to combine".format(len(day)))
+        elif count:
+            result[t["bexio_id"]] = (None, [], "{} candidates".format(count))
+        else:
+            result[t["bexio_id"]] = (None, [], "no candidate")
+
+    claims = collections.Counter(_key(v) for pass_, found, _ in result.values() if pass_ for v in found)
+    for bexio_id, (pass_, found, _) in list(result.items()):
+        if pass_ and any(claims[_key(v)] > 1 for v in found):
+            result[bexio_id] = (None, [], "a voucher that another transaction also matches")
+    return result
+
+
+def reconcile_lines(matches):
+    """What the loader reconciles: each matched transaction with its vouchers, by doctype and name."""
+    return [{"bexio_id": bexio_id, "vouchers": [{"doctype": v["doctype"], "name": v["name"]} for v in found]}
+            for bexio_id, (pass_, found, _) in sorted(matches.items()) if pass_]
+
+
+def unmatched_lines(results, matches):
+    """The booked transactions that stay Unreconciled, by bexio id and reason."""
+    return ["Bank Transaction {}: {}".format(r["bexio_id"], matches[r["bexio_id"]][2])
+            for r in results if r["doc"] and r["booked"] and not matches[r["bexio_id"]][0]]
+
+
+def match_summary(results, matches):
+    """Counts per bank account and year: reconciled by one voucher or a combined transfer, booked but unmatched, not booked."""
+    per = collections.OrderedDict()
+    for r in sorted((r for r in results if r["doc"]), key=lambda r: (r["account"], r["year"])):
+        count = per.setdefault((r["account"], r["year"]), collections.Counter())
+        if not r["booked"]:
+            count["not booked"] += 1
+        elif matches[r["bexio_id"]][0] == 1:
+            count["reconciled, one voucher"] += 1
+        elif matches[r["bexio_id"]][0] == 2:
+            count["reconciled, combined transfer"] += 1
+        else:
+            count["booked, unmatched"] += 1
+    lines = ["{:<12}{:<6}{:>12}{:>16}{:>12}{:>14}".format(
+        "bank account", "year", "one voucher", "combined", "unmatched", "not booked")]
+    for (account, year), count in per.items():
+        lines.append("{:<12}{:<6}{:>12}{:>16}{:>12}{:>14}".format(
+            account, year, count["reconciled, one voucher"], count["reconciled, combined transfer"],
+            count["booked, unmatched"], count["not booked"]))
+    reasons = collections.Counter(line.split(": ", 1)[1] for line in unmatched_lines(results, matches))
+    for reason, n in sorted(reasons.items()):
+        lines.append("unmatched, {}: {}".format(reason, n))
+    return "\n".join(lines)
 
 
 def summary(results):
@@ -165,36 +301,151 @@ def detail_lines(results):
     return ["Bank Transaction {}: unmapped: {}".format(r["bexio_id"], r["error"]) for r in results if r["error"]]
 
 
+def account_number(gl_account):
+    """The number of a GL account from its name: '1020 - UBS Kontokorrent' gives 1020."""
+    return gl_account.split(" ", 1)[0]
+
+
+def year_end_balances(lines, years):
+    """The balance on each account at the end of each year: {(number, year): Decimal}, from (number, date, debit minus credit)."""
+    totals = collections.defaultdict(lambda: ZERO)
+    for number, date, amount in lines:
+        totals[(number, date[:4])] += amount
+    balances = {}
+    for number in {number for number, _ in totals}:
+        running = ZERO
+        for year in years:
+            running += totals.get((number, year), ZERO)
+            balances[(number, year)] = running
+    return balances
+
+
+def journal_bank_lines(journal, accounts, numbers):
+    """bexio's journal lines on the bank accounts, in CHF, as (number, date, debit minus credit).
+
+    Carry-forward lines are left out: they copy balances the postings already make (posting_plan, decision D1).
+    """
+    ids = {str(a["id"]): str(a["account_no"]) for a in accounts}
+    lines = []
+    for line in journal:
+        if pp._is_carry_forward(line):
+            continue
+        amount = cents(line.get("base_currency_amount") or 0)
+        for side, sign in (("debit_account_id", 1), ("credit_account_id", -1)):
+            number = ids.get(str(line[side]))
+            if number in numbers:
+                lines.append((number, line["date"][:10], sign * amount))
+    return lines
+
+
+def balance_lines(erp, lookups, export_dir):
+    """Per bank account and year end: the ERPNext ledger balance (GL), bexio's journal balance, and the difference, in CHF."""
+    gl_accounts = sorted({a["account"] for a in lookups["bank_account"].values()})
+    gl = erp.list("GL Entry", [["account", "in", gl_accounts], ["is_cancelled", "=", 0]],
+                  ["account", "posting_date", "debit", "credit"])
+    erp_lines = [(account_number(r["account"]), r["posting_date"], cents(r["debit"]) - cents(r["credit"])) for r in gl]
+    with open(os.path.join(export_dir, "journal.json"), encoding="utf-8") as f:
+        journal = json.load(f)
+    with open(os.path.join(export_dir, "accounts.json"), encoding="utf-8") as f:
+        accounts = json.load(f)
+    numbers = {account_number(a) for a in gl_accounts}
+    journal_part = journal_bank_lines(journal, accounts, numbers)
+    years = sorted({date[:4] for _, date, _ in erp_lines + journal_part})
+    ledger = year_end_balances(erp_lines, years)
+    bexio = year_end_balances(journal_part, years)
+    lines = ["{:<10}{:<6}{:>18}{:>18}{:>14}".format("account", "year", "ERPNext GL", "bexio journal", "difference")]
+    for number, year in sorted(ledger):
+        lines.append("{:<10}{:<6}{:>18,.2f}{:>18,.2f}{:>14,.2f}".format(
+            number, year, ledger[(number, year)], bexio.get((number, year), ZERO),
+            ledger[(number, year)] - bexio.get((number, year), ZERO)))
+    return "\n".join(lines)
+
+
+def _add(totals, key, sum_in, sum_out, reconciled):
+    row = totals.setdefault(key, [0, ZERO, ZERO, 0])
+    row[0] += 1
+    row[1] += sum_in
+    row[2] += sum_out
+    row[3] += int(reconciled)
+
+
+def live_check(erp_rows, results, matches, lookups):
+    """The Bank Transactions in ERPNext against the dry run, per bank account and year: (table lines, difference lines).
+
+    A document is right when it is submitted, with the account, date, deposit and withdrawal of its mapping, and status
+    Reconciled when the match found its vouchers, Unreconciled otherwise. The table shows each figure as dry run / ERPNext;
+    the differences name bexio ids only.
+    """
+    names = {v["name"]: k for k, v in lookups["bank_account"].items()}
+    live = {row["bexio_id"]: row for row in erp_rows}
+    dry, found = collections.OrderedDict(), collections.OrderedDict()
+    differences = []
+    for r in sorted((r for r in results if r["doc"]), key=lambda r: (r["account"], r["year"])):
+        doc = r["doc"]
+        reconciled = bool(r["booked"] and matches[r["bexio_id"]][0])
+        _add(dry, (r["account"], r["year"]), r["in"], r["out"], reconciled)
+        row = live.get(r["bexio_id"])
+        if row is None:
+            differences.append("Bank Transaction {}: not in ERPNext".format(r["bexio_id"]))
+            continue
+        _add(found, (names.get(row["bank_account"], "?"), row["date"][:4]), cents(row["deposit"]), cents(row["withdrawal"]),
+             row["status"] == "Reconciled")
+        same = (row["docstatus"] == 1 and row["bank_account"] == doc["bank_account"] and row["date"] == doc["date"]
+                and cents(row["deposit"]) == cents(doc["deposit"]) and cents(row["withdrawal"]) == cents(doc["withdrawal"])
+                and row["status"] == ("Reconciled" if reconciled else "Unreconciled"))
+        if not same:
+            differences.append("Bank Transaction {}: differs (status {}, submitted {})".format(
+                r["bexio_id"], row["status"], row["docstatus"] == 1))
+    seen = {r["bexio_id"] for r in results if r["doc"]}
+    differences.extend("Bank Transaction {}: in ERPNext, not in the export".format(bexio_id)
+                       for bexio_id in sorted(set(live) - seen))
+
+    lines = ["{:<10}{:<6}{:>14}{:>16}{:>34}{:>34}".format("account", "year", "count", "reconciled", "sum in", "sum out")]
+    for key in sorted(set(dry) | set(found)):
+        d = dry.get(key, [0, ZERO, ZERO, 0])
+        e = found.get(key, [0, ZERO, ZERO, 0])
+        lines.append("{:<10}{:<6}{:>14}{:>16}{:>34}{:>34}".format(
+            key[0], key[1], "{} / {}".format(d[0], e[0]), "{} / {}".format(d[3], e[3]),
+            "{:,.2f} / {:,.2f}".format(d[1], e[1]), "{:,.2f} / {:,.2f}".format(d[2], e[2])))
+    lines.append("differences by bexio id: {}".format(len(differences)))
+    return lines, differences
+
+
 def write_private(path, text):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text + "\n")
 
 
-def write_documents(results, path):
-    """The mapped Bank Transactions as the loader takes them, into the private file; returns their number.
+def write_documents(results, path, reconcile=()):
+    """The mapped Bank Transactions and their reconciliations, as the loader takes them, into the private file; returns the number of documents.
 
-    Each is keyed by bexio_id; the loader inserts it and submits it, and reconciles it only once the posting
-    plan decides the booking link (D7), so nothing here says what a transaction is booked against.
+    Each document is keyed by bexio_id; the loader inserts and submits it, then reconciles the ones in reconcile.
     """
     documents = [{"doctype": r["doc"]["doctype"], "bexio_id": r["bexio_id"], "booked": r["booked"],
                   "values": {k: v for k, v in r["doc"].items() if k != "doctype"}}
                  for r in results if r["doc"]]
-    write_private(path, json.dumps({"documents": documents}, indent=1))
+    write_private(path, json.dumps({"documents": documents, "reconcile": list(reconcile)}, indent=1))
     return len(documents)
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(description="Map the exported bexio bank transactions to ERPNext (nothing is written to ERPNext).")
+    parser = argparse.ArgumentParser(description="Map the exported bexio bank transactions to ERPNext and match them to their bookings (nothing is written to ERPNext).")
     parser.add_argument("--export", default=None, help="export directory (default: the newest under <private>/bexio-export/)")
-    parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals")
-    parser.add_argument("--write", metavar="FILE", help="also write the mapped documents to a private file for the loader")
+    parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals and the match counts")
+    parser.add_argument("--write", metavar="FILE", help="also write the mapped documents and their reconciliations to a private file for the loader")
+    parser.add_argument("--balances", action="store_true", help="read ERPNext and the export, print each bank account's year-end balance against bexio's journal")
+    parser.add_argument("--check", action="store_true", help="read the Bank Transactions in ERPNext and compare them with the dry run (after the write)")
     parser.add_argument("--report", default=os.path.join(im.PRIVATE, "bexio-bank-differences.txt"),
                         help="private file for the unmapped records, by bexio id")
+    parser.add_argument("--unmatched", default=os.path.join(im.PRIVATE, "bexio-bank-unmatched.txt"),
+                        help="private file for the booked transactions that stay unreconciled, by bexio id and reason")
+    parser.add_argument("--differences", default=os.path.join(im.PRIVATE, "bexio-bank-live-differences.txt"),
+                        help="private file for the --check differences, by bexio id")
     parser.add_argument("--token-file", default=im.TOKEN_FILE)
     args = parser.parse_args(argv)
-    if not (args.dry_run or args.write):
-        parser.error("give --dry-run or --write: the live run waits for the posting plan's open decisions (D7)")
+    if not (args.dry_run or args.write or args.balances or args.check):
+        parser.error("give --dry-run, --write, --balances or --check: the write itself is the loader's (bexio-drafts.sh)")
 
     export_dir = args.export or im.newest_export()
     file = os.path.join(export_dir, TRANSACTIONS + ".json")
@@ -208,21 +459,43 @@ def main(argv):
     try:
         lookups = lookups_from_erp(erp, data)
         meta = doctype_fields(erp, "Bank Transaction")
+        gl_accounts = sorted({a["account"] for a in lookups["bank_account"].values()})
+        vouchers = read_vouchers(erp, gl_accounts)
+        balances = balance_lines(erp, lookups, export_dir) if args.balances else None
+        live_rows = erp.list("Bank Transaction", [["bexio_id", "is", "set"]],
+                             ["name", "bexio_id", "bank_account", "date", "deposit", "withdrawal", "status", "docstatus"]) if args.check else None
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2
 
     results = plan(records, lookups, meta)
+    matches = match(match_transactions(results, lookups), vouchers)
+    reconcile = reconcile_lines(matches)
     print("bank transactions from {}".format(export_dir))
     print(summary(results))
+    print("")
+    print("vouchers with a bexio_id on the bank accounts: {}".format(len(vouchers)))
+    print(match_summary(results, matches))
+    if balances is not None:
+        print("")
+        print(balances)
+    if live_rows is not None:
+        table, differences = live_check(live_rows, results, matches, lookups)
+        print("")
+        print("\n".join(table))
+        write_private(args.differences, "\n".join(differences))
+        print("{} differences in {}".format(len(differences), args.differences))
     if args.write:
-        print("wrote {} documents to the private file for the loader; nothing was written to ERPNext".format(
-            write_documents(results, args.write)))
+        print("wrote {} documents and {} reconciliations to the private file for the loader; nothing was written to ERPNext".format(
+            write_documents(results, args.write, reconcile), len(reconcile)))
     else:
         print("dry run: nothing was written to ERPNext")
     lines = detail_lines(results)
     print("{} unmapped records in {}".format(len(lines), args.report))
     write_private(args.report, "\n".join(lines))
+    unmatched = unmatched_lines(results, matches)
+    print("{} booked transactions left unreconciled in {}".format(len(unmatched), args.unmatched))
+    write_private(args.unmatched, "\n".join(unmatched))
     return 1 if lines else 0
 
 
