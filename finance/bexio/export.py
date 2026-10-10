@@ -455,6 +455,9 @@ PAYROLL_ABSENCES = "/4.0/payroll/employees/{id}/absences"
 PAYROLL_PAYSTUB = "/4.0/payroll/employees/{id}/paystub-pdf-download/{year}/{month}"
 # The body bexio answers a month without a payslip with (a 400, not a 404).
 NO_PAYSTUBS = "no_paystubs"
+# The body bexio answers a month of a year before the payroll company existed with (a 400). Payslips begin
+# 2023-11, so a year before that is asked for and answered with this; it counts as no payslip, month by month.
+COMPANY_NOT_FOUND = "company_not_found"
 # Company-level reads for the HRMS study: each is kept as it comes, under its path.
 PAYROLL_COMPANY = (
     "/4.0/payroll/companies/elm-status",
@@ -491,8 +494,9 @@ def payroll_absences(client, employees, years):
 def payroll_paystubs(client, out, employees, years, today):
     """One PDF per employee and month up to today, in paystubs/; returns the index of them (no names).
 
-    A month without a payslip is a 400 whose body says "no_paystubs" (a 404 counts too). Any other refusal
-    raises, so the entity is recorded as failed.
+    A month without a payslip is a 400 whose body says "no_paystubs" (a 404 counts too), and a month of a year
+    before the payroll company existed is a 400 saying "company_not_found": both are no payslip. Any other
+    refusal raises, so the entity is recorded as failed.
     """
     index = []
     for employee in employees:
@@ -504,7 +508,8 @@ def payroll_paystubs(client, out, employees, years, today):
                 try:
                     content = document_pdf(client, path)
                 except BexioError as err:
-                    if err.status == 404 or (err.detail and NO_PAYSTUBS in err.detail):
+                    no_payslip = err.detail and (NO_PAYSTUBS in err.detail or COMPANY_NOT_FOUND in err.detail)
+                    if err.status == 404 or no_payslip:
                         continue
                     raise
                 name = "{}-{}-{:02d}.pdf".format(employee["id"], year, month)

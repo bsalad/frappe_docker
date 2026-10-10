@@ -468,6 +468,8 @@ PAYROLL_PAYSLIPS = {
 PAYROLL_TODAY = datetime.date(2026, 2, 15)
 # What bexio answers a month without a payslip: a 400 whose body names no_paystubs (invented ids).
 NO_PAYSLIP_BODY = '{"error": {"message": "no_paystubs", "id": 0}}'
+# What bexio answers a month of a year before the payroll company existed: a 400 naming company_not_found (invented).
+COMPANY_NOT_FOUND_BODY = '{"error": {"message": "company_not_found", "id": 0}}'
 
 
 def payroll_client(missing=()):
@@ -652,6 +654,43 @@ class PayrollExportTest(unittest.TestCase):
         manifest = export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
         self.assertEqual(manifest["entities"]["paystubs"]["status"], "ok")
         self.assertEqual(manifest["entities"]["paystubs"]["by_month"], {"2026-01": 2, "2026-02": 1})
+
+    def test_a_year_before_payroll_began_is_no_payslips_not_a_failed_entity(self):
+        # 2020 is before the payroll company existed: bexio answers every month with company_not_found
+        c = payroll_client()
+        real = c.get
+
+        def get(path, params=None, raw=False, accept=None):
+            if "/paystub-pdf-download/" in path and path.split("/")[6] == "2020":
+                raise BexioError(400, path, COMPANY_NOT_FOUND_BODY)
+            return real(path, params, raw, accept)
+
+        c.get = get
+        manifest = export.export_payroll(c, self.out, [2020, 2026], today=PAYROLL_TODAY)
+        self.assertEqual(manifest["entities"]["paystubs"]["status"], "ok")
+        self.assertEqual(manifest["entities"]["paystubs"]["count"], 3)
+        self.assertEqual(manifest["entities"]["paystubs"]["by_month"], {"2026-01": 2, "2026-02": 1})
+        self.assertEqual(export.failed_required(manifest), [])
+
+    def test_company_not_found_skips_only_its_month_so_a_payslip_later_in_that_year_is_kept(self):
+        # Payslips begin 2023-11: January to October answer company_not_found, November has a payslip
+        c = payroll_client()
+        real = c.get
+        november = b"%PDF-invented-november"
+
+        def get(path, params=None, raw=False, accept=None):
+            if "/paystub-pdf-download/" in path and path.split("/")[6] == "2023":
+                if path.split("/")[7] == "11":
+                    return november
+                raise BexioError(400, path, COMPANY_NOT_FOUND_BODY)
+            return real(path, params, raw, accept)
+
+        c.get = get
+        manifest = export.export_payroll(c, self.out, [2023], today=PAYROLL_TODAY)
+        self.assertEqual(manifest["entities"]["paystubs"]["status"], "ok")
+        self.assertEqual(manifest["entities"]["paystubs"]["by_month"], {"2023-11": 2})
+        with open(os.path.join(self.out, "paystubs", "101-2023-11.pdf"), "rb") as f:
+            self.assertEqual(f.read(), november)
 
     def test_a_forbidden_payslip_fails_its_entity_and_is_not_taken_for_no_payslip(self):
         path = export.PAYROLL_PAYSTUB.format(id=101, year=2026, month=2)
