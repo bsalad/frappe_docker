@@ -41,9 +41,10 @@ Benchi decided on 2026-10-10:
 **Open:** certified ELM transmitter: inquiry later.
 
 The hand-over rows are checked against invented employees (`python3 -m unittest
-bi_payroll.test_hand_over`). They are not yet run on the copy site with real slips. Two parts
-are open and stay so: Quellensteuer has no component yet (its column is 0), and the Lohnausweis
-line mapping is not checked against the 2026 form (step 6).
+bi_payroll.test_hand_over`) and were run on a throwaway site with invented slips (erp-fs9c: rows
+equal the slips per year and per month). Two parts are open and stay so: Quellensteuer has no
+component yet (its column is 0), and the Lohnausweis line mapping (below) is not checked against
+the 2026 form (step 6).
 
 ## Versions
 

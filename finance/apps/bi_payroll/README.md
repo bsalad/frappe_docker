@@ -18,7 +18,10 @@ copy only: it requires `hrms`, which the live site does not have, so nothing her
 - `bi_payroll/hand_over.py` and `bi_payroll/bi_payroll/report/payroll_hand_over`: the report `Payroll hand-over`, per
   employee and year or per employee and month, for the trustee's filing (Excel or CSV). The rows are summed from the
   submitted slips and their Salary Detail lines; the logic is pure Python, so `bi_payroll/test_hand_over.py` tests it
-  with invented employees.
+  with invented employees. Its view `Lohnausweis` sums the rows into the Form 11 lines (map: `finance/docs/hrms.md`).
+- `bi_payroll/bi_payroll/structure_site_test.py`: needs a site (not a `test_*.py`, so the offline gate skips it):
+  `bench --site <site> run-tests --module bi_payroll.bi_payroll.structure_site_test`. The structure rows must carry
+  their components' formulas, or every slip pays 0.
 - `bi_payroll/test_swiss_payroll.py`: offline tests with invented employees and rates:
   `python3 -m unittest bi_payroll.test_swiss_payroll` from this directory (no frappe needed).
 - `bi_payroll/quellensteuer.py`: the ESTV withholding tariffs (Quellensteuer, Löhne, 2025 record format; source and
