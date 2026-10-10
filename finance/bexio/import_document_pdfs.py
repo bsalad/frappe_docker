@@ -139,7 +139,7 @@ def apply(rows, export_dir, erp):
 
 def report(rows, export_dir, applied=False):
     """Totals only: no ids, no names. One line per kind, then one per outcome that occurs."""
-    lines = ["document PDF dry run from {}".format(export_dir),
+    lines = ["document PDFs from {}".format(export_dir),
              "{:<16}{:>7}{:>14}{:>9}{:>10}{:>10}".format("kind", "pdfs", "bytes", "attach", "attached", "problems")]
     for kind in sorted({r["kind"] for r in rows}):
         group = [r for r in rows if r["kind"] == kind]
