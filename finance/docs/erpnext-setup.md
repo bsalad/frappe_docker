@@ -8,7 +8,7 @@ app itself: `swiss.md`.
 
 | Item | Count |
 | --- | --- |
-| Image | `frappe-finance-custom:v16.50.0-swiss-bi10` (all eight ERPNext services; previous images `v16.50.0-swiss-bi9`, `v16.50.0-swiss-bi8`, `v16.50.0-swiss-bi7`, `v16.50.0-swiss-bi6`, `v16.50.0-swiss-bi5`, `v16.50.0-swiss-bi4`, `v16.50.0-swiss-bi3`, and `v16.50.0-swiss-bi1` and `v16.50.0-swiss`, kept for rollback) |
+| Image | `frappe-finance-custom:v16.50.0-swiss-bi10` (all eight ERPNext services; the only `frappe-finance-custom` image at rest, as `docker images` showed on 2026-10-10; older tags are not kept, see "Switching the stack to a new image") |
 | Backup before the bi10 switch | `20261010_131236` (`bench --site frontend backup --with-files`, 13:12) |
 | Backup before the bi9 switch | `20261010_122454` (`bench --site frontend backup --with-files`, 12:24) |
 | Apps | frappe 16.50.0, erpnext 16.50.0, erpnextswiss 1.34.1, bi_finance 0.0.1 |
@@ -207,14 +207,34 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/method/ping  
 ```
 
 Back up first (`bench --site frontend backup --with-files`), and switch only
-when no other session is writing to ERPNext.
-
-To change only the `bi_finance` layer, build that layer on the current base image
-under a new tag, then point `finance-local.yml` at it (the base is not rebuilt):
+when no other session is writing to ERPNext. A deploy runs the switch script,
+which does the restart and the ping, then the clean-up:
 
 ```sh
-docker build --build-arg BASE=frappe-finance-custom:v16.50.0-swiss-bi1-base \
-    --tag frappe-finance-custom:v16.50.0-swiss-bi9 --file finance/images/bi_finance.Containerfile .
+finance/scripts/switch-image.sh <new-tag>
+```
+
+It reads the previous tag from `finance-local.yml`, sets the new one on all eight
+services, brings the stack up, restarts `frontend` and `websocket`, and waits for
+ping 200. On 200 it removes the image the stack ran before, and the new image's
+`-base` layer. If ping does not answer, it sets `finance-local.yml` back to the
+previous tag, brings the stack up on it and keeps the old image; the new image
+stays, and a person removes it.
+
+**One image at rest:** only one `frappe-finance-custom` image is kept, the one the
+stack runs. A build leaves two tags (`<tag>-base` and `<tag>`) until a switch
+removes the base. A switch-free build (a copy for a test, say) is removed by hand
+once it is no longer needed: `docker rmi frappe-finance-custom:<tag>` and
+`frappe-finance-custom:<tag>-base`.
+
+To change only the `bi_finance` layer, build that layer on the base image while the
+base still exists (the build's `-base` tag, before a switch removes it), under a
+new tag, then point `finance-local.yml` at it. A switch removes the base, so after
+one of those a change to `bi_finance` needs the full build:
+
+```sh
+docker build --build-arg BASE=frappe-finance-custom:<tag>-base \
+    --tag frappe-finance-custom:<new-tag> --file finance/images/bi_finance.Containerfile .
 ```
 
 ## Redo on a fresh site
@@ -231,6 +251,9 @@ running on it and company BI Concepts (CH, CHF) created:
 
 ```sh
 docker compose -p frappe-finance exec -T backend bench --site frontend install-app erpnextswiss
+# install-app bi_finance fails with "App bi_finance not in apps.txt" unless sites/apps.txt
+# lists it; the image's apps.txt does not (the live volume's does). Add the line first.
+docker compose -p frappe-finance exec -T backend sh -c 'grep -qx bi_finance sites/apps.txt || echo bi_finance >> sites/apps.txt'
 docker compose -p frappe-finance exec -T backend bench --site frontend install-app bi_finance
 docker compose -p frappe-finance exec -T backend bench --site frontend migrate
 finance/scripts/swiss-setup.sh
