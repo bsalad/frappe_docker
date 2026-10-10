@@ -245,6 +245,9 @@ class WritePlan(unittest.TestCase):
         self.assertEqual(documents[0]["doctype"], "Payment Entry")
         self.assertIsNone(documents[0]["name"])
         self.assertEqual(documents[0]["bexio_id"], "811")
+        self.assertEqual(documents[0]["values"]["bexio_id"], "811")
+        self.assertEqual((documents[0]["values"]["reference_no"], documents[0]["values"]["reference_date"]),
+                         ("bexio payment 811", "2026-01-20"))
         self.assertNotIn("doctype", documents[0]["values"])
         self.assertEqual(documents[0]["values"]["references"][0]["reference_name"], "ACC-SINV-0001")
 
@@ -356,6 +359,8 @@ class VatOnPayment(unittest.TestCase):
         je = [d for d in docs if d["doctype"] == "Journal Entry"]
         self.assertEqual(len(je), 1)
         self.assertEqual((je[0]["bexio_id"], je[0]["name"]), ("5", None))
+        # the loader stores what is in values, so the bexio id must be there too: a rerun finds the document by it
+        self.assertEqual(je[0]["values"]["bexio_id"], "5")
         self.assertEqual(je[0]["values"]["posting_date"], "2026-01-20")
         self.assertEqual(je[0]["values"]["accounts"], [
             {"account": "2202 - Umsatzsteuerausgleich - bic", "debit_in_account_currency": 19.5},

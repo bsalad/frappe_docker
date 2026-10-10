@@ -131,7 +131,10 @@ def starting_owing(invoice, lookups):
 
 
 def _entry(row, customer, bank, paid_from, currency, paid, received, rate):
-    """A Payment Entry of a receipt, before its references; the paid amount is in the paid_from account's currency."""
+    """A Payment Entry of a receipt, before its references; the paid amount is in the paid_from account's currency.
+
+    A receipt into a bank account needs a reference number and date: bexio gives none, so the receipt's bexio id and its date stand in.
+    """
     return {
         "doctype": "Payment Entry", "company": im.COMPANY, "payment_type": "Receive",
         "party_type": "Customer", "party": customer, "posting_date": row["date"],
@@ -139,6 +142,7 @@ def _entry(row, customer, bank, paid_from, currency, paid, received, rate):
         "paid_to": bank["account"], "paid_to_account_currency": BASE_CURRENCY,
         "paid_amount": float(paid), "received_amount": float(received),
         "source_exchange_rate": float(rate), "target_exchange_rate": 1.0,
+        "reference_no": "bexio payment {}".format(row["id"]), "reference_date": row["date"],
         "bexio_id": str(row["id"]),
     }
 
@@ -307,7 +311,8 @@ def vat_document(line, result, gl):
     debit, credit = (VAT_FROM, VAT_TO) if amount > 0 else (VAT_TO, VAT_FROM)
     value = float(abs(amount))
     return {"doctype": "Journal Entry", "name": None, "bexio_id": str(line["id"]), "values": {
-        "company": im.COMPANY, "voucher_type": "Journal Entry", "posting_date": result["doc"]["posting_date"],
+        "company": im.COMPANY, "voucher_type": "Journal Entry", "bexio_id": str(line["id"]),
+        "posting_date": result["doc"]["posting_date"],
         "user_remark": "VAT on payment: bexio receipt {} on {}".format(result["bexio_id"], result["invoice_name"]),
         "accounts": [
             {"account": gl[debit], "debit_in_account_currency": value},
