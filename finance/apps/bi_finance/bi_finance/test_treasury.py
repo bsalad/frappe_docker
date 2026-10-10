@@ -84,7 +84,7 @@ class Workspace(unittest.TestCase):
             self.assertEqual(row["type"], "Report")
             self.assertEqual(row["link_to"], row["label"])
             folder = row["link_to"].lower().replace(" ", "_")
-            self.assertTrue(os.path.isdir(os.path.join(HERE, "bi_finance", "report", folder)), folder)
+            self.assertTrue(os.path.isdir(os.path.join(HERE, "report", folder)), folder)
 
     def test_every_card_and_chart_is_a_file_of_this_app(self):
         for row in self.ws["number_cards"]:
