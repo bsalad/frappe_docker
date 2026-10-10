@@ -309,13 +309,13 @@ The bills list their files by uuid, and `/3.0/files` has the integer id and the 
 content from `/3.0/files/<uuid>/download`) are keyed by uuid; the `bexio_id` is the uuid,
 not the integer id.
 
-## Document PDFs (invoices, credit vouchers, orders, offers)
+## Document PDFs (invoices, credit vouchers, orders, offers, deliveries)
 
 `import_document_pdfs.py` attaches the PDF of each sales document to its ERPNext document, as a
 private File keyed by the document's `bexio_id` (the key `import_sales.py` gives it: `credit-<id>` for a
 credit voucher). `export.py --complete` writes the PDFs to `documents/<kind>-<id>.pdf` and lists them in
 `document_pdfs.json`. A second run finds the File on the document and skips it, so it can be rerun.
-A delivery has a PDF but no ERPNext document (`import_sales.py` does not map deliveries): it is listed as
+A delivery's PDF goes to its Delivery Note. A PDF of a kind with no ERPNext document is listed as
 `no document` and never attached. The dry run reads ERPNext and writes nothing:
 
     python3 finance/bexio/import_document_pdfs.py --dry-run [--export DIR]

@@ -33,9 +33,9 @@ def pdf(kind, doc_id, data=b"%PDF-invented"):
     return {"kind": kind, "id": doc_id, "file": "{}-{}.pdf".format(kind, doc_id), "bytes": len(data)}
 
 
-def erp_with(sales_invoices=(), sales_orders=(), quotations=(), files=()):
+def erp_with(sales_invoices=(), sales_orders=(), quotations=(), delivery_notes=(), files=()):
     return FakeErp({"Sales Invoice": list(sales_invoices), "Sales Order": list(sales_orders),
-                    "Quotation": list(quotations), "File": list(files)})
+                    "Quotation": list(quotations), "Delivery Note": list(delivery_notes), "File": list(files)})
 
 
 class LookupsTest(unittest.TestCase):
@@ -60,9 +60,10 @@ class LookupsTest(unittest.TestCase):
 
 class PlanTest(unittest.TestCase):
     def test_each_kind_goes_to_its_doctype_with_the_key_import_sales_gives_it(self):
-        pdfs = [pdf("invoice", 1), pdf("credit_voucher", 4), pdf("order", 2), pdf("offer", 3)]
+        pdfs = [pdf("invoice", 1), pdf("credit_voucher", 4), pdf("order", 2), pdf("offer", 3), pdf("delivery", 5)]
         erp = erp_with(sales_invoices=[{"name": "SINV-1", "bexio_id": "1"}, {"name": "SINV-4", "bexio_id": "credit-4"}],
-                       sales_orders=[{"name": "SO-2", "bexio_id": "2"}], quotations=[{"name": "QTN-3", "bexio_id": "3"}])
+                       sales_orders=[{"name": "SO-2", "bexio_id": "2"}], quotations=[{"name": "QTN-3", "bexio_id": "3"}],
+                       delivery_notes=[{"name": "LI-5", "bexio_id": "5"}])
         with tempfile.TemporaryDirectory() as root:
             rows = idp.plan(pdfs, idp.Lookups.from_erp(erp), root)
         self.assertEqual([(r["doctype"], r["document"], r["bexio_id"], r["outcome"]) for r in rows], [
@@ -70,6 +71,7 @@ class PlanTest(unittest.TestCase):
             ("Sales Invoice", "SINV-4", "credit-4", "no content"),
             ("Sales Order", "SO-2", "2", "no content"),
             ("Quotation", "QTN-3", "3", "no content"),
+            ("Delivery Note", "LI-5", "5", "no content"),
         ])
 
     def test_a_pdf_whose_document_is_not_in_erpnext_yet_is_no_document(self):
@@ -78,10 +80,10 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(rows[0]["outcome"], idp.NO_DOCUMENT)
         self.assertIsNone(rows[0]["document"])
 
-    def test_a_delivery_has_no_erpnext_document(self):
-        # invented delivery: the kind has no doctype, so it is listed and never attached
+    def test_a_kind_without_an_erpnext_doctype_is_listed_and_never_attached(self):
+        # invented kind: it has no entry in KINDS
         with tempfile.TemporaryDirectory() as root:
-            rows = idp.plan([pdf("delivery", 7)], idp.Lookups.from_erp(erp_with(sales_invoices=[{"name": "SINV-7", "bexio_id": "7"}])), root)
+            rows = idp.plan([pdf("statement", 7)], idp.Lookups.from_erp(erp_with(sales_invoices=[{"name": "SINV-7", "bexio_id": "7"}])), root)
         self.assertEqual((rows[0]["outcome"], rows[0]["doctype"], rows[0]["document"]), (idp.NO_DOCUMENT, None, None))
 
     def test_a_pdf_on_the_document_already_is_attached_by_its_bexio_id(self):
@@ -153,8 +155,8 @@ class ApplyTest(unittest.TestCase):
         data = b"%PDF-invented"
         erp = erp_with(sales_invoices=[{"name": "SINV-4", "bexio_id": "credit-4"}], quotations=[{"name": "QTN-3", "bexio_id": "3"}])
         with tempfile.TemporaryDirectory() as root:
-            write_export(root, pdfs=[pdf("credit_voucher", 4, data), pdf("offer", 3, data), pdf("delivery", 5, data)],
-                         contents={"credit_voucher-4.pdf": data, "offer-3.pdf": data, "delivery-5.pdf": data})
+            write_export(root, pdfs=[pdf("credit_voucher", 4, data), pdf("offer", 3, data), pdf("statement", 5, data)],
+                         contents={"credit_voucher-4.pdf": data, "offer-3.pdf": data, "statement-5.pdf": data})
             rows = idp.run(root, erp)
             calls = []
             with mock.patch.object(imf, "upload", lambda erp, doc, file_id, name, content, doctype: calls.append((doctype, doc, file_id, name, content))):
@@ -201,12 +203,12 @@ class ReportTest(unittest.TestCase):
         rows = [
             {"kind": "invoice", "id": 1, "bexio_id": "1", "file": "invoice-1.pdf", "doctype": "Sales Invoice",
              "document": "SINV-1", "outcome": idp.ATTACH, "bytes": 10},
-            {"kind": "delivery", "id": 7, "bexio_id": None, "file": "delivery-7.pdf", "doctype": None,
+            {"kind": "statement", "id": 7, "bexio_id": None, "file": "statement-7.pdf", "doctype": None,
              "document": None, "outcome": idp.NO_DOCUMENT, "bytes": 20},
         ]
         text = idp.report(rows, "/invented/export")
         self.assertIn("invoice", text)
-        self.assertIn("delivery", text)
+        self.assertIn("statement", text)
         self.assertIn("dry run: nothing was written", text)
         self.assertNotIn("SINV-1", text)
         self.assertNotIn("invoice-1.pdf", text)

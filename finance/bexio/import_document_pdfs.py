@@ -17,7 +17,7 @@ only. The ids it cannot place go to <private>/bexio-document-pdfs-dry-run.txt, n
 
 Rows: attach (uploaded by --apply), attached (a File with the bexio_id, or with the file's name and no
 bexio_id, is on the document already), no document (the document is not in ERPNext yet, or the kind has no
-ERPNext document: a delivery), no content and size differs (problems: the PDF on disk is not the export's).
+ERPNext document: a kind not listed in KINDS), no content and size differs (problems: the PDF on disk is not the export's).
 A File uploaded without its bexio_id (a run that stopped between the upload and the key) is recognised by
 its name, so it is not uploaded twice.
 
@@ -41,12 +41,12 @@ ATTACH, ATTACHED, NO_DOCUMENT = "attach", "attached", "no document"
 PROBLEMS = ("no content", "size differs")
 
 # the ERPNext doctype of each kind of document, and the prefix import_sales.py puts in front of its bexio_id.
-# A delivery has a PDF in the export but no entry here: import_sales.py does not map deliveries, so it is listed.
 KINDS = {
     "invoice": ("Sales Invoice", ""),
     "credit_voucher": ("Sales Invoice", "credit-"),
     "order": ("Sales Order", ""),
     "offer": ("Quotation", ""),
+    "delivery": ("Delivery Note", ""),
 }
 DOCTYPES = sorted({doctype for doctype, _ in KINDS.values()})
 
