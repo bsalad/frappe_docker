@@ -175,6 +175,39 @@ class PlanTest(unittest.TestCase):
             {"account": GL["1172"], "credit_in_account_currency": 9.24}])
 
 
+class SecondRunTest(unittest.TestCase):
+    """A correction an earlier run submitted counts as ERPNext's VAT, so the document is not corrected again."""
+
+    def data(self, journal):
+        return {"journal": journal, "accounts": ACCOUNTS}
+
+    def test_a_sales_invoice_already_corrected_gets_no_entry(self):
+        journal = [line(8, 5, 100, ref_class="KbInvoice", ref_id=7)]
+        found = vf.Lookups(
+            accounts={n: GL[n] for n in NUMBERS.values()},
+            sales=[{"name": "SINV-1", "bexio_id": "7", "posting_date": "2025-03-12"}], bills=[], payments=[],
+            gl_vat=erp_vat(**{"SINV-1": {"2200": -100}}), gl_check={}, loaded=["vatfix-invoice-7"],
+            gl_correction={"7": {"2200": Decimal("100"), "2202": Decimal("-100")}},
+        )
+        self.assertEqual(vf.plan(self.data(journal), found)[0], [])
+
+    def test_a_payment_with_its_rounding_entry_loaded_gets_no_second_one(self):
+        found = lookups(payments=[{"name": "PAY-1", "bexio_id": "pay-1", "posting_date": "2024-01-05", "party": "S2",
+                                   "unallocated_amount": 0.02}], loaded=["rounding-payment-pay-1"])
+        self.assertEqual(vf.plan(self.data([]), found)[0], [])
+
+    def test_a_bill_with_its_rounding_entry_loaded_gets_no_second_one(self):
+        found = lookups(bills=[{"name": "PINV-2", "bexio_id": "bill-2", "posting_date": "2024-01-05", "supplier": "S2",
+                                "outstanding_amount": 0.01}], loaded=["rounding-bill-bill-2"])
+        self.assertEqual(vf.plan(self.data([]), found)[0], [])
+
+    def test_a_correction_key_is_the_document_it_belongs_to(self):
+        self.assertEqual(vf.document_key("vatfix-invoice-7"), "7")
+        self.assertEqual(vf.document_key("vatfix-credit-4"), "4")
+        self.assertEqual(vf.document_key("vatfix-bill-51f12078-5dfa"), "51f12078-5dfa")
+        self.assertEqual(vf.document_key("42"), "")
+
+
 class TotalsTest(unittest.TestCase):
     def test_documents_and_other_lines_are_split_and_9100_is_left_out(self):
         numbers = {str(i): n for i, n in NUMBERS.items()}

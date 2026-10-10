@@ -58,6 +58,7 @@ DOCUMENT_CLASSES = ("KbInvoice", "KbBill", "KbCreditVoucher", "KbClientAccountEn
 CHECK_ACCOUNTS = ("2200", "2202", "1170", "1171", "1172", "2203", "6940", "2000", "1100", "1020")
 # what a bill or a payment may be off by and still be a rounding (the rappen of ERPNext's rounded total)
 ROUNDING_MAX = Decimal("0.05")
+CORRECTION_PREFIXES = ("vatfix-invoice-", "vatfix-credit-", "vatfix-bill-")
 PROBLEMS_FILE = "bexio-vat-fix-problems.txt"
 DETAILS_FILE = "bexio-vat-fix-documents.txt"
 VAT_IDS_FILE = "bexio-vat-on-payment-out-ids.txt"
@@ -67,7 +68,7 @@ class Lookups:
     """What the correction reads from ERPNext: the submitted documents by bexio id, the accounts by number, the VAT
     GL of each document, the GL of the check accounts per year, and the bexio ids of the Journal Entries loaded."""
 
-    def __init__(self, accounts, sales, bills, payments, gl_vat, gl_check, loaded):
+    def __init__(self, accounts, sales, bills, payments, gl_vat, gl_check, loaded, gl_correction=None):
         self.accounts = accounts        # account number -> Account name of the company
         self.sales = sales              # submitted Sales Invoices with a bexio_id: name, bexio_id, posting_date
         self.bills = bills              # submitted Purchase Invoices with a bexio_id: name, bexio_id, posting_date, supplier, outstanding_amount
@@ -75,6 +76,7 @@ class Lookups:
         self.gl_vat = gl_vat            # voucher name -> {account number: debit minus credit}, on the VAT accounts
         self.gl_check = gl_check        # account number -> year -> debit minus credit, on the CHECK_ACCOUNTS, every voucher
         self.loaded = set(loaded)       # bexio ids of the submitted Journal Entries of an earlier run
+        self.gl_correction = gl_correction or {}  # document key -> {account number: debit minus credit} of its correction entries
 
     @classmethod
     def from_erp(cls, erp):
@@ -88,7 +90,8 @@ class Lookups:
         payments = erp.list("Payment Entry", company + [["payment_type", "=", "Pay"], ["docstatus", "=", 1],
                                                         ["bexio_id", "is", "set"]],
                             ["name", "bexio_id", "posting_date", "party", "unallocated_amount"])
-        entries = erp.list("Journal Entry", company + [["docstatus", "=", 1], ["bexio_id", "is", "set"]], ["bexio_id"])
+        entries = erp.list("Journal Entry", company + [["docstatus", "=", 1], ["bexio_id", "is", "set"]], ["name", "bexio_id"])
+        corrections = {r["name"]: document_key(r["bexio_id"]) for r in entries if document_key(r["bexio_id"])}
         vat_names = [n for n, number in names.items() if number in VAT_ACCOUNTS]
         check_names = [n for n, number in names.items() if number in CHECK_ACCOUNTS]
         gl_vat = collections.defaultdict(lambda: collections.defaultdict(lambda: ZERO))
@@ -96,6 +99,13 @@ class Lookups:
                                                    ["voucher_type", "in", ["Sales Invoice", "Purchase Invoice"]]],
                             ["voucher_no", "account", "debit", "credit"]):
             gl_vat[row["voucher_no"]][names[row["account"]]] += _money(row["debit"]) - _money(row["credit"])
+        gl_correction = collections.defaultdict(lambda: collections.defaultdict(lambda: ZERO))
+        for row in erp.list("GL Entry", company + [["is_cancelled", "=", 0], ["account", "in", vat_names],
+                                                   ["voucher_type", "=", "Journal Entry"]],
+                            ["voucher_no", "account", "debit", "credit"]):
+            key = corrections.get(row["voucher_no"])
+            if key is not None:
+                gl_correction[key][names[row["account"]]] += _money(row["debit"]) - _money(row["credit"])
         gl_check = collections.defaultdict(lambda: collections.defaultdict(lambda: ZERO))
         for row in erp.list("GL Entry", company + [["is_cancelled", "=", 0], ["account", "in", check_names]],
                             ["account", "debit", "credit", "posting_date"]):
@@ -108,11 +118,30 @@ class Lookups:
             gl_vat=gl_vat,
             gl_check=gl_check,
             loaded={r["bexio_id"] for r in entries},
+            gl_correction=gl_correction,
         )
 
 
 def _money(value):
     return Decimal(str(value or 0)).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def document_key(bexio_id):
+    """The document a VAT correction entry belongs to, from its bexio id ('' for any other entry): vatfix-invoice-7 is 7,
+    vatfix-credit-4 is 4, vatfix-bill-<uuid> is the uuid."""
+    for prefix in CORRECTION_PREFIXES:
+        if bexio_id.startswith(prefix):
+            return bexio_id[len(prefix):]
+    return ""
+
+
+def _plus(*accounts):
+    """The sum of several {account number: amount} dicts."""
+    total = collections.defaultdict(lambda: ZERO)
+    for part in accounts:
+        for number, amount in part.items():
+            total[number] += amount
+    return dict(total)
 
 
 def account_numbers(accounts):
@@ -205,7 +234,8 @@ def document_fixes(found, want, lookups, problems, details, kind):
     for doc in found:
         key, prefix, remark, bexio_vat_of = want(doc)
         keys.add(key)
-        have = lookups.gl_vat.get(doc["name"], {})
+        # ERPNext's VAT of the document: its own GL, and the correction entries an earlier run submitted
+        have = _plus(lookups.gl_vat.get(doc["name"], {}), lookups.gl_correction.get(key, {}))
         lines, balanced = fix_lines(bexio_vat_of, have)
         if not balanced and kind == "sales" and abs(sum(lines.values(), ZERO)) <= ROUNDING_MAX:
             # the sales importer books a document's VAT to the rappen as ERPNext computes it, so bexio's VAT can differ by
@@ -278,7 +308,7 @@ def plan(data, lookups):
     # rounding: a bill open by a rappen, or a payment unallocated by one; the supplier's payable is taken to zero
     for bill in lookups.bills:
         owing = _money(bill["outstanding_amount"])
-        if owing == ZERO:
+        if owing == ZERO or "rounding-bill-" + bill["bexio_id"] in lookups.loaded:
             continue
         if ZERO < owing <= ROUNDING_MAX:
             lines = {PAYABLE: owing, ROUNDING_ACCOUNT: -owing}
@@ -290,7 +320,8 @@ def plan(data, lookups):
             problems.append(("purchase", bill["bexio_id"], "open {} in ERPNext, not a rounding".format(owing)))
     for payment in lookups.payments:
         left = _money(payment["unallocated_amount"])
-        if left == ZERO:
+        # a rounding entry does not allocate the payment: it stays unallocated, so an earlier run's entry is looked up by its key
+        if left == ZERO or "rounding-payment-" + payment["bexio_id"] in lookups.loaded:
             continue
         if ZERO < left <= ROUNDING_MAX:
             lines = {ROUNDING_ACCOUNT: left, PAYABLE: -left}
