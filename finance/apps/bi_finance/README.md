@@ -42,3 +42,11 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   Each stamp of a bexio line leaves a Comment on that Bank Transaction, naming the upload and the date.
 - `bi_finance/test_bank_statement_upload.py`: offline tests of the record, the stamp comment and the .json,
   with the frappe calls mocked; run in the image as `bi_finance.test_bank_statement_upload`.
+- `bi_finance/cash_forecast.py`: the 13-week cash forecast without the site: the weeks of each line, the
+  recurring costs per supplier (monthly, quarterly, yearly), the payroll run, the VAT owed (60 days after the
+  quarter end), the running balance and the lowest week. Pure Python.
+- `bi_finance/report/cash_flow_forecast/`: the "Cash Flow Forecast" report (weeks, chart, lowest point) and
+  `report/cash_flow_forecast_lines/`: the "Cash Flow Forecast Lines" report, each line with its source document.
+  Both read the books through the Payment Ledger and the GL and call `cash_forecast.py`.
+- `bi_finance/test_cash_forecast.py`: offline tests of `cash_forecast.py` with invented data:
+  `python3 -m unittest bi_finance.test_cash_forecast` from this directory.
