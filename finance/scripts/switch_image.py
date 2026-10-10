@@ -30,10 +30,16 @@ def set_tag(compose_text, tag):
 
 def remove_after_switch(previous, new):
     """The image refs a good switch replaces: the previous image and its -base layer, and the
-    new image's -base (the build's intermediate, which must not stay tagged at rest)."""
+    new image's -base and -finance layers (the build's intermediates, which must not stay
+    tagged at rest)."""
     if previous == new:
         raise ValueError(f"the stack already runs {REPO}:{new}; nothing to switch")
-    return [f"{REPO}:{previous}", f"{REPO}:{previous}-base", f"{REPO}:{new}-base"]
+    return [
+        f"{REPO}:{previous}",
+        f"{REPO}:{previous}-base",
+        f"{REPO}:{new}-base",
+        f"{REPO}:{new}-finance",
+    ]
 
 
 def main(argv):

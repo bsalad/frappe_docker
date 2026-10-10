@@ -47,13 +47,14 @@ class Functions(unittest.TestCase):
         self.assertIn('      - "127.0.0.1:8080:8080"', moved)
         self.assertIn("ports: !override", moved)
 
-    def test_remove_after_switch_lists_old_and_both_new_base(self):
+    def test_remove_after_switch_lists_old_and_new_base_and_finance(self):
         self.assertEqual(
             switch_image.remove_after_switch("t-old", "t-new"),
             [
                 "frappe-finance-custom:t-old",
                 "frappe-finance-custom:t-old-base",
                 "frappe-finance-custom:t-new-base",
+                "frappe-finance-custom:t-new-finance",
             ],
         )
 
@@ -120,7 +121,8 @@ class SwitchShell(unittest.TestCase):
         run, calls, compose = self.run_switch(
             ["t-new"],
             existing=["frappe-finance-custom:t-old", "frappe-finance-custom:t-old-base",
-                      "frappe-finance-custom:t-new", "frappe-finance-custom:t-new-base"],
+                      "frappe-finance-custom:t-new", "frappe-finance-custom:t-new-base",
+                      "frappe-finance-custom:t-new-finance"],
             ping="200",
         )
         self.assertEqual(run.returncode, 0, run.stderr)
@@ -129,6 +131,7 @@ class SwitchShell(unittest.TestCase):
         self.assertIn("rmi frappe-finance-custom:t-old\n", calls)
         self.assertIn("rmi frappe-finance-custom:t-old-base\n", calls)
         self.assertIn("rmi frappe-finance-custom:t-new-base\n", calls)
+        self.assertIn("rmi frappe-finance-custom:t-new-finance\n", calls)
         self.assertNotIn("rmi frappe-finance-custom:t-new\n", calls)
 
     def test_ping_failure_rolls_back_and_keeps_the_old_image(self):
