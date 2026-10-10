@@ -14,8 +14,9 @@ position type, a credit note whose invoice is missing, a total that differs
 from bexio's by more than 5 rappen) raises Unmapped, and the report names it by
 bexio id only. Amounts are checked against bexio's own totals: the net, the
 taxes per rate and the total. A difference is reported; the total is the one
-exception, a difference of up to 5 rappen goes into the last tax row so that
-the grand total is bexio's to the rappen.
+exception, a difference of up to 5 rappen goes into the last tax row, or where no
+tax row can take it (prices with the VAT in them, no VAT at all) into a "Rundung"
+item line or a grand-total discount, so that the grand total is bexio's to the rappen.
 
 The export directory holds the documents with their positions (the
 single-document calls), next to the entity files of export.py:
@@ -231,7 +232,8 @@ def _document(doctype, record, lookups, credit=False):
     the gross and its row is marked as included. The tax is worked out per rate from the lines, the way
     ERPNext would; bexio's own tax per rate is compared, never copied in. The total is bexio's `total`, the
     one that includes the VAT after the discounts (total_gross is before them). A difference of up to
-    5 rappen against it goes into the last tax row; a larger one is unmapped.
+    5 rappen against it goes into the last tax row, or into a Rundung line or a grand-total discount where no
+    tax row takes it; a larger one is unmapped.
     """
     bexio_id = ("credit-" if credit else "") + str(record["id"])
     customer = lookups["customer"].get(str(record.get("contact_id")))
@@ -306,11 +308,27 @@ def _document(doctype, record, lookups, credit=False):
     absorb = target - grand
     if abs(absorb) > TOTAL_TOLERANCE:
         raise Unmapped("total differs from bexio's by {:+}".format(absorb))
-    if absorb:
-        if included:
-            raise Unmapped("total differs from bexio's by {:+} with prices including the VAT".format(absorb))
-        if last_rate is None:
+    # no VAT row takes the difference (prices with the VAT in them, or no VAT at all): bexio's total is the booked
+    # amount, so a rounding line or a grand-total discount makes ERPNext's total bexio's. Only the invoices take
+    # it: a credit note's sign would be the wrong way round, and orders and offers keep their refusal
+    grand_discount = ZERO
+    if absorb and (included or last_rate is None):
+        if credit or doctype != "Sales Invoice":
             raise Unmapped("nothing to take a total difference of {:+} in".format(absorb))
+        rappen = int(absorb * 100)
+        if absorb > 0:
+            income = next((row["income_account"] for row in rows if "income_account" in row), None)
+            if income is None:
+                raise Unmapped("nothing to take a total difference of {:+} in".format(absorb))
+            rows.append({"item_code": GENERIC_ITEM, "description": "Rundung (bexio Total)", "qty": 1.0,
+                         "rate": float(absorb), "income_account": income})
+            differences.append("total {:+} rappen absorbed in a Rundung line".format(rappen))
+        else:
+            if discount:
+                raise Unmapped("a document discount and a total difference of {:+}: ERPNext has one discount field per document".format(absorb))
+            grand_discount = -absorb
+            differences.append("total {:+} rappen absorbed as a grand-total discount".format(rappen))
+    elif absorb:
         taxes[-1]["tax_amount"] = float(_dec(taxes[-1]["tax_amount"]) + absorb)
         computed[last_rate] += absorb
         tax += absorb
@@ -331,6 +349,8 @@ def _document(doctype, record, lookups, credit=False):
     }
     if discount:
         doc.update(apply_discount_on="Net Total", discount_amount=float(discount))
+    if grand_discount:
+        doc.update(apply_discount_on="Grand Total", discount_amount=float(grand_discount))
     if doctype == "Quotation":
         doc.update(quotation_to="Customer", party_name=customer, transaction_date=record["is_valid_from"],
                    valid_till=record.get("is_valid_until"))

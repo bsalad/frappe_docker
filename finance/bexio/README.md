@@ -143,6 +143,15 @@ paid). The differences and unmapped records, by bexio id, go to
 - The total is bexio's `total` (the VAT included, after the discounts). A
   difference of up to 5 rappen goes into the last tax row; a larger one is
   unmapped and listed by bexio id.
+- Where no tax row can take a difference of up to 5 rappen (prices that include
+  the VAT, or a document bexio charged no VAT on), an invoice takes it as bexio
+  booked it: a positive difference as one more item line `Rundung (bexio Total)`
+  on the first line's income account, without a VAT code; a negative one as the
+  grand-total discount (`apply_discount_on` "Grand Total"). The tax rows stay as
+  ERPNext computes them, so the tax can be a rappen off bexio's; the differences
+  line names the rappen and how they were taken. Orders, offers and credit notes
+  keep the refusal, and so does a negative difference on an invoice that also
+  has a document discount, since ERPNext has one discount field per document.
 - The free-text items `bexio Position` (sales) and `bexio Aufwand` (purchases)
   are created by `import_master.py`, not by bexio.
 - Credit notes get `bexio_id` `credit-<id>`, since a credit note and an invoice
@@ -152,18 +161,17 @@ paid). The differences and unmapped records, by bexio id, go to
   The dry run lists any field the ERPNext doctype does not have.
 - Rounding: ERPNext cannot carry cents in its rounding adjustment (it recomputes
   it from the grand total), so a difference of up to 5 rappen goes into the last
-  tax row, as above.
+  tax row, or where there is none, into the `Rundung` line or the grand-total
+  discount described above.
 - Quantities: the free-text item (`bexio Position`) takes whole quantities, and
   ERPNext keeps a quantity to three places. A line of a fraction, of more than
   three places, or with a discount on the free-text item is one unit at its
   amount, and its quantity and discount stay in its text ("1.58 x 1000.00 less
   10%: ..."). A zero-rate row keeps a zero price list rate, so ERPNext does not
   fill the free-text item's selling price into it.
-- Not written by `--apply`: a foreign-currency invoice that bexio's journal does
-  not book in CHF on the receivables account within 5 rappen (listed with the
-  difference), and an invoice whose total is a rappen off bexio's and cannot take
-  the difference. Both are listed by bexio id in
-  `<private>/bexio-sales-differences.txt` and in the loader's output.
+- Not written by `--apply`: an invoice whose total differs from bexio's by more
+  than 5 rappen, or by a difference no line or discount can take. It is listed by
+  bexio id in `<private>/bexio-sales-differences.txt` and in the loader's output.
 
 ## Currencies
 

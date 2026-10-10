@@ -349,11 +349,11 @@ class PositionsAndDiscounts(unittest.TestCase):
         self.assertEqual(totals, (Decimal("300.00"), Decimal("24.30"), Decimal("324.30")))
         self.assertEqual(differences, [])
 
-    def test_a_total_that_differs_with_included_prices_is_unmapped(self):
+    def test_a_total_that_differs_with_included_prices_by_more_than_the_tolerance_is_unmapped(self):
         gross = record(INVOICE, mwst_is_net=False, positions=[
             {"type": "KbPositionCustom", "amount": "3", "unit_price": "108.10", "account_id": 30, "tax_id": 28, "text": "A"}],
-            taxs=[{"percentage": "8.1", "value": "24.30"}], total_net="300.00", total_taxes="24.30", total="324.35")
-        with self.assertRaisesRegex(isl.Unmapped, "prices including the VAT"):
+            taxs=[{"percentage": "8.1", "value": "24.30"}], total_net="300.00", total_taxes="24.30", total="324.36")
+        with self.assertRaisesRegex(isl.Unmapped, "total differs from bexio's by \\+0.06"):
             isl.sales_invoice(gross, LOOKUPS)
 
     def test_a_credit_note_with_included_prices_is_unmapped(self):
@@ -538,6 +538,94 @@ class UnchargedInvoice(unittest.TestCase):
         doc = isl.sales_invoice(INVOICE, LOOKUPS)
         self.assertNotIn("VAT charged", doc["remarks"])
         self.assertEqual(len(doc["taxes"]), 2)
+
+
+class RundungAndGrandTotalDiscount(unittest.TestCase):
+    """A total up to 5 rappen off, where no VAT row takes it: a Rundung line when bexio's total is larger, a
+    grand-total discount when it is smaller. Both make ERPNext's grand total bexio's, to the rappen."""
+
+    def gross(self, total):
+        # two lines of 108.10 with the VAT in them: 324.30 with 8.1% VAT of 24.30 taken out
+        return record(INVOICE, mwst_is_net=False, positions=[
+            {"type": "KbPositionCustom", "amount": "3", "unit_price": "108.10", "account_id": 30, "tax_id": 28, "text": "A"}],
+            taxs=[{"percentage": "8.1", "value": "24.30"}], total_net="300.00", total_taxes="24.30", total=total)
+
+    def untaxed(self, total):
+        return record(INVOICE, taxs=[], total_taxes="0.0000", total_gross="150.00", total=total)
+
+    def discounted(self, total):
+        # the lines are 150 untaxed; a document discount of 10 leaves a net of 140
+        return record(self.untaxed(total), total_net="140.00", positions=INVOICE["positions"] + [
+            {"type": "KbPositionDiscount", "text": "Rabatt"}])
+
+    def test_included_prices_three_rappen_more_are_a_rundung_line_on_the_first_income_account(self):
+        doc, differences, totals, _rate = isl._document("Sales Invoice", self.gross("324.33"), LOOKUPS)
+        rundung = doc["items"][-1]
+        self.assertEqual((rundung["item_code"], rundung["description"], rundung["qty"], rundung["rate"]),
+                         ("bexio Position", "Rundung (bexio Total)", 1.0, 0.03))
+        self.assertEqual(rundung["income_account"], "3200 - Honorare - bic")
+        self.assertNotIn("item_tax_template", rundung)
+        self.assertEqual(sum(Decimal(str(r["rate"])) * Decimal(str(r["qty"])) for r in doc["items"]), Decimal("324.33"))
+        self.assertEqual([(t["charge_type"], t["rate"]) for t in doc["taxes"]], [("On Net Total", 8.1)])
+        self.assertEqual(totals[2], Decimal("324.33"))
+        self.assertIn("total +3 rappen absorbed in a Rundung line", differences)
+        self.assertNotIn("discount_amount", doc)
+
+    def test_included_prices_three_rappen_less_are_a_grand_total_discount(self):
+        doc, differences, _totals, _rate = isl._document("Sales Invoice", self.gross("324.27"), LOOKUPS)
+        self.assertEqual((doc["apply_discount_on"], doc["discount_amount"]), ("Grand Total", 0.03))
+        self.assertEqual(len(doc["items"]), 1)
+        self.assertIn("total -3 rappen absorbed as a grand-total discount", differences)
+
+    def test_untaxed_two_rappen_less_is_a_grand_total_discount_and_no_rundung_line(self):
+        doc, differences, totals, _rate = isl._document("Sales Invoice", self.untaxed("149.98"), LOOKUPS)
+        self.assertEqual((doc["apply_discount_on"], doc["discount_amount"]), ("Grand Total", 0.02))
+        self.assertEqual(len(doc["items"]), 3)
+        self.assertEqual(doc["taxes"], [])
+        self.assertEqual(totals[2], Decimal("149.98"))
+        self.assertIn("total -2 rappen absorbed as a grand-total discount", differences)
+
+    def test_untaxed_three_rappen_more_is_a_rundung_line(self):
+        doc, differences, totals, _rate = isl._document("Sales Invoice", self.untaxed("150.03"), LOOKUPS)
+        self.assertEqual(doc["items"][-1]["rate"], 0.03)
+        self.assertNotIn("apply_discount_on", doc)
+        self.assertEqual(totals[2], Decimal("150.03"))
+        self.assertIn("total +3 rappen absorbed in a Rundung line", differences)
+
+    def test_a_difference_above_the_tolerance_stays_unmapped_in_both_cases(self):
+        with self.assertRaisesRegex(isl.Unmapped, "total differs from bexio's by \\+0.06"):
+            isl.sales_invoice(self.untaxed("150.06"), LOOKUPS)
+        with self.assertRaisesRegex(isl.Unmapped, "total differs from bexio's by -0.06"):
+            isl.sales_invoice(self.gross("324.24"), LOOKUPS)
+
+    def test_a_document_discount_with_a_grand_total_discount_is_unmapped(self):
+        # the net is 140; bexio's total is two rappen less than that, and ERPNext has one discount field per document
+        with self.assertRaisesRegex(isl.Unmapped, "document discount and a total difference"):
+            isl.sales_invoice(self.discounted("139.98"), LOOKUPS)
+
+    def test_a_document_discount_with_a_rundung_line_keeps_the_discount_and_adds_the_line(self):
+        doc, _differences, totals, _rate = isl._document("Sales Invoice", self.discounted("140.03"), LOOKUPS)
+        self.assertEqual((doc["apply_discount_on"], doc["discount_amount"]), ("Net Total", 10.0))
+        self.assertEqual(doc["items"][-1]["rate"], 0.03)
+        self.assertEqual(totals[2], Decimal("140.03"))
+
+    def test_a_credit_note_with_a_difference_and_no_vat_row_is_unmapped(self):
+        credit = record(INVOICE, id=802, invoice_id=500, taxs=[], total_taxes="0.0000", total="149.98")
+        with self.assertRaisesRegex(isl.Unmapped, "nothing to take a total difference"):
+            isl.credit_note(credit, LOOKUPS)
+
+    def test_orders_and_offers_with_the_same_difference_stay_unmapped(self):
+        # only the invoices take it; the order and the offer of the same kind are refused as before
+        with self.assertRaisesRegex(isl.Unmapped, "nothing to take a total difference"):
+            isl._document("Sales Order", self.untaxed("149.98"), LOOKUPS)
+        with self.assertRaisesRegex(isl.Unmapped, "nothing to take a total difference"):
+            isl._document("Quotation", self.gross("324.33"), LOOKUPS)
+
+    def test_an_exact_untaxed_total_has_no_rundung_line_and_no_discount(self):
+        doc, differences, _totals, _rate = isl._document("Sales Invoice", self.untaxed("150.00"), LOOKUPS)
+        self.assertEqual(len(doc["items"]), 3)
+        self.assertNotIn("apply_discount_on", doc)
+        self.assertFalse([d for d in differences if "absorbed" in d])
 
 
 class Drafts(unittest.TestCase):
