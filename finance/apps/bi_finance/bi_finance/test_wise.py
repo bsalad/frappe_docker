@@ -12,6 +12,7 @@ import collections
 import datetime
 import io
 import json
+import types
 import unittest
 import urllib.error
 
@@ -100,6 +101,17 @@ class Client(unittest.TestCase):
     def test_network_failure_is_a_wise_error(self):
         with self.assertRaises(wise_client.WiseError):
             wise_client.profiles(TOKEN, opener=FakeOpener(error=urllib.error.URLError("invented")))
+
+
+class Start(unittest.TestCase):
+    def test_first_sync_starts_at_backfill_from_read_as_stored_text(self):
+        # a Date single comes back as "2015-01-01", not a date: the first run must still start at that midnight
+        settings = types.SimpleNamespace(last_sync=None, backfill_from="2015-01-01")
+        self.assertEqual(wise._start(settings, datetime.datetime(2026, 10, 10)), datetime.datetime(2015, 1, 1))
+
+    def test_later_sync_starts_a_week_before_the_last_one(self):
+        settings = types.SimpleNamespace(last_sync=datetime.datetime(2026, 10, 1, 12), backfill_from="2015-01-01")
+        self.assertEqual(wise._start(settings, datetime.datetime(2026, 10, 10)), datetime.datetime(2026, 9, 24, 12))
 
 
 class Windows(unittest.TestCase):

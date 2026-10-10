@@ -213,7 +213,8 @@ def _bank_account_name(currency):
 def _start(settings, now):
     if settings.last_sync:
         return settings.last_sync - OVERLAP
-    return datetime.datetime.combine(settings.backfill_from, datetime.time.min)
+    # a Date single comes back as its stored string, not a date: the first sync failed on it
+    return datetime.datetime.combine(frappe.utils.getdate(settings.backfill_from), datetime.time.min)
 
 
 def _amount(balance):
