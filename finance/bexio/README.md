@@ -266,3 +266,24 @@ A document whose correction does not balance is listed by bexio id, not written.
 
 A second run inserts nothing: a corrected document has no difference left, and the loader finds
 each entry by its bexio id.
+
+## Payroll journal lines (no source document)
+
+The journal lines that no exported document carries (the posting plan's `unsourced` bucket: payroll and social
+insurance) become one Journal Entry per line. `import_payroll.py` selects them and maps them; the posting plan
+decides which lines these are, so the module reuses `posting_plan.classify` and does not look at accounts.
+
+- key: `bexio_id` = `journal-<line id>`, and `user_remark` = `bexio journal <line id>: <description>`. A rerun inserts nothing.
+- left out, by journal id, in `<private>/bexio-payroll-left-out.txt`: a line a banking entry and a manual entry both
+  claim (posting plan rule 5), and a line an earlier VAT Journal Entry already books (`bexio-vat-on-payment*-ids.txt`).
+- an account without an ERPNext Account by its bexio id is listed, and `--write` does not write the plan.
+
+    python3 finance/bexio/import_payroll.py --dry-run [--export DIR]
+    python3 finance/bexio/import_payroll.py --write FILE [--export DIR]
+    finance/scripts/bexio-drafts.sh FILE submit
+    python3 finance/bexio/import_payroll.py --check [--export DIR]
+
+`--check` reads ERPNext after the loader run and writes nothing to it: the submitted entries keyed `journal-%`
+against the lines, the GL per account and year against bexio's lines, the posted ids to `<private>/bexio-payroll-ids.txt`
+(for the manual entries and bank bead, erp-fd93 and erp-7avs), and any missing or differing line to
+`<private>/bexio-payroll-live-differences.txt`.
