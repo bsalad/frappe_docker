@@ -187,7 +187,7 @@ class SecondRunTest(unittest.TestCase):
             accounts={n: GL[n] for n in NUMBERS.values()},
             sales=[{"name": "SINV-1", "bexio_id": "7", "posting_date": "2025-03-12"}], bills=[], payments=[],
             gl_vat=erp_vat(**{"SINV-1": {"2200": -100}}), gl_check={}, loaded=["vatfix-invoice-7"],
-            gl_correction={"7": {"2200": Decimal("100"), "2202": Decimal("-100")}},
+            gl_correction={("invoice", "7"): {"2200": Decimal("100"), "2202": Decimal("-100")}},
         )
         self.assertEqual(vf.plan(self.data(journal), found)[0], [])
 
@@ -201,11 +201,87 @@ class SecondRunTest(unittest.TestCase):
                                 "outstanding_amount": 0.01}], loaded=["rounding-bill-bill-2"])
         self.assertEqual(vf.plan(self.data([]), found)[0], [])
 
-    def test_a_correction_key_is_the_document_it_belongs_to(self):
-        self.assertEqual(vf.document_key("vatfix-invoice-7"), "7")
-        self.assertEqual(vf.document_key("vatfix-credit-4"), "4")
-        self.assertEqual(vf.document_key("vatfix-bill-51f12078-5dfa"), "51f12078-5dfa")
-        self.assertEqual(vf.document_key("42"), "")
+    def test_a_correction_key_is_its_kind_and_the_document_it_belongs_to(self):
+        self.assertEqual(vf.correction_key("vatfix-invoice-7"), ("invoice", "7"))
+        self.assertEqual(vf.correction_key("vatfix-credit-4"), ("credit", "4"))
+        self.assertEqual(vf.correction_key("vatfix-bill-51f12078-5dfa"), ("bill", "51f12078-5dfa"))
+        self.assertIsNone(vf.correction_key("42"))
+
+
+class FakeErp:
+    """ERPNext for Lookups.from_erp: the tables by doctype, filtered by the list's [field, op, value] filters."""
+
+    def __init__(self, tables):
+        self.tables = tables
+
+    def list(self, doctype, filters, fields):
+        return [row for row in self.tables.get(doctype, []) if all(_matches(row, f) for f in filters)]
+
+
+def _matches(row, condition):
+    field, op, value = condition
+    if op == "=":
+        return row.get(field) == value
+    if op == "in":
+        return row.get(field) in value
+    if op == "is":
+        return row.get(field) not in (None, "")
+    raise AssertionError("operator not in the fake: {}".format(op))
+
+
+class SameNumberTest(unittest.TestCase):
+    """A sales invoice and a credit note can carry the same bexio number (4): each sees only its own correction."""
+
+    def erp(self, invoice_fixed=True, credit_fixed=True):
+        company = vf.im.COMPANY
+        journal_entries = []
+        if invoice_fixed:
+            journal_entries.append({"name": "ACC-JV-1", "bexio_id": "vatfix-invoice-4", "docstatus": 1, "company": company})
+        if credit_fixed:
+            journal_entries.append({"name": "ACC-JV-2", "bexio_id": "vatfix-credit-4", "docstatus": 1, "company": company})
+        gl = [
+            # the invoice's VAT was booked on 2200 by ERPNext, the correction moves it to 2202
+            {"voucher_type": "Sales Invoice", "voucher_no": "SINV-4", "account": GL["2200"], "debit": 0, "credit": 100},
+            # the credit note's VAT was booked on 2200 too, reversed by its correction
+            {"voucher_type": "Sales Invoice", "voucher_no": "SINV-CN-4", "account": GL["2200"], "debit": 50, "credit": 0},
+        ]
+        if invoice_fixed:
+            gl += [{"voucher_type": "Journal Entry", "voucher_no": "ACC-JV-1", "account": GL["2200"], "debit": 100, "credit": 0},
+                   {"voucher_type": "Journal Entry", "voucher_no": "ACC-JV-1", "account": GL["2202"], "debit": 0, "credit": 100}]
+        if credit_fixed:
+            gl += [{"voucher_type": "Journal Entry", "voucher_no": "ACC-JV-2", "account": GL["2200"], "debit": 0, "credit": 50},
+                   {"voucher_type": "Journal Entry", "voucher_no": "ACC-JV-2", "account": GL["2202"], "debit": 50, "credit": 0}]
+        for row in gl:
+            row.update(is_cancelled=0, company=company, posting_date="2025-06-01")
+        return FakeErp({
+            "Account": [{"name": GL[n], "account_number": n, "is_group": 0, "company": company} for n in NUMBERS.values()],
+            "Sales Invoice": [{"name": "SINV-4", "bexio_id": "4", "posting_date": "2025-03-12", "docstatus": 1, "company": company},
+                              {"name": "SINV-CN-4", "bexio_id": "credit-4", "posting_date": "2025-06-01", "docstatus": 1,
+                               "company": company}],
+            "Journal Entry": journal_entries,
+            "GL Entry": gl,
+        })
+
+    def journal(self):
+        # bexio: the invoice's VAT is a credit on 2202 of 100, the credit note's a debit on 2202 of 50
+        return [line(8, 5, 100, ref_class="KbInvoice", ref_id=4),
+                line(5, 8, 50, ref_class="KbCreditVoucher", ref_id=4, line_id=2)]
+
+    def plan(self, erp):
+        lookups = vf.Lookups.from_erp(erp)
+        return vf.plan({"journal": self.journal(), "accounts": ACCOUNTS}, lookups)
+
+    def test_a_corrected_invoice_and_a_corrected_credit_note_with_one_number_propose_nothing(self):
+        documents, problems, _, _ = self.plan(self.erp())
+        self.assertEqual((documents, problems), ([], []))
+
+    def test_a_credit_note_without_a_correction_still_gets_its_own(self):
+        documents, problems, _, _ = self.plan(self.erp(credit_fixed=False))
+        self.assertEqual(problems, [])
+        self.assertEqual([d["bexio_id"] for d in documents], ["vatfix-credit-4"])
+        self.assertEqual(documents[0]["values"]["accounts"], [
+            {"account": GL["2200"], "credit_in_account_currency": 50.0},
+            {"account": GL["2202"], "debit_in_account_currency": 50.0}])
 
 
 class TotalsTest(unittest.TestCase):

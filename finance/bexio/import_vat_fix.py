@@ -76,7 +76,7 @@ class Lookups:
         self.gl_vat = gl_vat            # voucher name -> {account number: debit minus credit}, on the VAT accounts
         self.gl_check = gl_check        # account number -> year -> debit minus credit, on the CHECK_ACCOUNTS, every voucher
         self.loaded = set(loaded)       # bexio ids of the submitted Journal Entries of an earlier run
-        self.gl_correction = gl_correction or {}  # document key -> {account number: debit minus credit} of its correction entries
+        self.gl_correction = gl_correction or {}  # (kind, document key) -> {account number: debit minus credit} of its correction entries
 
     @classmethod
     def from_erp(cls, erp):
@@ -91,7 +91,7 @@ class Lookups:
                                                         ["bexio_id", "is", "set"]],
                             ["name", "bexio_id", "posting_date", "party", "unallocated_amount"])
         entries = erp.list("Journal Entry", company + [["docstatus", "=", 1], ["bexio_id", "is", "set"]], ["name", "bexio_id"])
-        corrections = {r["name"]: document_key(r["bexio_id"]) for r in entries if document_key(r["bexio_id"])}
+        corrections = {r["name"]: correction_key(r["bexio_id"]) for r in entries if correction_key(r["bexio_id"])}
         vat_names = [n for n, number in names.items() if number in VAT_ACCOUNTS]
         check_names = [n for n, number in names.items() if number in CHECK_ACCOUNTS]
         gl_vat = collections.defaultdict(lambda: collections.defaultdict(lambda: ZERO))
@@ -126,13 +126,14 @@ def _money(value):
     return Decimal(str(value or 0)).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
-def document_key(bexio_id):
-    """The document a VAT correction entry belongs to, from its bexio id ('' for any other entry): vatfix-invoice-7 is 7,
-    vatfix-credit-4 is 4, vatfix-bill-<uuid> is the uuid."""
+def correction_key(bexio_id):
+    """The document a VAT correction entry belongs to, as (kind, key), from its bexio id (None for any other entry):
+    vatfix-invoice-7 is ('invoice', '7'), vatfix-credit-4 is ('credit', '4'), vatfix-bill-<uuid> is ('bill', '<uuid>').
+    The kind is part of the key: a sales invoice and a credit note can carry the same bexio number."""
     for prefix in CORRECTION_PREFIXES:
         if bexio_id.startswith(prefix):
-            return bexio_id[len(prefix):]
-    return ""
+            return prefix[len("vatfix-"):-1], bexio_id[len(prefix):]
+    return None
 
 
 def _plus(*accounts):
@@ -226,16 +227,16 @@ def journal_document(key, day, remark, rows):
 def document_fixes(found, want, lookups, problems, details, kind):
     """The VAT corrections of the submitted invoices of one kind, and the bexio keys of those found in ERPNext.
 
-    found: the Sales Invoices or the Purchase Invoices. want(doc) gives the bexio VAT of the document, by account number,
-    and the key of the Journal Entry its correction takes. A document with no difference gets none. Each document's
-    bexio VAT, ERPNext's and the correction go to details, by bexio id, for <private>.
+    found: the Sales Invoices or the Purchase Invoices. want(doc) gives the document's key, the kind of its correction
+    (invoice, credit or bill) and the bexio VAT of the document, by account number. A document with no difference gets
+    none. Each document's bexio VAT, ERPNext's and the correction go to details, by bexio id, for <private>.
     """
     documents, keys = [], set()
     for doc in found:
-        key, prefix, remark, bexio_vat_of = want(doc)
+        key, correction, remark, bexio_vat_of = want(doc)
         keys.add(key)
         # ERPNext's VAT of the document: its own GL, and the correction entries an earlier run submitted
-        have = _plus(lookups.gl_vat.get(doc["name"], {}), lookups.gl_correction.get(key, {}))
+        have = _plus(lookups.gl_vat.get(doc["name"], {}), lookups.gl_correction.get((correction, key), {}))
         lines, balanced = fix_lines(bexio_vat_of, have)
         if not balanced and kind == "sales" and abs(sum(lines.values(), ZERO)) <= ROUNDING_MAX:
             # the sales importer books a document's VAT to the rappen as ERPNext computes it, so bexio's VAT can differ by
@@ -249,8 +250,8 @@ def document_fixes(found, want, lookups, problems, details, kind):
         if not balanced:
             problems.append((kind, doc["bexio_id"], "the VAT correction does not balance: {}".format(_listed(lines))))
             continue
-        documents.append(journal_document(prefix + key, doc["posting_date"], remark + " " + doc["bexio_id"],
-                                          je_accounts(lines, lookups.accounts)))
+        documents.append(journal_document("vatfix-{}-".format(correction) + key, doc["posting_date"],
+                                          remark + " " + doc["bexio_id"], je_accounts(lines, lookups.accounts)))
     return documents, keys
 
 
@@ -274,11 +275,11 @@ def plan(data, lookups):
     def sales_document(doc):
         if doc["bexio_id"].startswith("credit-"):
             key = doc["bexio_id"][len("credit-"):]
-            return key, "vatfix-credit-", "VAT on the transitory account: credit note", credit_vat.get(key, {})
-        return doc["bexio_id"], "vatfix-invoice-", "VAT on the transitory account: invoice", invoice_vat.get(doc["bexio_id"], {})
+            return key, "credit", "VAT on the transitory account: credit note", credit_vat.get(key, {})
+        return doc["bexio_id"], "invoice", "VAT on the transitory account: invoice", invoice_vat.get(doc["bexio_id"], {})
 
     def purchase_document(doc):
-        return doc["bexio_id"], "vatfix-bill-", "VAT on the transitory account: bill", bill_vat.get(doc["bexio_id"], {})
+        return doc["bexio_id"], "bill", "VAT on the transitory account: bill", bill_vat.get(doc["bexio_id"], {})
 
     details = []
     documents, sales_keys = document_fixes(lookups.sales, sales_document, lookups, problems, details, "sales")
