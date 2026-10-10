@@ -3,8 +3,9 @@
 # a bead lands only when it exits 0. yardr reads this file from the base
 # branch (main), so an edit here counts once it has landed there.
 set -e
-# The finance stack's compose files must parse together.
+# The finance stack's compose files (live and the HRMS copy) must parse together.
 docker compose -f pwd.yml -f finance-local.yml config -q
+docker compose -f pwd.yml -f finance-copy.yml config -q
 # The bi_finance layout and stamp guard, stdlib only (no frappe), so it runs on the host.
 # A synced JSON changed without a newer 'modified' fails here; see test_layout.py.
 (cd finance/apps/bi_finance && python3 -m unittest bi_finance.test_layout)

@@ -93,7 +93,9 @@ MWST. This is a decision for Benchi.
 
 ## Build
 
-`finance/apps.json` lists the two apps. The build uses `images/custom/Containerfile`,
+`finance/apps.json` lists the apps (ERPNext, erpnextswiss, and HRMS for the copy image, see
+`hrms.md`). The live image `bi9` has no HRMS: a build for live from this file would add it, so
+build live images from a list without the `hrms` entry. The build uses `images/custom/Containerfile`,
 which is the upstream full-image build. It takes the apps through `bench init
 --apps_path`, with the file as a BuildKit secret.
 
