@@ -57,20 +57,19 @@ def kind_label(kind):
 
 def open_documents(company, as_of, doctype):
     """{name: (party, amount owed in the company currency, due date)} of the doctype's invoices unpaid on as_of.
-    Read from the Payment Ledger, so a past date gives the invoices open then. Sales Invoices are positive there,
-    Purchase Invoices negative."""
-    sign = 1 if doctype == "Sales Invoice" else -1
+    Read from the Payment Ledger, so a past date gives the invoices open then. An invoice's own row is positive
+    and its payments and returns negative, for both doctypes, so the sum is what it still owes."""
     rows = frappe.db.sql(
         """select ple.against_voucher_no, max(ple.party), sum(ple.amount)
         from `tabPayment Ledger Entry` ple
         where ple.company = %s and ple.against_voucher_type = %s and ple.delinked = 0 and ple.posting_date <= %s
         group by ple.against_voucher_no
-        having sum(ple.amount) * %s > 0.005""",
-        (company, doctype, as_of, sign),
+        having sum(ple.amount) > 0.005""",
+        (company, doctype, as_of),
     )
     invoices = _invoice_dates(doctype, [name for name, _party, _amount in rows])
     return {
-        name: (party, sign * flt(amount), invoices[name])
+        name: (party, flt(amount), invoices[name])
         for name, party, amount in rows
     }
 

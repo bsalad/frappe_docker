@@ -10,6 +10,7 @@ it in the image, as test_treasury.py does (finance/docs/erpnext-setup.md):
 
 import contextlib
 import datetime
+import sqlite3
 import types
 import unittest
 from unittest import mock
@@ -185,6 +186,119 @@ class NewSalesRunRate(unittest.TestCase):
         rows = run({"company": "Test Company", "as_of_date": AS_OF})
         self.assertEqual([(row["type"], row["amount"]) for row in rows], [("Expected receipts from new sales", 25.0)] * 13)
         self.assertEqual(run({"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0}), [])
+
+
+class OpenDocuments(unittest.TestCase):
+    """open_documents' SQL runs on an in-memory SQLite copy of the Payment Ledger, so the as-of date, the payments
+    and the returns are netted by the query itself. Invented names and amounts; the same sign rule for both doctypes."""
+
+    def setUp(self):
+        self.db = sqlite3.connect(":memory:")
+        self.db.execute(
+            "create table `tabPayment Ledger Entry` (company, against_voucher_type, against_voucher_no, voucher_type,"
+            " voucher_no, party, amount, posting_date, delinked)")
+        for doctype in ("Purchase Invoice", "Sales Invoice"):
+            self.db.execute(f"create table `tab{doctype}` (name, due_date, posting_date)")
+        self.frappe = mock.Mock()
+        self.frappe.db.sql.side_effect = self.sql
+        self.frappe.get_all.side_effect = self.get_all
+        patch = mock.patch.object(cff, "frappe", self.frappe)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def sql(self, query, args=()):
+        args = [arg.isoformat() if isinstance(arg, datetime.date) else arg for arg in args]
+        return self.db.execute(query.replace("%s", "?"), args).fetchall()
+
+    def get_all(self, doctype, filters, fields):
+        names = filters["name"][1]
+        rows = self.db.execute(
+            f"select name, due_date, posting_date from `tab{doctype}` where name in ({','.join('?' * len(names))})",
+            names).fetchall()
+        return [types.SimpleNamespace(name=name, due_date=datetime.date.fromisoformat(due),
+                                      posting_date=datetime.date.fromisoformat(posted)) for name, due, posted in rows]
+
+    def invoice(self, doctype, name, due, posted):
+        self.db.execute(f"insert into `tab{doctype}` values (?, ?, ?)", (name, due.isoformat(), posted.isoformat()))
+
+    def entry(self, doctype, name, amount, posted, party="Test Supplier", voucher=None):
+        """A Payment Ledger row against an invoice: its own row when voucher is None, else a payment or return."""
+        voucher = voucher or name
+        self.db.execute(
+            "insert into `tabPayment Ledger Entry` values ('Test Company', ?, ?, ?, ?, ?, ?, ?, 0)",
+            (doctype, name, doctype if voucher == name else "Payment Entry", voucher, party, amount, posted.isoformat()))
+
+    def open(self, doctype):
+        return cff.open_documents("Test Company", AS_OF, doctype)
+
+    def test_a_bill_open_on_the_as_of_date_is_owed_at_its_due_date(self):
+        self.invoice("Purchase Invoice", "PI-OPEN", D(2026, 10, 20), D(2026, 9, 1))
+        self.entry("Purchase Invoice", "PI-OPEN", 100.0, D(2026, 9, 1))
+        self.assertEqual(self.open("Purchase Invoice"), {"PI-OPEN": ("Test Supplier", 100.0, D(2026, 10, 20))})
+
+    def test_a_bill_paid_before_the_as_of_date_is_not_open(self):
+        self.invoice("Purchase Invoice", "PI-PAID", D(2026, 9, 20), D(2026, 9, 1))
+        self.entry("Purchase Invoice", "PI-PAID", 50.0, D(2026, 9, 1))
+        self.entry("Purchase Invoice", "PI-PAID", -50.0, D(2026, 9, 15), voucher="PE-PAID")
+        self.assertEqual(self.open("Purchase Invoice"), {})
+
+    def test_a_part_payment_leaves_the_rest_owed(self):
+        self.invoice("Purchase Invoice", "PI-PART", D(2026, 10, 20), D(2026, 9, 1))
+        self.entry("Purchase Invoice", "PI-PART", 100.0, D(2026, 9, 1))
+        self.entry("Purchase Invoice", "PI-PART", -30.0, D(2026, 9, 15), voucher="PE-PART")
+        self.assertEqual(self.open("Purchase Invoice"), {"PI-PART": ("Test Supplier", 70.0, D(2026, 10, 20))})
+
+    def test_a_bill_posted_after_the_as_of_date_is_not_open(self):
+        self.invoice("Purchase Invoice", "PI-LATE", D(2026, 11, 1), D(2026, 10, 12))
+        self.entry("Purchase Invoice", "PI-LATE", 80.0, D(2026, 10, 12))
+        self.assertEqual(self.open("Purchase Invoice"), {})
+
+    def test_a_return_nets_against_its_bill(self):
+        self.invoice("Purchase Invoice", "PI-RET", D(2026, 10, 20), D(2026, 9, 1))
+        self.entry("Purchase Invoice", "PI-RET", 200.0, D(2026, 9, 1))
+        self.entry("Purchase Invoice", "PI-RET", -50.0, D(2026, 9, 10), voucher="PI-RET-R")
+        self.assertEqual(self.open("Purchase Invoice"), {"PI-RET": ("Test Supplier", 150.0, D(2026, 10, 20))})
+
+    def test_a_fully_returned_bill_is_not_open(self):
+        self.invoice("Purchase Invoice", "PI-CREDITED", D(2026, 10, 20), D(2026, 9, 1))
+        self.entry("Purchase Invoice", "PI-CREDITED", 60.0, D(2026, 9, 1))
+        self.entry("Purchase Invoice", "PI-CREDITED", -60.0, D(2026, 9, 10), voucher="PI-CREDITED-R")
+        self.assertEqual(self.open("Purchase Invoice"), {})
+
+    def test_a_sales_invoice_is_owed_as_before(self):
+        self.invoice("Sales Invoice", "SI-OPEN", D(2026, 10, 5), D(2026, 9, 1))
+        self.entry("Sales Invoice", "SI-OPEN", 300.0, D(2026, 9, 1), party="Test Customer")
+        self.entry("Sales Invoice", "SI-OPEN", -100.0, D(2026, 9, 20), party="Test Customer", voucher="PE-SI")
+        self.assertEqual(self.open("Sales Invoice"), {"SI-OPEN": ("Test Customer", 200.0, D(2026, 10, 5))})
+
+    def test_an_open_bill_reaches_the_forecast_as_a_bill_line_on_its_due_date(self):
+        self.invoice("Purchase Invoice", "PI-LINE", D(2026, 10, 20), D(2026, 9, 1))
+        self.entry("Purchase Invoice", "PI-LINE", 100.0, D(2026, 9, 1))
+        result = self.compute(recurring=[])
+        bills = [line for line in result["lines"] if line["kind"] == "bill"]
+        self.assertEqual([(line["day"], line["amount"], line["name"]) for line in bills], [(D(2026, 10, 20), 100.0, "PI-LINE")])
+
+    def test_a_recurring_line_within_fifteen_days_of_an_open_bill_of_the_supplier_is_dropped(self):
+        self.invoice("Purchase Invoice", "PI-RENT", D(2026, 10, 25), D(2026, 9, 25))
+        self.entry("Purchase Invoice", "PI-RENT", 100.0, D(2026, 9, 25))
+        near, far = D(2026, 10, 30), D(2026, 12, 1)  # 5 days after the open bill, and 37 days after it
+        result = self.compute(recurring=[near, far])
+        recurring = [line["day"] for line in result["lines"] if line["kind"] == "recurring"]
+        self.assertEqual(recurring, [far])
+
+    def compute(self, recurring):
+        item = {"supplier": "Test Supplier", "amount": 40.0, "period": "monthly", "count": 3, "last_bill": "PI-HIST"}
+        stubs = {
+            "opening_cash": 1000.0, "paid_history": {}, "sales_paid_in_windows": [],
+            "recurring_sources": {"bills": [item], "bank": []}, "personnel_postings": [], "vat_balances": {},
+            "vat_paid_since": 0.0,
+        }
+        with contextlib.ExitStack() as stack:
+            for name, value in stubs.items():
+                stack.enter_context(mock.patch.object(cff, name, return_value=value))
+            stack.enter_context(mock.patch.object(cf, "recurring_dates", return_value=recurring))
+            stack.enter_context(mock.patch.object(cff, "_", lambda text: text))
+            return cff.compute("Test Company", AS_OF, include_run_rate=False)
 
 
 if __name__ == "__main__":
