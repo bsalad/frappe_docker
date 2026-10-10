@@ -35,14 +35,17 @@ copy only: it requires `hrms`, which the live site does not have, so nothing her
   `swiss_qst_code` (Employee custom fields, fixtures).
 - `bi_payroll/test_quellensteuer.py`: offline tests with invented rows in the ESTV format:
   `python3 -m unittest bi_payroll.test_quellensteuer`.
-- Salary Structure, when a company's structure predates a component: `ensure_structure` makes the "Swiss Monthly"
-  structure only when the company has none, so a submitted one is never amended by `bench migrate`. The gap is logged
-  to the Error Log ("Swiss Salary Structure lacks components"), and a slip whose Quellensteuer amount is not zero stops
-  on validate ("has no Quellensteuer Employee row") until the structure has it. The manual step: make the structure
-  again with every row of `swiss_rates.py` (STRUCTURE_EARNINGS, STRUCTURE_DEDUCTIONS, the Quellensteuer Employee last),
-  each row with its component's formula (`structure_rows` does this), submit it, cancel the old one, and move the
-  employees' assignments to the new one. A Duplicate in Desk is not enough: it copies the old rows, and HRMS keeps a row
-  without its formula at 0. Employees with no tariff code are not affected.
+- Salary Structure: `ensure_structure` makes the "Swiss Monthly" structure only when the company has none. A structure
+  that no slip and no Salary Structure Assignment names (unused) and that is defective (a component missing, or a row
+  whose component has a formula but which has none of its own) is cancelled if submitted, deleted and made again by
+  `bench migrate`, with every row of `swiss_rates.py` and each row's formula; the Error Log gets "Swiss Salary Structure
+  replaced" with the counts. A structure in use is not changed: the gap is logged to the Error Log ("Swiss Salary
+  Structure lacks components"), and a slip whose Quellensteuer amount is not zero stops on validate ("has no
+  Quellensteuer Employee row") until the structure has it. The manual step, for a structure in use only: make the
+  structure again with every row of `swiss_rates.py` (STRUCTURE_EARNINGS, STRUCTURE_DEDUCTIONS, the Quellensteuer
+  Employee last), each row with its component's formula (`structure_rows` does this), submit it, cancel the old one,
+  and move the employees' assignments to the new one. A Duplicate in Desk is not enough: it copies the old rows, and
+  HRMS keeps a row without its formula at 0. Employees with no tariff code are not affected.
 - Formulas: a structure row computes only with its formula stored (HRMS resets a row's formula on save to the value it
   had before validate). `ensure_structure` copies each component's formula onto its rows. A structure made before that
   change has empty formulas and computes 0 for every component; the live structure (erp-2s3c) was one of them.

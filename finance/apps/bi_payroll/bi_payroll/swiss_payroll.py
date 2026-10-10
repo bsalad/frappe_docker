@@ -61,8 +61,9 @@ def withhold_qst(doc, method=None):
 
 def ensure_structure():
     # One Salary Structure per Swiss company, made once (after install and after each migrate, so a new company is
-    # covered). Submitted, so Salary Structure Assignments can name it. A submitted structure is not changed here: one
-    # that lacks a component is logged, so the gap is in the Error Log and not silent.
+    # covered). Submitted, so Salary Structure Assignments can name it. A structure that no slip or assignment names
+    # is replaced when it is defective: nothing depends on it yet, so the new one is made as a fresh structure would
+    # be. One in use is not changed here: its gap is logged, so it is in the Error Log and not silent.
     for company in frappe.get_all("Company", filters={"country": "Switzerland"}, pluck="name"):
         existing = frappe.db.get_value("Salary Structure", {"company": company, "docstatus": ["<", 2]}, "name")
         if existing:
@@ -71,13 +72,27 @@ def ensure_structure():
                 [row.salary_component for row in structure.earnings],
                 [row.salary_component for row in structure.deductions],
             )
-            if missing:
+            bare = formula_gaps(structure.earnings + structure.deductions)
+            if not missing and not bare:
+                continue
+            if structure_in_use(existing):
+                gaps = [f"has no {', '.join(missing)}"] if missing else []
+                if bare:
+                    gaps.append(f"has {len(bare)} rows without their component's formula")
                 frappe.log_error(
                     title="Swiss Salary Structure lacks components",
-                    message=f"Salary Structure {existing} for {company} has no {', '.join(missing)}. It is not "
-                    "changed by bench migrate: make it again by hand (README, Salary Structure).",
+                    message=f"Salary Structure {existing} for {company} {' and '.join(gaps)}. It is not changed by "
+                    "bench migrate: make it again by hand (README, Salary Structure).",
                 )
-            continue
+                continue
+            if structure.docstatus == 1:
+                structure.cancel()
+            frappe.delete_doc("Salary Structure", existing)
+            frappe.log_error(
+                title="Swiss Salary Structure replaced",
+                message=f"Salary Structure {existing} for {company} was not used and had {len(missing)} missing "
+                f"components and {len(bare)} rows without a formula. It is made again from swiss_rates.py.",
+            )
         doc = frappe.get_doc({
             "doctype": "Salary Structure",
             "name": f"Swiss Monthly {company}",
@@ -90,6 +105,22 @@ def ensure_structure():
         })
         doc.insert()
         doc.submit()
+
+
+def structure_in_use(name):
+    # a slip or an assignment that names the structure, whatever its docstatus: then the structure is not replaced
+    return bool(
+        frappe.db.exists("Salary Slip", {"salary_structure": name})
+        or frappe.db.exists("Salary Structure Assignment", {"salary_structure": name})
+    )
+
+
+def formula_gaps(rows):
+    # the rows whose component has a formula but which have none of their own: HRMS computes such a row as 0
+    return [
+        row.salary_component for row in rows
+        if not row.formula and frappe.db.get_value("Salary Component", row.salary_component, "formula")
+    ]
 
 
 def structure_rows(components):
