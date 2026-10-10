@@ -10,7 +10,8 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
     the occurrence;
   - the outgoing bank lines not covered by a bill, grouped by the first words of their description (the payee).
     A line is left out when a payroll or VAT word is in its description, when it is reconciled to a payroll or VAT
-    Journal Entry (accounts 5xxx, 2200, 2202), when it is reconciled to a Payment Entry of a Purchase Invoice, or
+    Journal Entry (accounts 5xxx, 2200, 2202), when it is reconciled to a Payment Entry of a Purchase Invoice, when
+    it is a transfer between the company's own bank accounts (its other leg is in the opening cash already), or
     when a purchase bill of the same amount is dated within five days of it. A group needs 80% of its gaps in its
     period, since a key can mix payees; lines of a group on one day are one occurrence, their sum; its amount
     is the median of its occurrences;
@@ -123,7 +124,7 @@ def bank_outflows(company, as_of, bills):
         },
         fields=["name", "date", "withdrawal", "description"],
     ) if accounts else []
-    payroll_or_vat_paid, bill_paid = reconciled_bank_lines([line.name for line in lines])
+    payroll_or_vat_paid, bill_paid, transfer_paid = reconciled_bank_lines([line.name for line in lines])
     bill_days = [(day, amount) for _supplier, day, amount, _name in bills]
     kept = []
     for line in lines:
@@ -136,6 +137,9 @@ def bank_outflows(company, as_of, bills):
             left_out["payroll or VAT journal entry"] += 1
         elif line.name in bill_paid:
             left_out["paid by a bill's payment entry"] += 1
+        elif line.name in transfer_paid:
+            # the other leg is an account in the opening cash already: the money stays in the company
+            left_out["transfer between own bank accounts"] += 1
         elif cf.paid_by_a_bill(line.date, amount, bill_days):
             left_out["amount of a bill"] += 1
         else:
@@ -144,10 +148,12 @@ def bank_outflows(company, as_of, bills):
 
 
 def reconciled_bank_lines(names):
-    """(payroll or VAT journal entry, purchase bill payment) as two sets of the bank transaction names: a Journal
-    Entry on a salary (5xxx) or VAT liability (2200, 2202) account, and a Payment Entry referencing a Purchase Invoice."""
+    """(payroll or VAT journal entry, purchase bill payment, transfer) as three sets of the bank transaction names: a
+    Journal Entry on a salary (5xxx) or VAT liability (2200, 2202) account, a Payment Entry referencing a Purchase
+    Invoice, and a transfer between the company's own accounts (a Journal Entry with two bank or cash lines, or an
+    Internal Transfer Payment Entry)."""
     if not names:
-        return set(), set()
+        return set(), set(), set()
     payroll_or_vat = frappe.db.sql(
         """select distinct btp.parent
         from `tabBank Transaction Payments` btp
@@ -165,7 +171,27 @@ def reconciled_bank_lines(names):
           and per.reference_doctype = 'Purchase Invoice'""",
         (names,),
     )
-    return {row[0] for row in payroll_or_vat}, {row[0] for row in bill}
+    transfer_je = frappe.db.sql(
+        """select distinct btp.parent
+        from `tabBank Transaction Payments` btp
+        join `tabJournal Entry Account` jea on jea.parent = btp.payment_entry
+        join `tabAccount` a on a.name = jea.account
+        where btp.payment_document = 'Journal Entry' and btp.parent in %s
+          and a.account_type in ('Bank', 'Cash')
+        group by btp.parent, btp.payment_entry
+        having count(*) >= 2""",
+        (names,),
+    )
+    transfer_pe = frappe.db.sql(
+        """select distinct btp.parent
+        from `tabBank Transaction Payments` btp
+        join `tabPayment Entry` pe on pe.name = btp.payment_entry
+        where btp.payment_document = 'Payment Entry' and btp.parent in %s
+          and pe.payment_type = 'Internal Transfer'""",
+        (names,),
+    )
+    transfer = {row[0] for row in transfer_je} | {row[0] for row in transfer_pe}
+    return {row[0] for row in payroll_or_vat}, {row[0] for row in bill}, transfer
 
 
 def personnel_postings(company, as_of):
