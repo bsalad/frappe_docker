@@ -314,11 +314,11 @@ def _document(doctype, record, lookups, credit=False):
     if abs(absorb) > TOTAL_TOLERANCE:
         raise Unmapped("total differs from bexio's by {:+}".format(absorb))
     # no VAT row takes the difference (prices with the VAT in them, or no VAT at all): bexio's total is the booked
-    # amount, so a rounding line or a grand-total discount makes ERPNext's total bexio's. Only the invoices take
-    # it: a credit note's sign would be the wrong way round, and orders and offers keep their refusal
+    # amount, so a rounding line or a grand-total discount makes ERPNext's total bexio's. Invoices, orders and offers
+    # take it; a credit note's sign would be the wrong way round, so it is refused
     grand_discount = ZERO
     if absorb and (included or last_rate is None):
-        if credit or doctype != "Sales Invoice":
+        if credit:
             raise Unmapped("nothing to take a total difference of {:+} in".format(absorb))
         rappen = int(absorb * 100)
         if absorb > 0:

@@ -621,12 +621,27 @@ class RundungAndGrandTotalDiscount(unittest.TestCase):
         with self.assertRaisesRegex(isl.Unmapped, "nothing to take a total difference"):
             isl.credit_note(credit, LOOKUPS)
 
-    def test_orders_and_offers_with_the_same_difference_stay_unmapped(self):
-        # only the invoices take it; the order and the offer of the same kind are refused as before
-        with self.assertRaisesRegex(isl.Unmapped, "nothing to take a total difference"):
-            isl._document("Sales Order", self.untaxed("149.98"), LOOKUPS)
-        with self.assertRaisesRegex(isl.Unmapped, "nothing to take a total difference"):
-            isl._document("Quotation", self.gross("324.33"), LOOKUPS)
+    def test_an_order_and_an_offer_take_a_rappen_difference_as_the_invoices_do(self):
+        # no VAT row takes it, so the order and the offer get a grand-total discount or a Rundung item, as the invoices
+        doc, differences, totals, _rate = isl._document("Sales Order", self.untaxed("149.98"), LOOKUPS)
+        self.assertEqual((doc["apply_discount_on"], doc["discount_amount"]), ("Grand Total", 0.02))
+        self.assertEqual(totals[2], Decimal("149.98"))
+        self.assertIn("total -2 rappen absorbed as a grand-total discount", differences)
+        self.assertNotIn("income_account", doc["items"][0])
+        doc, differences, totals, _rate = isl._document("Quotation", self.gross("324.33"), LOOKUPS)
+        rundung = doc["items"][-1]
+        self.assertEqual((rundung["item_code"], rundung["description"], rundung["rate"]),
+                         ("bexio Position", "Rundung (bexio Total)", 0.03))
+        self.assertNotIn("income_account", rundung)
+        self.assertEqual(totals[2], Decimal("324.33"))
+        self.assertIn("total +3 rappen absorbed in a Rundung line", differences)
+
+    def test_an_order_or_offer_with_a_difference_above_the_tolerance_stays_unmapped(self):
+        # an offer whose bexio total is far from its lines stays listed: a plug that size is not rounding
+        with self.assertRaisesRegex(isl.Unmapped, "total differs from bexio's by -4\\.80"):
+            isl._document("Quotation", self.untaxed("145.20"), LOOKUPS)
+        with self.assertRaisesRegex(isl.Unmapped, "total differs from bexio's by \\+0.06"):
+            isl._document("Sales Order", self.untaxed("150.06"), LOOKUPS)
 
     def test_an_exact_untaxed_total_has_no_rundung_line_and_no_discount(self):
         doc, differences, _totals, _rate = isl._document("Sales Invoice", self.untaxed("150.00"), LOOKUPS)
