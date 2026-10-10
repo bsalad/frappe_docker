@@ -67,8 +67,13 @@ def differs(have, want):
 
 
 def load_document(item, store):
-    """(status, name). Status: 'created', 'updated', 'unchanged', 'skipped' (submitted), or 'conflict' (the name is another document's)."""
-    doctype, name, bexio_id = item["doctype"], str(item["name"]), str(item["bexio_id"])
+    """(status, name). Status: 'created', 'updated', 'unchanged', 'skipped' (submitted), or 'conflict' (the name is another document's).
+
+    A document with no name (a Payment Entry, whose series is ERPNext's own) is inserted under the series; its name is
+    the one ERPNext gives it, and the upsert is by bexio_id alone.
+    """
+    doctype, bexio_id = item["doctype"], str(item["bexio_id"])
+    name = None if item.get("name") in (None, "") else str(item["name"])
     values = {key: value for key, value in item["values"].items() if key not in DROP}
     found = store.find(doctype, bexio_id)
     if found:
@@ -79,10 +84,9 @@ def load_document(item, store):
             return "unchanged", current
         store.update(doctype, current, values)
         return "updated", current
-    if store.exists(doctype, name):
+    if name is not None and store.exists(doctype, name):
         return "conflict", name
-    store.insert(doctype, name, values)
-    return "created", name
+    return "created", store.insert(doctype, name, values)
 
 
 def apply_plan(plan, store, submit=False):
@@ -103,7 +107,7 @@ def apply_plan(plan, store, submit=False):
     keep_draft = {str(bexio_id) for bexio_id in plan.get("keep_draft", [])}
     documents = plan["documents"]
     if submit:
-        documents = sorted(documents, key=lambda item: (item["values"].get("posting_date") or "", str(item["name"])))
+        documents = sorted(documents, key=lambda item: (item["values"].get("posting_date") or "", str(item["bexio_id"])))
     for item in documents:
         try:
             status, name = load_document(item, store)
@@ -144,8 +148,9 @@ class FrappeStore:
 
     def insert(self, doctype, name, values):
         doc = self.frappe.get_doc(dict(values, doctype=doctype))
-        # set_name keeps bexio's number as the name and bypasses the naming series
+        # set_name keeps bexio's number as the name and bypasses the naming series; without a name, the series names it
         doc.insert(set_name=name)
+        return doc.name
 
     def update(self, doctype, name, values):
         doc = self.frappe.get_doc(doctype, name)

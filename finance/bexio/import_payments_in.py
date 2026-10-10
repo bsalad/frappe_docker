@@ -45,6 +45,7 @@ BASE_CURRENCY = "CHF"
 CENT = Decimal("0.01")
 ZERO = Decimal("0")
 PROBLEMS_FILE = "bexio-payments-dry-run.txt"
+OVER_ALLOCATED = "payment exceeds the outstanding amount of its invoice"
 
 # bexio payment flags that are not money in a bank: each is unmapped, never booked as a receipt
 NOT_A_RECEIPT = (
@@ -119,7 +120,7 @@ def map_payment(row, invoice, lookups, owing):
         raise Unmapped("no Currency Exchange {} to CHF on or before the payment date".format(currency))
     value = _money(row["value"])
     if value > owing:
-        raise Unmapped("payment exceeds the outstanding amount of its invoice")
+        raise Unmapped(OVER_ALLOCATED)
     name = lookups["invoice"].get(str(invoice["id"])) or invoice.get("document_nr")
     if not name:
         raise Unmapped("the invoice has no document number")
@@ -163,6 +164,26 @@ def plan(data, lookups):
             result.update(doc=doc, chf=received)
         results.append(result)
     return results
+
+
+def write_plan(results, submitted):
+    """The mapped payments as the loader takes them, and the bexio ids of those whose invoice is not submitted in ERPNext.
+
+    A Payment Entry is named by ERPNext's own series (ACC-PAY-), so its name is None; it is keyed by bexio_id.
+    A payment is allocated against a submitted Sales Invoice only: one whose invoice is still a draft (or not
+    in ERPNext) is skipped and counted, so the loader never books against an invoice that has no GL yet.
+    """
+    documents, skipped = [], []
+    for r in results:
+        if r["doc"] is None:
+            continue
+        values = dict(r["doc"])
+        values.pop("doctype")
+        if values["references"][0]["reference_name"] not in submitted:
+            skipped.append(r["bexio_id"])
+            continue
+        documents.append({"doctype": "Payment Entry", "name": None, "bexio_id": r["bexio_id"], "values": values})
+    return documents, skipped
 
 
 def reconciliation(results, data):
@@ -213,6 +234,7 @@ def lookups_from_erp(erp, data):
         "currency": currency,
         "customer": bexio_names("Customer"),
         "invoice": bexio_names("Sales Invoice"),
+        "submitted": {r["name"] for r in erp.list("Sales Invoice", [["docstatus", "=", 1]], ["name"])},
         "bank": bank,
         "receivable": receivable,
         "exchange": dict(exchange),
@@ -268,15 +290,18 @@ def detail_lines(results, reconciled):
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(description="Map the bexio payments on invoices to ERPNext Payment Entries (dry run only for now).")
+    parser = argparse.ArgumentParser(description="Map the bexio payments on invoices to ERPNext Payment Entries.")
     parser.add_argument("--export", default=None, help="export directory (default: the newest under <private>/bexio-export/)")
     parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals")
+    parser.add_argument("--write", metavar="FILE", default=None,
+                        help="write the Payment Entries to a private file for the loader (bexio-drafts.sh FILE submit); "
+                             "nothing goes into ERPNext here. Stops, writing nothing, if a payment would over-allocate")
     parser.add_argument("--report", default=os.path.join(im.PRIVATE, PROBLEMS_FILE),
                         help="private file for the unmapped payments and the reconciliation, by bexio id")
     parser.add_argument("--token-file", default=im.TOKEN_FILE)
     args = parser.parse_args(argv)
-    if not args.dry_run:
-        parser.error("dry run only for now: the live run is erp-a2ma's, after the posting plan (finance-3qsp)")
+    if args.dry_run == (args.write is not None):
+        parser.error("exactly one of --dry-run and --write FILE")
 
     export_dir = args.export or im.newest_export()
     data = load_payments(export_dir)
@@ -297,10 +322,23 @@ def main(argv):
               for r in results if r["doc"] for f in r["unknown"]]
     print("payments from {}".format(export_dir))
     print(summary(results))
-    print("dry run: nothing was written; {} lines of unmapped payments or reconciliation in {}".format(len(lines), args.report))
     fd = os.open(args.report, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + ("\n" if lines else ""))
+    over = [r["bexio_id"] for r in results if r["error"] == OVER_ALLOCATED]
+    if args.write and over:
+        # the rule of the live run: a payment that would over-allocate stops the whole run, nothing partial
+        print("stop: {} payment(s) would over-allocate their invoice, by bexio id: {}; nothing written".format(
+            len(over), ", ".join(over)))
+        return 1
+    if args.write:
+        documents, skipped = write_plan(results, lookups["submitted"])
+        isl.write_private(args.write, json.dumps({"documents": documents, "exchange_rates": []}, indent=1))
+        print("{} Payment Entries handed to the loader; {} skipped: invoice not submitted in ERPNext, by bexio id: {}".format(
+            len(documents), len(skipped), ", ".join(skipped) or "none"))
+        print("{} lines of unmapped payments or reconciliation in {}".format(len(lines), args.report))
+    else:
+        print("dry run: nothing was written; {} lines of unmapped payments or reconciliation in {}".format(len(lines), args.report))
     return 1 if lines else 0
 
 

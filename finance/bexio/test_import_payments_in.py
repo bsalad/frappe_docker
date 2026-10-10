@@ -225,5 +225,35 @@ class FieldCheck(unittest.TestCase):
         self.assertEqual(ipi.unknown_fields(doc, metas), [])
 
 
+class WritePlan(unittest.TestCase):
+    def test_a_payment_is_handed_over_without_a_name_so_the_series_names_it(self):
+        results = ipi.plan(export([row(PAYMENT)]), LOOKUPS)
+        documents, skipped = ipi.write_plan(results, {"ACC-SINV-0001"})
+        self.assertEqual(skipped, [])
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0]["doctype"], "Payment Entry")
+        self.assertIsNone(documents[0]["name"])
+        self.assertEqual(documents[0]["bexio_id"], "811")
+        self.assertNotIn("doctype", documents[0]["values"])
+        self.assertEqual(documents[0]["values"]["references"][0]["reference_name"], "ACC-SINV-0001")
+
+    def test_a_payment_whose_invoice_is_not_submitted_is_skipped_and_counted(self):
+        results = ipi.plan(export([row(PAYMENT)]), LOOKUPS)
+        documents, skipped = ipi.write_plan(results, set())
+        self.assertEqual(documents, [])
+        self.assertEqual(skipped, ["811"])
+
+    def test_an_unmapped_payment_is_not_handed_over(self):
+        results = ipi.plan(export([row(PAYMENT, bank_account_id=None)]), LOOKUPS)
+        self.assertEqual(ipi.write_plan(results, {"ACC-SINV-0001"}), ([], []))
+
+    def test_over_allocation_is_the_unmapped_reason_the_live_run_stops_on(self):
+        first = row(PAYMENT, id=811, date="2026-01-10", value="1081.000000")
+        again = row(PAYMENT, id=734, date="2026-01-23", value="1081.000000", title="Overpayment")
+        results = ipi.plan(export([first, again]), LOOKUPS)
+        over = [r["bexio_id"] for r in results if r["error"] == ipi.OVER_ALLOCATED]
+        self.assertEqual(over, ["734"])
+
+
 if __name__ == "__main__":
     unittest.main()

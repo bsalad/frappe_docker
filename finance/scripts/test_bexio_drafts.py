@@ -43,7 +43,10 @@ class FakeStore:
         self.calls.append(("insert", doctype, name))
         if values.get("bexio_id") in self.fail:
             raise RuntimeError("the database said no")
+        if name is None:  # no name: ERPNext's series names it
+            name = "ACC-PAY-{:04d}".format(sum(1 for dt, _ in self.docs if dt == doctype) + 1)
         self.docs[(doctype, name)] = dict(values, docstatus=0)
+        return name
 
     def update(self, doctype, name, values):
         self.calls.append(("update", doctype, name))
@@ -209,6 +212,33 @@ class Submit(unittest.TestCase):
         store = FakeStore()
         loader.apply_plan(plan(invoice()), store)
         self.assertNotIn("submit", [call for call, _, _ in store.calls])
+
+
+class SeriesNames(unittest.TestCase):
+    """A Payment Entry has no name of bexio's: ERPNext's series names it, and the upsert is by bexio_id alone."""
+
+    def payment(self, bexio_id="811"):
+        return {"doctype": "Payment Entry", "name": None, "bexio_id": bexio_id,
+                "values": {"payment_type": "Receive", "bexio_id": bexio_id, "posting_date": "2026-01-20"}}
+
+    def test_a_payment_is_inserted_under_the_series_and_a_rerun_changes_nothing(self):
+        store = FakeStore()
+        counts, failures = loader.apply_plan(plan(self.payment()), store)
+        self.assertEqual(store.calls, [("insert", "Payment Entry", None)])
+        self.assertEqual(counts[("Payment Entry", "created")], 1)
+        self.assertEqual(failures, [])
+        counts, _ = loader.apply_plan(plan(self.payment()), store)
+        self.assertEqual(counts[("Payment Entry", "unchanged")], 1)
+        self.assertEqual(len(store.docs), 1)
+
+    def test_a_payment_is_submitted_under_the_name_the_series_gave_it(self):
+        store = FakeStore()
+        counts, _ = loader.apply_plan(plan(self.payment()), store, submit=True)
+        self.assertEqual(store.calls, [("insert", "Payment Entry", None), ("submit", "Payment Entry", "ACC-PAY-0001")])
+        self.assertEqual(counts[("Payment Entry", "submitted")], 1)
+        counts, _ = loader.apply_plan(plan(self.payment()), store, submit=True)
+        self.assertEqual(counts[("Payment Entry", "skipped")], 1)
+        self.assertEqual(len(store.calls), 2)
 
 
 class Rates(unittest.TestCase):
