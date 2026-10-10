@@ -142,7 +142,9 @@ bexio declares on payments received (vereinnahmte Entgelte): the VAT moves to
 same moves as one Journal Entry per bexio journal line, on that date. So the
 VAT accounts 2200, 1170, 1171 and 2203 are the payment basis, and they agree
 with bexio's journal per quarter (`finance/bexio/mwst_compare.py`, read only).
-The per-rate Ziffern of the form (base and tax per code) are not compared yet;
+The form's figures per rate on that basis are built by `mwst_report.py
+--basis payment`, from the Payment Entries of the period, each split over the
+invoices it pays; the per-rate Ziffern are not compared with bexio yet;
 see `swiss.md`, "VAT per quarter against bexio".
 
 **fiscal.** Calendar years 2015 to 2026. 2026 existed; the others were added,

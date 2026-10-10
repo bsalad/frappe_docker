@@ -9,6 +9,14 @@ A tax row finds its template by the row's description, which the importers set
 to the template's name, and the template by its bexio_id. A row whose template
 or code is not known is reported as unmapped, never guessed from the rate.
 
+Two bases. The posting basis (default) counts an invoice in the period of its
+posting date. The payment basis (--basis payment, the effective method on
+vereinnahmte Entgelte) counts each Payment Entry in the period of its posting
+date, and each invoice it pays with the share allocated / grand total: the
+invoice's net and tax rows times that share, so a receipt is split over the
+rates of the invoices it pays. Payment Entries that pay no invoice (advances,
+bank charges) split no tax and are counted apart.
+
 The base of a tax row is derived from its tax (tax / rate), because the import
 does not carry the net per row. At 8.1 % one rappen of tax is about 0.06 of
 base, so the derived bases are approximate; the tax per row is exact.
@@ -278,6 +286,67 @@ def fetch(erp, start, end):
     return out
 
 
+INVOICE_DOCTYPES = ("Sales Invoice", "Purchase Invoice")
+
+
+def fetch_payments(erp, start, end):
+    """The submitted Payment Entries of the period with their references, and the invoices they pay (read only).
+    Returns the payments, and (doctype, name) -> the invoice as ERPNext has it."""
+    filters = [["company", "=", COMPANY], ["docstatus", "=", 1], ["posting_date", "between", [str(start), str(end)]]]
+    payments, invoices = [], {}
+    for p in erp.list("Payment Entry", filters, ["name", "posting_date"]):
+        full = erp.get("Payment Entry", p["name"])
+        references = full.get("references") or []
+        for ref in references:
+            key = (ref["reference_doctype"], ref["reference_name"])
+            if ref["reference_doctype"] in INVOICE_DOCTYPES and key not in invoices:
+                invoices[key] = erp.get(*key)
+        payments.append({
+            "posting_date": datetime.date.fromisoformat(str(full["posting_date"])),
+            "references": references,
+        })
+    return payments, invoices
+
+
+def share_of(amount, share):
+    """An amount of an invoice cut to the share one payment pays of it, to the rappen."""
+    return (Decimal(str(amount)) * share).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def payment_documents(payments, invoices):
+    """The payment basis: each reference of a Payment Entry to an invoice as a document for plan().
+
+    The share is allocated / the invoice's grand total. ERPNext gives the allocated amount the sign of the invoice:
+    a refund against a credit note is negative, as the credit note is, so its share is positive and the credit
+    note's tax comes out negative as it should. The share times the invoice's net and each tax row is one document
+    dated by the payment; plan() adds it like a posted invoice. Exchange differences and deductions on a payment
+    are not in the allocated amount and do not change the share.
+    Returns the sales documents, the purchase documents, and the count of payments that pay no invoice."""
+    sales, purchases = [], []
+    unallocated = 0
+    for pay in payments:
+        refs = [r for r in pay["references"] if r["reference_doctype"] in INVOICE_DOCTYPES]
+        if not refs:
+            unallocated += 1
+        for ref in refs:
+            inv = invoices[(ref["reference_doctype"], ref["reference_name"])]
+            if not inv["grand_total"]:
+                raise ValueError("{} {} has no grand total: its payment share is not defined".format(
+                    ref["reference_doctype"], ref["reference_name"]))
+            share = Decimal(str(ref["allocated_amount"])) / Decimal(str(inv["grand_total"]))
+            taxes = []
+            for row in inv["taxes"]:
+                tax = share_of(row.get("base_tax_amount") or row.get("tax_amount") or 0, share)
+                taxes.append(dict(row, base_tax_amount=tax, tax_amount=tax))
+            doc = {
+                "posting_date": pay["posting_date"],
+                "base_net_total": share_of(inv["base_net_total"], share),
+                "taxes": taxes,
+            }
+            (sales if ref["reference_doctype"] == "Sales Invoice" else purchases).append(doc)
+    return sales, purchases, unallocated
+
+
 def templates_by_name(erp):
     """Tax template name -> bexio id, for the templates that have one (the sales and purchase ones)."""
     names = {}
@@ -287,27 +356,45 @@ def templates_by_name(erp):
     return names
 
 
+def default_report(period, basis):
+    """The private CSV of a run. The payment basis has its own file, so a run of one basis never overwrites the other."""
+    name = "mwst-{}.csv".format(period) if basis == "posting" else "mwst-{}-{}.csv".format(period, basis)
+    return os.path.join(im.PRIVATE, name)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="MWST figures of one period by bexio VAT code, from ERPNext (read only).")
     parser.add_argument("--period", required=True, help="2026Q3 or 2026H1 (effective method)")
+    parser.add_argument("--basis", choices=("posting", "payment"), default="posting",
+                        help="posting: invoices by posting date (default); payment: Payment Entries by payment date, "
+                             "each over the invoices it pays")
     parser.add_argument("--report", default=None, help="private CSV (default <private>/mwst-<period>.csv)")
     parser.add_argument("--token-file", default=im.TOKEN_FILE)
     args = parser.parse_args(argv)
     start, end = period_bounds(args.period)
-    report = args.report or os.path.join(im.PRIVATE, "mwst-{}.csv".format(args.period))
+    report = args.report or default_report(args.period, args.basis)
 
     erp = im.Erp.from_file(args.token_file)
     try:
         templates = templates_by_name(erp)
-        docs = fetch(erp, start, end)
+        if args.basis == "payment":
+            payments, invoices = fetch_payments(erp, start, end)
+        else:
+            docs = fetch(erp, start, end)
         gl = gl_by_account(erp, start, end)
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2
 
-    totals = plan(docs["sales"], docs["purchases"], templates)
-    print("MWST {} ({} to {}): {} sales and {} purchase invoices".format(
-        args.period, start, end, len(docs["sales"]), len(docs["purchases"])))
+    if args.basis == "payment":
+        sales, purchases, unallocated = payment_documents(payments, invoices)
+        totals = plan(sales, purchases, templates)
+        print("MWST {} ({} to {}, payment basis): {} payments, {} of them pay no invoice".format(
+            args.period, start, end, len(payments), unallocated))
+    else:
+        totals = plan(docs["sales"], docs["purchases"], templates)
+        print("MWST {} ({} to {}): {} sales and {} purchase invoices".format(
+            args.period, start, end, len(docs["sales"]), len(docs["purchases"])))
     for line in summary_lines(totals):
         print(line)
     print("")

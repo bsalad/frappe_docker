@@ -4,12 +4,15 @@ Run with: python3 -m unittest discover -s finance/bexio -p 'test_*.py'
 """
 
 import ast
+import contextlib
 import datetime
+import io
 import os
 import shutil
 import tempfile
 import unittest
 from decimal import Decimal
+from unittest import mock
 
 import mwst_report as mr
 
@@ -228,6 +231,179 @@ class Output(unittest.TestCase):
             shutil.rmtree(folder)
         self.assertIn("303,Normalsatz 8.1 %,1000.00,81.00", text)
         self.assertIn("UN81,81.00", text)
+
+
+def _match(row, flt):
+    """One ERPNext list filter against a fake row: the operators the report uses."""
+    field, op, value = flt
+    got = row.get(field)
+    if op == "=":
+        return got == value
+    if op == "between":
+        return str(value[0]) <= str(got) <= str(value[1])
+    if op == "is":
+        return bool(got)
+    raise ValueError(op)
+
+
+class FakeErp:
+    """Stands in for import_master.Erp: rows per doctype for list(), full documents for get()."""
+
+    def __init__(self, rows, docs):
+        self.rows = rows
+        self.docs = docs
+
+    def list(self, doctype, filters=None, fields=("name",)):
+        return [r for r in self.rows.get(doctype, []) if all(_match(r, f) for f in filters or [])]
+
+    def get(self, doctype, name):
+        return self.docs[(doctype, name)]
+
+
+def invoice(name, doctype, day, net, taxes, grand):
+    """An invoice as ERPNext has it: taxes is a list of (template name, tax) pairs."""
+    return {"name": name, "doctype": doctype, "posting_date": day, "base_net_total": net, "grand_total": grand,
+            "taxes": [tax(template, amount, "Add" if doctype == "Purchase Invoice" else None) for template, amount in taxes]}
+
+
+def pay(day, references):
+    """A Payment Entry of the period as payment_documents() takes it: references are (doctype, name, allocated)."""
+    return {"posting_date": day, "references": [
+        {"reference_doctype": d, "reference_name": n, "allocated_amount": a} for d, n, a in references]}
+
+
+# Invented invoices: S1 at 8.1 % (net 1000, tax 81, grand 1081); S2 at 2.6 % (net 500, tax 13, grand 513);
+# R1 a credit note of S1's net, 8.1 % (net -200, tax -16.20, grand -216.20); P1 a purchase at 8.1 % (net 500,
+# tax 40.50, grand 540.50).
+S1 = invoice("S1", "Sales Invoice", datetime.date(2026, 7, 10), D("1000.00"), [("UN81 8.1% Normalsatz", "81.00")], D("1081.00"))
+S2 = invoice("S2", "Sales Invoice", datetime.date(2026, 7, 12), D("500.00"), [("UR26 2.6% Reduzierter Satz", "13.00")], D("513.00"))
+R1 = invoice("R1", "Sales Invoice", datetime.date(2026, 8, 20), D("-200.00"), [("UN81 8.1% Normalsatz", "-16.20")], D("-216.20"))
+P1 = invoice("P1", "Purchase Invoice", datetime.date(2026, 7, 5), D("500.00"), [("VM81 8.1% Normalsatz Material/DL", "40.50")], D("540.50"))
+INVOICES = {("Sales Invoice", "S1"): S1, ("Sales Invoice", "S2"): S2, ("Sales Invoice", "R1"): R1,
+            ("Purchase Invoice", "P1"): P1}
+
+
+def paid(payments):
+    """The payment basis for the given Payment Entries, as the totals of the form rows."""
+    sales, purchases, unallocated = mr.payment_documents(payments, INVOICES)
+    return mr.form_totals(mr.plan(sales, purchases, TEMPLATE_NAMES))[0], unallocated
+
+
+class PaymentBasis(unittest.TestCase):
+    def test_receipt_paying_two_rates_is_split_over_them(self):
+        rows, unallocated = paid([pay(datetime.date(2026, 8, 3), [
+            ("Sales Invoice", "S1", D("1081.00")),
+            ("Sales Invoice", "S2", D("513.00")),
+        ])])
+        self.assertEqual(rows["200"][0], D("1500.00"))
+        self.assertEqual(rows["303"], [D("1000.00"), D("81.00")])
+        self.assertEqual(rows["313"], [D("500.00"), D("13.00")])
+        self.assertEqual(unallocated, 0)
+
+    def test_partial_payment_and_its_rest_fall_in_two_quarters(self):
+        q3, _ = paid([pay(datetime.date(2026, 9, 15), [("Sales Invoice", "S1", D("540.50"))])])
+        q4, _ = paid([pay(datetime.date(2026, 10, 5), [("Sales Invoice", "S1", D("540.50"))])])
+        self.assertEqual(q3["303"], [D("500.00"), D("40.50")])
+        self.assertEqual(q4["303"], [D("500.00"), D("40.50")])
+
+    def test_refund_of_a_credit_note_is_negative_and_reduces_the_row(self):
+        rows, _ = paid([pay(datetime.date(2026, 8, 25), [("Sales Invoice", "R1", D("-216.20"))])])
+        self.assertEqual(rows["303"], [D("-200.00"), D("-16.20")])
+        self.assertEqual(rows["399"][1], D("-16.20"))
+
+    def test_partial_refund_is_a_share_of_the_credit_note(self):
+        rows, _ = paid([pay(datetime.date(2026, 8, 25), [("Sales Invoice", "R1", D("-108.10"))])])
+        self.assertEqual(rows["303"], [D("-100.00"), D("-8.10")])
+
+    def test_purchase_invoice_paid_goes_to_400(self):
+        rows, _ = paid([pay(datetime.date(2026, 8, 3), [("Purchase Invoice", "P1", D("540.50"))])])
+        self.assertEqual(rows["400"][1], D("40.50"))
+        self.assertEqual(rows["420"][1], D("40.50"))
+
+    def test_payment_without_an_invoice_is_counted_apart_and_splits_no_tax(self):
+        rows, unallocated = paid([pay(datetime.date(2026, 8, 3), [])])
+        self.assertEqual(unallocated, 1)
+        self.assertNotIn("200", rows)
+        self.assertEqual(rows["399"][1], D("0"))
+
+    def test_zero_grand_total_is_refused_not_divided(self):
+        broken = dict(S1, grand_total=D("0"))
+        with self.assertRaises(ValueError):
+            mr.payment_documents([pay(datetime.date(2026, 8, 3), [("Sales Invoice", "S1", D("10"))])],
+                                 {("Sales Invoice", "S1"): broken})
+
+
+class PaymentPeriods(unittest.TestCase):
+    """fetch_payments() reads the period's Payment Entries: the quarter's first and last day are in, the days either side out."""
+
+    def fake(self):
+        payments = [
+            dict(name="PE-JUN", posting_date="2026-06-30", company=mr.COMPANY, docstatus=1),
+            dict(name="PE-JUL", posting_date="2026-07-01", company=mr.COMPANY, docstatus=1),
+            dict(name="PE-SEP", posting_date="2026-09-30", company=mr.COMPANY, docstatus=1),
+            dict(name="PE-OCT", posting_date="2026-10-01", company=mr.COMPANY, docstatus=1),
+            dict(name="PE-DRAFT", posting_date="2026-08-03", company=mr.COMPANY, docstatus=0),
+        ]
+        docs = {("Payment Entry", p["name"]): {"posting_date": p["posting_date"], "references": [
+            {"reference_doctype": "Sales Invoice", "reference_name": "S1", "allocated_amount": D("100.00")}]}
+            for p in payments}
+        docs[("Sales Invoice", "S1")] = S1
+        return FakeErp({"Payment Entry": payments}, docs)
+
+    def test_quarter_takes_its_first_and_last_day_and_only_submitted_payments(self):
+        payments, invoices = mr.fetch_payments(self.fake(), datetime.date(2026, 7, 1), datetime.date(2026, 9, 30))
+        self.assertEqual(sorted(p["posting_date"] for p in payments),
+                         [datetime.date(2026, 7, 1), datetime.date(2026, 9, 30)])
+        self.assertIn(("Sales Invoice", "S1"), invoices)
+
+
+class ReportFiles(unittest.TestCase):
+    def test_posting_keeps_its_file_and_payment_gets_its_own(self):
+        self.assertEqual(os.path.basename(mr.default_report("2026Q3", "posting")), "mwst-2026Q3.csv")
+        self.assertEqual(os.path.basename(mr.default_report("2026Q3", "payment")), "mwst-2026Q3-payment.csv")
+
+
+class ReportRun(unittest.TestCase):
+    """main() on a fake ERPNext: the posting basis is unchanged by the flag, the payment basis reads the payments."""
+
+    def fake(self):
+        rows = {
+            "Sales Taxes and Charges Template": [{"name": "UN81 8.1% Normalsatz", "bexio_id": "28"}],
+            "Purchase Taxes and Charges Template": [],
+            "Sales Invoice": [{"name": "S1", "company": mr.COMPANY, "docstatus": 1, "posting_date": "2026-07-10"}],
+            "Purchase Invoice": [],
+            "Payment Entry": [{"name": "PE1", "company": mr.COMPANY, "docstatus": 1, "posting_date": "2026-08-03"}],
+        }
+        docs = {("Sales Invoice", "S1"): S1,
+                ("Payment Entry", "PE1"): {"posting_date": "2026-08-03", "references": [
+                    {"reference_doctype": "Sales Invoice", "reference_name": "S1", "allocated_amount": D("1081.00")}]}}
+        return FakeErp(rows, docs)
+
+    def run_main(self, extra):
+        folder = tempfile.mkdtemp()
+        try:
+            path = os.path.join(folder, "mwst.csv")
+            out = io.StringIO()
+            with mock.patch.object(mr.im.Erp, "from_file", return_value=self.fake()), contextlib.redirect_stdout(out):
+                code = mr.main(["--period", "2026Q3", "--report", path] + extra)
+            with open(path, encoding="utf-8") as f:
+                report = f.read()
+        finally:
+            shutil.rmtree(folder)
+        return code, out.getvalue().replace(path, "<report>"), report
+
+    def test_posting_basis_is_the_default_and_the_flag_leaves_it_unchanged(self):
+        default = self.run_main([])
+        explicit = self.run_main(["--basis", "posting"])
+        self.assertEqual(default, explicit)
+        self.assertEqual(default[0], 0)
+        self.assertIn("MWST 2026Q3 (2026-07-01 to 2026-09-30): 1 sales and 0 purchase invoices", default[1])
+
+    def test_payment_basis_counts_the_payment_in_its_quarter(self):
+        code, out, report = self.run_main(["--basis", "payment"])
+        self.assertEqual(code, 0)
+        self.assertIn("MWST 2026Q3 (2026-07-01 to 2026-09-30, payment basis): 1 payments, 0 of them pay no invoice", out)
+        self.assertIn("303,Normalsatz 8.1 %,1000.00,81.00", report)
 
 
 
