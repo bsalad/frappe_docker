@@ -28,9 +28,8 @@ bexio's tax_calc: the net is the gross less it. A reverse-charge bill (item_net
 true) is not mapped here. The VAT of a line is the Item Tax Template whose
 bexio_id is the line's bexio tax id, never one picked by rate; a tax id with no
 such template is reported, not guessed. The tax is booked to the transitory
-Vorsteuer account 1172 as one tax row
-per account and template, so the tax total is bexio's to the rappen. The account is the transitory 1172 at the bill
-date, whatever the kind of cost; the payment moves it to 1170 or 1171 (import_payments_out).
+Vorsteuer account 1172 at the bill date, whatever the kind of cost, as one tax row per account and template, so the
+tax total is bexio's to the rappen; the payment moves it to 1170 or 1171 (import_payments_out).
 
 An expense with VAT is skipped: its net split is not in the export; the
 bills and the expense step of erp-a2ma take it.
