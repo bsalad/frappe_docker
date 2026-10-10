@@ -9,6 +9,7 @@ The balance check is reported, never blocking.
 from decimal import Decimal
 
 import frappe
+from frappe.utils import today
 
 from bi_finance import camt
 
@@ -20,12 +21,13 @@ def dry_run(file_url, bank_account=None):
 
 
 @frappe.whitelist(methods=["POST"])
-def import_statement(file_url, bank_account=None):
+def import_statement(file_url, bank_account=None, upload=None):
+    """upload: the Bank Statement Upload record the import is made from; named in the comment of each stamp."""
     frappe.has_permission("Bank Transaction", "create", throw=True)
-    return _run(file_url, bank_account, write=True)
+    return _run(file_url, bank_account, write=True, upload=upload)
 
 
-def _run(file_url, bank_account, write):
+def _run(file_url, bank_account, write, upload=None):
     try:
         statement = camt.parse(_file_content(file_url))
     except camt.CamtError as err:
@@ -37,7 +39,7 @@ def _run(file_url, bank_account, write):
               for code, balance in statement["balances"].items()}
     checks = camt.check_balances(statement["balances"], ledger)
 
-    imported = _write(account, decisions) if write else 0
+    imported = _write(account, decisions, upload) if write else 0
     return {
         "bank_account": account["name"], "iban": statement["iban"], "version": statement["version"],
         "currency": account["currency"], "imported": imported,
@@ -104,11 +106,18 @@ def _ledger(account, date, inclusive):
     return Decimal(str(total))
 
 
-def _write(account, decisions):
+def _write(account, decisions, upload=None):
     written = 0
     for tx in decisions:
         if tx["rule"] == "bexio":
             frappe.get_doc("Bank Transaction", tx["bexio"]).db_set("transaction_id", tx["reference"], update_modified=False)
+            # db_set leaves no Version entry; the comment is what shows the stamp on the document.
+            frappe.get_doc({
+                "doctype": "Comment", "comment_type": "Info",
+                "reference_doctype": "Bank Transaction", "reference_name": tx["bexio"],
+                "content": "transaction_id {} stamped by {} on {}".format(
+                    tx["reference"], "Bank Statement Upload " + upload if upload else "a camt import", today()),
+            }).insert(ignore_permissions=True)
         elif tx["rule"] == "new":
             doc = frappe.get_doc({
                 "doctype": "Bank Transaction", "status": "Unreconciled", "company": account["company"],

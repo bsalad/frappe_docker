@@ -35,3 +35,10 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   `bi_finance/test_wise.py` is offline (fake HTTP), run in the image with `bi_finance.test_wise`.
   CHF rates: a live run stores the day rates of each Wise currency as Currency Exchange rows, from frankfurter.dev v2
   (the source set in Currency Exchange Settings), one request per currency and range; a dry run stores none.
+- `bi_finance/bi_finance/doctype/bank_statement_upload/`: the doctype "Bank Statement Upload" (module BI Finance,
+  `modules.txt`). A record per uploaded file: the Bank Account, the file, Dry run and Import buttons calling
+  `camt_import`, the summary as the dry run gave it, and the count and who of the import. An upload imports once,
+  after a dry run on the same file; a failed run leaves the record Failed and its ledger writes rolled back.
+  Each stamp of a bexio line leaves a Comment on that Bank Transaction, naming the upload and the date.
+- `bi_finance/test_bank_statement_upload.py`: offline tests of the record, the stamp comment and the .json,
+  with the frappe calls mocked; run in the image as `bi_finance.test_bank_statement_upload`.

@@ -1,0 +1,113 @@
+{
+ "actions": [],
+ "autoname": "BSU-.####",
+ "creation": "2026-10-10 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "bank_account",
+  "statement_file",
+  "detected_version",
+  "status",
+  "summary",
+  "imported_count",
+  "imported_on",
+  "imported_by"
+ ],
+ "fields": [
+  {
+   "fieldname": "bank_account",
+   "fieldtype": "Link",
+   "label": "Bank Account",
+   "options": "Bank Account",
+   "reqd": 1,
+   "read_only_depends_on": "eval:doc.status=='Imported'"
+  },
+  {
+   "description": "The UBS camt.053 or camt.054 file. Its IBAN must be the Bank Account's.",
+   "fieldname": "statement_file",
+   "fieldtype": "Attach",
+   "label": "Statement file",
+   "reqd": 1,
+   "read_only_depends_on": "eval:doc.status=='Imported'"
+  },
+  {
+   "fieldname": "detected_version",
+   "fieldtype": "Data",
+   "label": "Detected version",
+   "read_only": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nDry run\nImported\nFailed",
+   "read_only": 1
+  },
+  {
+   "description": "Counts per dedupe rule and per month, and the balance check, as the last dry run or import reported them.",
+   "fieldname": "summary",
+   "fieldtype": "Long Text",
+   "label": "Summary",
+   "read_only": 1
+  },
+  {
+   "fieldname": "imported_count",
+   "fieldtype": "Int",
+   "label": "Imported",
+   "read_only": 1
+  },
+  {
+   "fieldname": "imported_on",
+   "fieldtype": "Datetime",
+   "label": "Imported on",
+   "read_only": 1
+  },
+  {
+   "fieldname": "imported_by",
+   "fieldtype": "Link",
+   "label": "Imported by",
+   "options": "User",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-10-10 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "BI Finance",
+ "name": "Bank Statement Upload",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 0,
+   "role": "Accounts Manager",
+   "share": 0,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 0,
+   "role": "Accounts User",
+   "share": 0,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
