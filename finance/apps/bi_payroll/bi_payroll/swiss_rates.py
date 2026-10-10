@@ -27,3 +27,9 @@ STRUCTURE_DEDUCTIONS = [
     # its amount is set on the slip from the gross, after HRMS's validate (swiss_payroll.withhold_qst)
     "Quellensteuer Employee",
 ]
+
+
+def missing_components(earnings, deductions):
+    """The structure components that a Salary Structure with these component names lacks. ensure_structure makes a
+    structure only when the company has none, so one made before a component was added keeps the gap: this names it."""
+    return [c for c in STRUCTURE_EARNINGS if c not in earnings] + [c for c in STRUCTURE_DEDUCTIONS if c not in deductions]

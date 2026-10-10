@@ -13,7 +13,9 @@ import os
 import unittest
 from datetime import date
 
-from bi_payroll.swiss_rates import ASSIGNMENT_FIELDS, RATE_FIELDS, STRUCTURE_DEDUCTIONS, STRUCTURE_EARNINGS
+from bi_payroll.swiss_rates import (
+    ASSIGNMENT_FIELDS, RATE_FIELDS, STRUCTURE_DEDUCTIONS, STRUCTURE_EARNINGS, missing_components,
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.join(HERE, "fixtures")
@@ -136,6 +138,17 @@ class Structure(unittest.TestCase):
     def test_the_withholding_amount_is_a_slip_field(self):
         slip = {f["fieldname"] for f in load("custom_field.json") if f["dt"] == "Salary Slip"}
         self.assertIn("swiss_qst_amount", slip)
+
+    def test_a_complete_structure_lacks_nothing(self):
+        self.assertEqual(missing_components(STRUCTURE_EARNINGS, STRUCTURE_DEDUCTIONS), [])
+
+    def test_a_structure_made_before_the_withholding_row_names_the_gap(self):
+        # the structure erp-2s3c made: every component but the Quellensteuer one
+        before = [c for c in STRUCTURE_DEDUCTIONS if c != "Quellensteuer Employee"]
+        self.assertEqual(missing_components(STRUCTURE_EARNINGS, before), ["Quellensteuer Employee"])
+
+    def test_a_structure_without_an_earning_names_it_too(self):
+        self.assertEqual(missing_components([], STRUCTURE_DEDUCTIONS), ["Basic Salary"])
 
 
 class Fixtures(unittest.TestCase):

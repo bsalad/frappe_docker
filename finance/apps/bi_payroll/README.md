@@ -27,13 +27,25 @@ copy only: it requires `hrms`, which the live site does not have, so nothing her
   Monthly method only: the gross of the slip, the tariff as published (it already holds the AHV/ALV/BVG share); annual,
   variable and 13th-salary cases are not handled. The 2026 file's record format is not checked yet.
 - `swiss_payroll.withhold_qst` (a `validate` on Salary Slip, after HRMS has the gross): sets `swiss_qst_amount` and
-  computes the deductions again; the `Quellensteuer Employee` component reads it. HRMS is not in this repo, so the
-  order against HRMS's own validate is checked on the copy only.
+  computes the deductions again; the `Quellensteuer Employee` component reads it. HRMS is not in this repo: the order
+  against HRMS's own validate (the gross is known when the tax is set), the one row after the second calculation, and
+  net = gross minus deductions were checked on a throwaway site with HRMS v16.50.0 (erp-5t6q, 2026-10-10, invented data).
 - `bi_payroll/bi_payroll/doctype/qst_tariff`: the tariff rows (data, one per record). `swiss_payroll.load_tariff(path)`
   reloads a canton's file: the rows of its valid-from dates are replaced. Employees carry `swiss_qst_canton` and
   `swiss_qst_code` (Employee custom fields, fixtures).
 - `bi_payroll/test_quellensteuer.py`: offline tests with invented rows in the ESTV format:
   `python3 -m unittest bi_payroll.test_quellensteuer`.
+- Salary Structure, when a company's structure predates a component: `ensure_structure` makes the "Swiss Monthly"
+  structure only when the company has none, so a submitted one is never amended by `bench migrate`. The gap is logged
+  to the Error Log ("Swiss Salary Structure lacks components"), and a slip whose Quellensteuer amount is not zero stops
+  on validate ("has no Quellensteuer Employee row") until the structure has it. The manual step: make the structure
+  again with every row of `swiss_rates.py` (STRUCTURE_EARNINGS, STRUCTURE_DEDUCTIONS, the Quellensteuer Employee last),
+  each row with its component's formula (`structure_rows` does this), submit it, cancel the old one, and move the
+  employees' assignments to the new one. A Duplicate in Desk is not enough: it copies the old rows, and HRMS keeps a row
+  without its formula at 0. Employees with no tariff code are not affected.
+- Formulas: a structure row computes only with its formula stored (HRMS resets a row's formula on save to the value it
+  had before validate). `ensure_structure` copies each component's formula onto its rows. A structure made before that
+  change has empty formulas and computes 0 for every component; the live structure (erp-2s3c) was one of them.
 - `bi_payroll/test_layout.py`: the layout and stamp guard, copied from `bi_finance`:
   `python3 -m unittest bi_payroll.test_layout`.
 - `finance/images/bi_payroll.Containerfile`: the layer on the HRMS copy image.

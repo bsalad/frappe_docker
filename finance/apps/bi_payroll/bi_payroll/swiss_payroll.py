@@ -11,7 +11,7 @@ import frappe
 from frappe.utils import flt, getdate
 
 from bi_payroll.quellensteuer import parse_tariff_file, qst_amount
-from bi_payroll.swiss_rates import RATE_FIELDS, STRUCTURE_DEDUCTIONS, STRUCTURE_EARNINGS
+from bi_payroll.swiss_rates import RATE_FIELDS, STRUCTURE_DEDUCTIONS, STRUCTURE_EARNINGS, missing_components
 
 QST_DECIMAL_FIELDS = ("income_from", "step", "minimum_tax", "rate")
 
@@ -41,6 +41,19 @@ def withhold_qst(doc, method=None):
             amount = qst_amount(rows, canton, code, doc.gross_pay, getdate(doc.end_date))
         except LookupError as error:
             frappe.throw(str(error))
+    # a structure made before the Quellensteuer row existed has none: the tax would be computed and not deducted, so the
+    # slip stops here, naming the manual step (README, Salary Structure). It is the structure that is checked, not the
+    # slip's rows: a row whose amount was 0 on the first calculation is not on the slip yet. A slip without a tax is
+    # not affected.
+    has_row = frappe.db.exists("Salary Detail", {
+        "parent": doc.salary_structure, "parenttype": "Salary Structure", "parentfield": "deductions",
+        "salary_component": "Quellensteuer Employee",
+    })
+    if amount and not has_row:
+        frappe.throw(
+            f"Salary Structure {doc.salary_structure} has no Quellensteuer Employee row, so the tax of {amount} "
+            "would not be deducted. Make the structure again with that row (README, Salary Structure) and assign it."
+        )
     if flt(doc.get("swiss_qst_amount")) != flt(amount):
         doc.swiss_qst_amount = flt(amount)
         doc.calculate_net_pay()
@@ -48,9 +61,22 @@ def withhold_qst(doc, method=None):
 
 def ensure_structure():
     # One Salary Structure per Swiss company, made once (after install and after each migrate, so a new company is
-    # covered). Submitted, so Salary Structure Assignments can name it.
+    # covered). Submitted, so Salary Structure Assignments can name it. A submitted structure is not changed here: one
+    # that lacks a component is logged, so the gap is in the Error Log and not silent.
     for company in frappe.get_all("Company", filters={"country": "Switzerland"}, pluck="name"):
-        if frappe.db.exists("Salary Structure", {"company": company, "docstatus": ["<", 2]}):
+        existing = frappe.db.get_value("Salary Structure", {"company": company, "docstatus": ["<", 2]}, "name")
+        if existing:
+            structure = frappe.get_doc("Salary Structure", existing)
+            missing = missing_components(
+                [row.salary_component for row in structure.earnings],
+                [row.salary_component for row in structure.deductions],
+            )
+            if missing:
+                frappe.log_error(
+                    title="Swiss Salary Structure lacks components",
+                    message=f"Salary Structure {existing} for {company} has no {', '.join(missing)}. It is not "
+                    "changed by bench migrate: make it again by hand (README, Salary Structure).",
+                )
             continue
         doc = frappe.get_doc({
             "doctype": "Salary Structure",
@@ -59,11 +85,25 @@ def ensure_structure():
             "currency": frappe.get_cached_value("Company", company, "default_currency"),
             "payroll_frequency": "Monthly",
             "is_active": "Yes",
-            "earnings": [{"salary_component": c} for c in STRUCTURE_EARNINGS],
-            "deductions": [{"salary_component": c} for c in STRUCTURE_DEDUCTIONS],
+            "earnings": structure_rows(STRUCTURE_EARNINGS),
+            "deductions": structure_rows(STRUCTURE_DEDUCTIONS),
         })
         doc.insert()
         doc.submit()
+
+
+def structure_rows(components):
+    # A structure row keeps its formula only as it was typed: HRMS resets it on save, to the value it had before
+    # validate. A row made with no formula therefore computes 0, so each row takes its component's formula here.
+    rows = []
+    for name in components:
+        component = frappe.db.get_value("Salary Component", name, ["formula", "amount_based_on_formula"], as_dict=True)
+        rows.append({
+            "salary_component": name,
+            "formula": component.formula or "",
+            "amount_based_on_formula": component.amount_based_on_formula,
+        })
+    return rows
 
 
 def load_tariff(path):
