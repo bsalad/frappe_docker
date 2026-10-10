@@ -13,7 +13,8 @@ Nothing is sent to a bank by ERPNext or by this code.
 1. The Bank Account "UBS Kontokorrent - UBS Switzerland AG" holds the IBAN. The
    step below copies it to the GL Account "UBS Kontokorrent" (erpnextswiss reads it
    there), and sets the BIC of UBS Switzerland AG (UBSWCHZH80A, public) on the Bank
-   and the GL Account when they are empty. Without an IBAN and a BIC, no file can be made.
+   and the GL Account when they are empty. It does the same for every other company
+   bank account with an IBAN (the Wise account today). Without an IBAN and a BIC, no file can be made.
 2. `finance/scripts/swiss-setup.sh payments`. It sets the erpnextswiss settings the
    run needs (pain.001.001.09, region CH, unidecode on), makes the IBAN and BIC fixes
    above, and says if the account still lacks an IBAN or BIC. A second run changes nothing.
@@ -69,7 +70,7 @@ Offline, invented data, in the image (no site, no database):
 
 ```sh
 docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro" \
-    frappe-finance-custom:v16.50.0-swiss-bi6 \
+    frappe-finance-custom:v16.50.0-swiss-bi9 \
     sh -c 'mkdir -p /home/frappe/logs && cd /home/frappe/bi_finance_src && ../frappe-bench/env/bin/python -m unittest -v bi_finance.test_payment_run'
 ```
 
