@@ -223,6 +223,37 @@ class Doctype(unittest.TestCase):
             self.assertEqual((perm["read"], perm["write"], perm["create"], perm["delete"]), (1, 1, 1, 0))
 
 
+class DefaultAccount(unittest.TestCase):
+    """The form proposes the Bank Account whose IBAN is the file's, when exactly one is."""
+
+    def setUp(self):
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(frappe, "has_permission").start()
+        mock.patch.object(camt_import, "_file_content", return_value=b"x").start()
+        mock.patch.object(camt_import.camt, "parse", return_value={"iban": "CH5604835012345678009"}).start()
+
+    def accounts(self, *ibans):
+        rows = [{"name": "Account {}".format(n), "iban": iban} for n, iban in enumerate(ibans)]
+        return mock.patch.object(camt_import, "_accounts_with_iban", return_value=rows)
+
+    def test_the_account_with_the_files_iban(self):
+        with self.accounts("CH00 0000 0000 0000 0000 0", "CH56 0483 5012 3456 7800 9"):
+            self.assertEqual(camt_import.account_for_file("/private/files/invented-camt.xml"), "Account 1")
+
+    def test_no_account_with_that_iban(self):
+        with self.accounts("CH00 0000 0000 0000 0000 0"):
+            self.assertIsNone(camt_import.account_for_file("/private/files/invented-camt.xml"))
+
+    def test_two_accounts_with_that_iban_propose_none(self):
+        with self.accounts("CH56 0483 5012 3456 7800 9", "CH5604835012345678009"):
+            self.assertIsNone(camt_import.account_for_file("/private/files/invented-camt.xml"))
+
+    def test_a_file_that_is_no_camt_proposes_none(self):
+        camt_import.camt.parse.side_effect = camt_import.camt.CamtError("not camt")
+        with self.accounts("CH56 0483 5012 3456 7800 9"):
+            self.assertIsNone(camt_import.account_for_file("/private/files/invented-camt.xml"))
+
+
 class StampComment(unittest.TestCase):
     """camt_import stamps a bexio line with db_set; the Comment on that line names the upload and the date."""
 

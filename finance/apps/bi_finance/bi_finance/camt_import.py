@@ -59,7 +59,7 @@ def _file_content(file_url):
 
 def _account(statement, bank_account):
     """The Bank Account to import into: the one named, else the one whose IBAN is the file's. Refuses a different IBAN."""
-    rows = frappe.get_all("Bank Account", filters={"iban": ["is", "set"]}, fields=["name", "iban", "account", "company"])
+    rows = _accounts_with_iban()
     if bank_account:
         rows = [row for row in rows if row["name"] == bank_account]
         if not rows:
@@ -75,6 +75,22 @@ def _account(statement, bank_account):
     if statement["currency"] != account["currency"]:
         frappe.throw("The file is in {}, Bank Account {} in {}".format(statement["currency"], account["name"], account["currency"]))
     return account
+
+
+def _accounts_with_iban():
+    return frappe.get_all("Bank Account", filters={"iban": ["is", "set"]}, fields=["name", "iban", "account", "company"])
+
+
+@frappe.whitelist()
+def account_for_file(file_url):
+    """The name of the one Bank Account whose IBAN is the file's, else None: the upload form's default."""
+    frappe.has_permission("Bank Transaction", "read", throw=True)
+    try:
+        iban = camt.parse(_file_content(file_url))["iban"]
+    except camt.CamtError:
+        return None
+    names = [row["name"] for row in _accounts_with_iban() if _normal_iban(row["iban"]) == iban]
+    return names[0] if len(names) == 1 else None
 
 
 def _normal_iban(value):

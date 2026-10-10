@@ -8,6 +8,15 @@ frappe.ui.form.on("Bank Statement Upload", {
 			});
 		}
 	},
+	// The Bank Account defaults to the one whose IBAN is the file's; a chosen account is never replaced.
+	statement_file(frm) {
+		if (!frm.doc.statement_file || frm.doc.bank_account) return;
+		frappe.call({
+			method: "bi_finance.camt_import.account_for_file",
+			args: { file_url: frm.doc.statement_file },
+			callback: (r) => r.message && frm.set_value("bank_account", r.message),
+		});
+	},
 });
 
 // The server reads the saved file and account, so unsaved edits are saved first.
