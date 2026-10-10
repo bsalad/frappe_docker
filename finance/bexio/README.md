@@ -80,6 +80,22 @@ BEXIO_BROKER=1 python3 finance/bexio/export.py --out /Users/bsaladin/ws_yardr_fi
 The export login below is only the fallback, for a machine without the broker. The
 temporary write scope it needs is not used when the broker is.
 
+## One run for everything (`--complete`)
+
+`export.py --complete` exports every entity, the document PDFs (invoices, offers, orders,
+deliveries, credit vouchers) and the payroll, read-only, into
+`private/bexio-export/<date>-complete/`. The payroll goes under its `payroll/` folder, with
+its own manifest. The top manifest has a count per entity, the refused records under
+`failed`, and the document kinds that were skipped (their entity file was not written).
+
+```sh
+BEXIO_BROKER=1 python3 finance/bexio/export.py --complete
+```
+
+Without the broker it needs both logins (the read-only one and the export one, as below).
+Entities whose paths are not yet checked against the live API (credit vouchers, file usage,
+the expense and delivery PDFs) say so in their refusals; read those in the manifest first.
+
 ## Export login (fallback, one run, then removed)
 
 Without the broker, the export has a second login with `EXPORT_SCOPE` (the

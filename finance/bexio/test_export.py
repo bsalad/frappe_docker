@@ -56,6 +56,21 @@ def recording(client):
     return paths
 
 
+def answering(client, answers):
+    """Wrap the client's get so that the paths in `answers` answer first (an exception instance is raised instead)."""
+    real = client.get
+
+    def get(path, params=None, raw=False):
+        if path not in answers:
+            return real(path, params, raw)
+        if isinstance(answers[path], BexioError):
+            raise answers[path]
+        return answers[path]
+
+    client.get = get
+    return client
+
+
 def fake_client(missing=()):
     """A Client whose GETs answer from the fixtures: [] for unknown lists, 404 for unknown files, 403 for `missing`."""
     c = Client(token="test-token-not-real")
@@ -108,10 +123,12 @@ class ExportTest(unittest.TestCase):
         export.export(fake_client(), self.out)
         self.assertEqual(stat.S_IMODE(os.stat(self.out).st_mode), 0o700)
         for name in os.listdir(self.out):
-            if name != "files":
+            if name not in ("files", "documents"):
                 self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.out, name)).st_mode), 0o600, name)
-        for name in os.listdir(os.path.join(self.out, "files")):
-            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.out, "files", name)).st_mode), 0o600, name)
+        for folder in ("files", "documents"):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.out, folder)).st_mode), 0o700, folder)
+            for name in os.listdir(os.path.join(self.out, folder)):
+                self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.out, folder, name)).st_mode), 0o600, name)
 
     def test_a_forbidden_entity_is_recorded_and_the_rest_still_written(self):
         manifest = export.export(fake_client(missing={"/2.0/accounts"}), self.out)
@@ -248,9 +265,107 @@ class ExportTest(unittest.TestCase):
         self.assertIn("/2.0/contact", asked_read)
         self.assertNotIn("/2.0/contact", asked_write)
 
-    def test_the_export_scope_set_is_the_five_entities_with_file_contents(self):
+    def test_the_export_scope_set_is_the_entities_with_file_contents_or_files(self):
         self.assertEqual(export.EXPORT_SCOPE_ENTITIES,
-                         {"manual_entries", "journal", "bank_transactions", "files", "bill_attachments"})
+                         {"manual_entries", "journal", "bank_transactions", "files", "file_links",
+                          "bill_attachments", "expense_attachments"})
+
+    def test_credit_vouchers_are_read_by_the_ids_in_the_payment_rows(self):
+        c = answering(fake_client(), {
+            "/2.0/kb_invoice/5/payment": [{"kb_credit_voucher_id": 7, "value": "-3"}, {"value": "10"}],
+            "/2.0/kb_credit_voucher/7": {"title": "Invented credit"},
+        })
+        manifest = export.export(c, self.out, only=["credit_vouchers"])
+        self.assertEqual(self.load("credit_vouchers.json"), [{"id": 7, "title": "Invented credit"}])
+        self.assertEqual(manifest["entities"]["credit_vouchers"]["count"], 1)
+        self.assertNotIn("failed", manifest["entities"]["credit_vouchers"])
+
+    def test_a_refused_credit_voucher_is_named_in_the_manifest(self):
+        c = answering(fake_client(), {
+            "/2.0/kb_invoice/5/payment": [{"kb_credit_voucher_id": 8, "value": "-3"}],
+            "/2.0/kb_credit_voucher/8": BexioError(404, "/2.0/kb_credit_voucher/8"),
+        })
+        manifest = export.export(c, self.out, only=["credit_vouchers"])
+        self.assertEqual(self.load("credit_vouchers.json"), [{"id": 8, "error": "HTTP 404 on /2.0/kb_credit_voucher/8"}])
+        self.assertEqual(manifest["entities"]["credit_vouchers"]["failed"], [8])
+        self.assertEqual(export.failed_required(manifest), [])
+
+    def test_document_pdfs_are_written_per_kind_and_id(self):
+        c = answering(fake_client(), {"/2.0/kb_invoice/5/pdf": b"%PDF-invoice"})
+        manifest = export.export(c, self.out, only=["invoices", "document_pdfs"])
+        with open(os.path.join(self.out, "documents", "invoice-5.pdf"), "rb") as f:
+            self.assertEqual(f.read(), b"%PDF-invoice")
+        entry = manifest["entities"]["document_pdfs"]
+        self.assertEqual((entry["count"], entry["downloaded"], entry["bytes"]), (1, 1, len(b"%PDF-invoice")))
+        self.assertEqual(entry["failed"], [])
+        self.assertEqual(entry["skipped"], ["offers", "orders", "deliveries", "credit_vouchers"])
+        self.assertEqual(self.load("document_pdfs.json"), [{"kind": "invoice", "id": 5, "file": "invoice-5.pdf",
+                                                            "bytes": len(b"%PDF-invoice")}])
+
+    def test_a_refused_document_pdf_is_listed_as_kind_and_id(self):
+        c = answering(fake_client(), {"/2.0/kb_invoice/5/pdf": BexioError(404, "/2.0/kb_invoice/5/pdf")})
+        manifest = export.export(c, self.out, only=["invoices", "document_pdfs"])
+        self.assertEqual(manifest["entities"]["document_pdfs"]["failed"], ["invoice:5"])
+        self.assertFalse(os.path.exists(os.path.join(self.out, "documents", "invoice-5.pdf")))
+
+    def test_a_credit_voucher_pdf_is_asked_for_even_when_its_detail_is_refused(self):
+        c = answering(fake_client(), {
+            "/2.0/kb_invoice/5/payment": [{"kb_credit_voucher_id": 8, "value": "-3"}],
+            "/2.0/kb_credit_voucher/8": BexioError(404, "/2.0/kb_credit_voucher/8"),
+            "/2.0/kb_credit_voucher/8/pdf": b"%PDF-voucher",
+        })
+        manifest = export.export(c, self.out, only=["credit_vouchers", "document_pdfs"])
+        self.assertEqual(manifest["entities"]["document_pdfs"]["downloaded"], 1)
+        self.assertTrue(os.path.exists(os.path.join(self.out, "documents", "credit_voucher-8.pdf")))
+
+    def test_notes_deliveries_and_taxes_are_exported(self):
+        c = answering(fake_client(), {
+            "/2.0/note": [{"id": 1, "text": "Invented note"}],
+            "/2.0/kb_delivery": [{"id": 2}],
+            "/3.0/taxes": [{"id": 3, "display_name": "Invented VAT"}],
+        })
+        manifest = export.export(c, self.out, only=["notes", "deliveries", "taxes"])
+        self.assertEqual(self.load("notes.json"), [{"id": 1, "text": "Invented note"}])
+        self.assertEqual(manifest["entities"]["notes"]["count"], 1)
+        self.assertEqual(manifest["entities"]["deliveries"]["count"], 1)
+        self.assertEqual(manifest["entities"]["taxes"]["count"], 1)
+
+    def test_expenses_carry_their_details_and_their_attachments(self):
+        c = answering(fake_client(), {
+            "/4.0/expenses": {"data": [{"id": "e1", "attachment_ids": ["u-e1"]}]},
+            "/4.0/expenses/e1": {"data": {"id": "e1", "attachment_ids": ["u-e1"], "title": "Invented expense"}},
+            "/3.0/files/u-e1/download": b"%PDF-expense",
+        })
+        manifest = export.export(c, self.out, only=["expenses", "expense_attachments"])
+        self.assertEqual(self.load("expenses.json"), [{"id": "e1", "attachment_ids": ["u-e1"], "title": "Invented expense"}])
+        self.assertEqual(manifest["entities"]["expense_attachments"]["downloaded"], 1)
+        with open(os.path.join(self.out, "files", "u-e1.pdf"), "rb") as f:
+            self.assertEqual(f.read(), b"%PDF-expense")
+
+    def test_file_links_are_read_per_file_and_a_refusal_is_listed(self):
+        c = answering(fake_client(), {
+            "/3.0/files/9/usage": [{"entity": "kb_invoice"}],
+            "/3.0/files/10/usage": BexioError(404, "/3.0/files/10/usage"),
+            "/3.0/files/11/usage": BexioError(404, "/3.0/files/11/usage"),
+        })
+        manifest = export.export(c, self.out, only=["file_links"])
+        rows = self.load("file_links.json")
+        self.assertEqual(rows[0], {"file_id": 9, "usage": [{"entity": "kb_invoice"}]})
+        self.assertEqual(rows[1], {"file_id": 10, "error": "HTTP 404 on /3.0/files/10/usage"})
+        self.assertEqual(manifest["entities"]["file_links"]["failed"], [10, 11])
+
+    def test_complete_is_dated_under_the_export_folder(self):
+        self.assertEqual(export.default_complete_out(datetime.date(2026, 10, 10)),
+                         "/Users/bsaladin/ws_yardr_finance/private/bexio-export/2026-10-10-complete")
+
+    def test_complete_writes_the_entities_and_the_payroll_into_one_folder(self):
+        # Both logins answer from the fixtures (the payroll reads come back empty), so only the layout is checked.
+        with mock.patch.object(export, "Client", side_effect=[fake_client(), fake_client()]):
+            self.assertEqual(export.run_complete(self.out, [2026]), 0)
+        self.assertTrue(os.path.exists(os.path.join(self.out, "contacts.json")))
+        self.assertTrue(os.path.exists(os.path.join(self.out, "manifest.json")))
+        self.assertTrue(os.path.exists(os.path.join(self.out, "documents")))
+        self.assertTrue(os.path.exists(os.path.join(self.out, "payroll", "manifest.json")))
 
     def test_raw_get_returns_the_bytes_and_plain_get_decodes_json(self):
         c = Client(token="test-token-not-real")

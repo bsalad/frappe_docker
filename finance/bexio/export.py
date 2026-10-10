@@ -34,6 +34,11 @@ bill_attachments.json holds the attachments of the bills, one row per file uuid 
 bills list the uuids in attachment_ids; their content is on /3.0/files/<uuid>/download).
 Their content goes to files/<uuid>.pdf, the same folder as files.json's.
 
+--complete is the one run for the whole account: every entity above, the document PDFs (invoices,
+offers, orders, deliveries, credit vouchers) and the payroll under payroll/, all into
+<private>/bexio-export/<YYYY-MM-DD>-complete/ with one manifest per part. It needs both logins
+(the read-only one and the export one), as the default run does.
+
 --payroll exports the payroll module instead (employees, absences per year, payslip PDFs
 per month, the paystub overview and the company reads) to <private>/bexio-payroll/, with its
 own manifest. It is not part of the default run, and it reads with the read-only login, which
@@ -54,7 +59,10 @@ from client import BexioError, Client  # noqa: E402
 PRIVATE = "/Users/bsaladin/ws_yardr_finance/private"
 
 FILES = "files"
+FILE_LINKS = "file_links"
 BILL_ATTACHMENTS = "bill_attachments"
+EXPENSE_ATTACHMENTS = "expense_attachments"
+DOCUMENTS = "documents"
 
 # A file's content, tried in order: the first path that answers wins. Not yet
 # checked against the live API; a 404 on both is recorded per file in the manifest.
@@ -62,10 +70,30 @@ FILE_CONTENT_PATHS = ("/3.0/files/{id}/download", "/3.0/files/{id}/content")
 
 # A bill attachment is named by its file uuid, and its content is on the same
 # download path (probed through the broker: 200 for the uuid, 415 for /3.0/files/{uuid}).
+# Expense attachments are uuids too, on the same path (not yet checked live).
 ATTACHMENT_CONTENT_PATHS = ("/3.0/files/{id}/download",)
 
 # The entities whose content is downloaded into files/, with the paths to try.
-CONTENT_PATHS = {FILES: FILE_CONTENT_PATHS, BILL_ATTACHMENTS: ATTACHMENT_CONTENT_PATHS}
+CONTENT_PATHS = {FILES: FILE_CONTENT_PATHS, BILL_ATTACHMENTS: ATTACHMENT_CONTENT_PATHS,
+                 EXPENSE_ATTACHMENTS: ATTACHMENT_CONTENT_PATHS}
+
+# Where each file of a file's links is read from (the 'file' scope, as the files themselves). Not yet
+# checked against the live API ("Show file usage" in the bexio docs); a refusal is kept per file.
+FILE_USAGE_PATH = "/3.0/files/{id}/usage"
+
+# The documents with a PDF: the entity file each is listed in, the kind (the PDF's name starts with it) and
+# the path. Reminders have no path in the docs read so far and are not exported.
+DOCUMENT_PDFS = (
+    ("invoices", "invoice", "/2.0/kb_invoice/{id}/pdf"),
+    ("offers", "offer", "/2.0/kb_offer/{id}/pdf"),
+    ("orders", "order", "/2.0/kb_order/{id}/pdf"),
+    ("deliveries", "delivery", "/2.0/kb_delivery/{id}/pdf"),
+    ("credit_vouchers", "credit_voucher", "/2.0/kb_credit_voucher/{id}/pdf"),
+)
+DOCUMENT_PDFS_ENTITY = "document_pdfs"
+
+# The payroll of --complete goes under this folder of the complete export.
+PAYROLL_SUBDIR = "payroll"
 
 
 def offset(path):
@@ -91,6 +119,20 @@ def attachments(listing, template):
     return ("attachments", listing, template)
 
 
+def vouchers(listing, template):
+    """The credit vouchers paid in the records of `listing` (each a list of rows, as attached() gives), from GET `template`.
+
+    bexio has no list of credit vouchers: a voucher is named by the kb_credit_voucher_id of the payment rows of the
+    invoice it is applied to, and each one is read by its id. A refused id is kept as {"id", "error"}.
+    """
+    return ("vouchers", listing, template)
+
+
+def usage(listing, template):
+    """One row per record of `listing`: {"file_id", "usage"} from GET `template`, or {"file_id", "error"} when refused."""
+    return ("usage", listing, template)
+
+
 # file name -> (how to read it, required). Required entities are what the
 # import cannot do without; the lookups only translate ids into names.
 ENTITIES = {
@@ -100,6 +142,7 @@ ENTITIES = {
     "articles": (offset("/2.0/article"), True),
     "accounts": (offset("/2.0/accounts"), True),
     "account_groups": (offset("/2.0/account_groups"), False),
+    "taxes": (offset("/3.0/taxes"), False),
     "currencies": (offset("/3.0/currencies"), True),
     "bank_accounts": (offset("/3.0/banking/accounts"), True),
     "business_years": (offset("/3.0/accounting/business_years"), True),
@@ -107,25 +150,34 @@ ENTITIES = {
     "journal": (offset("/3.0/accounting/journal"), True),
     "invoices": (detailed(offset("/2.0/kb_invoice"), "/2.0/kb_invoice/{id}"), True),
     "invoice_payments": (attached(offset("/2.0/kb_invoice"), "/2.0/kb_invoice/{id}/payment"), True),
-    "credit_vouchers": (offset("/2.0/kb_credit_voucher"), False),
+    "credit_vouchers": (vouchers(attached(offset("/2.0/kb_invoice"), "/2.0/kb_invoice/{id}/payment"),
+                                 "/2.0/kb_credit_voucher/{id}"), False),
     "orders": (detailed(offset("/2.0/kb_order"), "/2.0/kb_order/{id}"), False),
     "offers": (detailed(offset("/2.0/kb_offer"), "/2.0/kb_offer/{id}"), False),
+    "deliveries": (offset("/2.0/kb_delivery"), False),
+    "notes": (offset("/2.0/note"), False),
     "bills": (detailed(pages("/4.0/purchase/bills", "page_size", "data"), "/4.0/purchase/bills/{id}"), True),
-    "expenses": (pages("/4.0/expenses", "page_size", "data"), False),
+    "expenses": (detailed(pages("/4.0/expenses", "page_size", "data"), "/4.0/expenses/{id}"), False),
     "payments": (pages("/4.0/banking/payments", "per-page", "results"), False),
     "bank_transactions": (offset("/3.0/banking/transactions"), True),
     FILES: (offset("/3.0/files"), False),
+    FILE_LINKS: (usage(offset("/3.0/files"), FILE_USAGE_PATH), False),
     BILL_ATTACHMENTS: (attachments(pages("/4.0/purchase/bills", "page_size", "data"), "/4.0/purchase/bills/{id}"), False),
+    EXPENSE_ATTACHMENTS: (attachments(pages("/4.0/expenses", "page_size", "data"), "/4.0/expenses/{id}"), False),
     "countries": (offset("/2.0/country"), False),
     "units": (offset("/2.0/unit"), False),
     "salutations": (offset("/2.0/salutation"), False),
     "languages": (offset("/2.0/language"), False),
+    # Last: it reads the entity files above, so it runs after them (see download_document_pdfs).
+    DOCUMENT_PDFS_ENTITY: (("pdfs", None), False),
 }
 
 
 # The entities read with the export login; every other one uses the read-only login.
-# bill_attachments needs the file scope for its content, as files does.
-EXPORT_SCOPE_ENTITIES = frozenset({"manual_entries", "journal", "bank_transactions", FILES, BILL_ATTACHMENTS})
+# bill_attachments and expense_attachments need the file scope for their content, as files does,
+# and so do the links of the files.
+EXPORT_SCOPE_ENTITIES = frozenset({"manual_entries", "journal", "bank_transactions", FILES, FILE_LINKS,
+                                   BILL_ATTACHMENTS, EXPENSE_ATTACHMENTS})
 
 
 def default_out(today=None):
@@ -162,6 +214,29 @@ def read_entity(client, spec):
         rows = []
         for bill in read_entity(client, spec[1]):
             rows.extend(attachment_rows(get_record(client, spec[2], bill["id"])))
+        return rows
+    if kind == "vouchers":
+        ids = []
+        for item in read_entity(client, spec[1]):
+            payments = item["rows"] if isinstance(item["rows"], list) else []
+            for payment in payments:
+                voucher_id = payment.get("kb_credit_voucher_id")
+                if voucher_id is not None and voucher_id not in ids:
+                    ids.append(voucher_id)
+        rows = []
+        for voucher_id in ids:
+            try:
+                rows.append(dict(get_record(client, spec[2], voucher_id), id=voucher_id))
+            except BexioError as err:
+                rows.append({"id": voucher_id, "error": "HTTP {} on {}".format(err.status, err.path)})
+        return rows
+    if kind == "usage":
+        rows = []
+        for row in read_entity(client, spec[1]):
+            try:
+                rows.append({"file_id": row["id"], "usage": get_record(client, spec[2], row["id"])})
+            except BexioError as err:
+                rows.append({"file_id": row["id"], "error": "HTTP {} on {}".format(err.status, err.path)})
         return rows
     raise ValueError("unknown entity kind {!r}".format(kind))
 
@@ -241,6 +316,39 @@ def download_files(client, rows, out, templates=FILE_CONTENT_PATHS):
     return summary
 
 
+def download_document_pdfs(client, out):
+    """Write the PDF of each document of the entity files in out to out/documents/<kind>-<id>.pdf.
+
+    Returns (rows, summary): a row per PDF written ({"kind", "id", "file", "bytes"}), and the summary with the
+    count and bytes, the refused documents as "kind:id", and the kinds whose entity file is not in out (an entity
+    that failed or was not run) under "skipped". A credit voucher is asked for by its id even when its detail
+    was refused: the PDF has its own path.
+    """
+    folder = os.path.join(out, DOCUMENTS)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    os.chmod(folder, 0o700)
+    rows, failed, skipped = [], [], []
+    for entity, kind, template in DOCUMENT_PDFS:
+        path = os.path.join(out, entity + ".json")
+        if not os.path.exists(path):
+            skipped.append(entity)
+            continue
+        with open(path, encoding="utf-8") as f:
+            documents = json.load(f)
+        for document in documents:
+            try:
+                content = client.get(template.format(id=document["id"]), raw=True)
+            except BexioError:
+                failed.append("{}:{}".format(kind, document["id"]))
+                continue
+            name = "{}-{}.pdf".format(kind, document["id"])
+            write_private_bytes(os.path.join(folder, name), content)
+            rows.append({"kind": kind, "id": document["id"], "file": name, "bytes": len(content)})
+    summary = {"downloaded": len(rows), "bytes": sum(row["bytes"] for row in rows), "failed": failed,
+               "skipped": skipped}
+    return rows, summary
+
+
 def read_manifest(out):
     path = os.path.join(out, "manifest.json")
     if not os.path.exists(path):
@@ -264,7 +372,10 @@ def export(client, out, entities=None, only=None, export_client=None):
         source = export_client if name in EXPORT_SCOPE_ENTITIES and export_client is not None else client
         entry = {"file": name + ".json", "required": required}
         try:
-            rows = read_entity(source, spec)
+            if spec[0] == "pdfs":
+                rows, summary = download_document_pdfs(source, out)
+            else:
+                rows, summary = read_entity(source, spec), {}
         except BexioError as err:
             # A stale file from an earlier run must not pass for this run's data.
             stale = os.path.join(out, entry["file"])
@@ -275,6 +386,11 @@ def export(client, out, entities=None, only=None, export_client=None):
             # the content first: a download adds the size of each row, which the JSON must carry
             if name in CONTENT_PATHS:
                 entry.update(download_files(source, rows, out, CONTENT_PATHS[name]))
+            entry.update(summary)
+            # a row that carries an error is a refused record: the manifest names it
+            refused = [row.get("id", row.get("file_id")) for row in rows if "error" in row]
+            if refused:
+                entry["failed"] = refused
             write_private(os.path.join(out, entry["file"]), rows)
             entry.update(status="ok", count=len(rows))
         manifest["entities"][name] = entry
@@ -416,41 +532,12 @@ def failed_required(manifest):
     return [n for n, e in manifest["entities"].items() if e["required"] and e["status"] != "ok"]
 
 
-def main(argv):
-    parser = argparse.ArgumentParser(description="Export bexio data to private JSON files (read-only).")
-    parser.add_argument("--out", default=None, help="target directory (default: <private>/bexio-export/<today>/)")
-    parser.add_argument("--only", action="append", choices=sorted(ENTITIES), metavar="ENTITY",
-                        help="export only this entity (repeatable); the manifest keeps the others")
-    parser.add_argument("--payroll", action="store_true",
-                        help="export the payroll instead, to <private>/bexio-payroll/ (employees, absences, payslips)")
-    parser.add_argument("--year", action="append", type=int, metavar="YEAR",
-                        help="payroll year for absences and payslips (repeatable; default: this year)")
-    args = parser.parse_args(argv)
-    if args.payroll:
-        if args.only or args.out:
-            parser.error("--payroll takes neither --only nor --out")
-        manifest = export_payroll(Client(), PAYROLL, args.year or [datetime.date.today().year])
-        print("exported payroll to {}".format(PAYROLL))
-        for name, entry in manifest["entities"].items():
-            if entry["status"] != "ok":
-                print("  {:<18} {}".format(name, entry["error"]))
-            else:
-                print("  {:<18} {}".format(name, entry["count"]))
-        missing = failed_required(manifest)
-        if missing:
-            print("missing required entities: {}".format(", ".join(missing)), file=sys.stderr)
-            return 2
-        return 0
-    if args.year:
-        parser.error("--year goes with --payroll")
-    out = args.out or default_out()
-    names = list(args.only or ENTITIES)
-    # Each login is only opened when a requested entity needs it: the export login
-    # stops the run before anything is written when it is not in the keychain.
-    client = Client() if any(name not in EXPORT_SCOPE_ENTITIES for name in names) else None
-    export_client = Client(export_scope=True) if any(name in EXPORT_SCOPE_ENTITIES for name in names) else None
-    manifest = export(client, out, only=args.only, export_client=export_client)
-    print("exported to {}".format(out))
+def default_complete_out(today=None):
+    today = today or datetime.date.today()
+    return os.path.join(PRIVATE, "bexio-export", today.isoformat() + "-complete")
+
+
+def print_manifest(manifest):
     for name, entry in manifest["entities"].items():
         if entry["status"] != "ok":
             print("  {:<18} {}".format(name, entry["error"]))
@@ -459,7 +546,69 @@ def main(argv):
         if name in CONTENT_PATHS:
             line += " (downloaded {}, {} bytes, failed {})".format(
                 entry["downloaded"], entry["bytes"], len(entry["failed"]))
+        elif name == DOCUMENT_PDFS_ENTITY:
+            line += " (downloaded {}, {} bytes, failed {}, skipped {})".format(
+                entry["downloaded"], entry["bytes"], len(entry["failed"]), ", ".join(entry["skipped"]) or "none")
+        elif entry.get("failed"):
+            line += " (failed {})".format(len(entry["failed"]))
         print(line)
+
+
+def run_complete(out, years):
+    """Every entity into out, the payroll into out/payroll: one run, one manifest for each part. Returns the status."""
+    client = Client()
+    manifest = export(client, out, export_client=Client(export_scope=True))
+    print("exported to {}".format(out))
+    print_manifest(manifest)
+    payroll = export_payroll(client, os.path.join(out, PAYROLL_SUBDIR), years)
+    print("exported payroll to {}".format(os.path.join(out, PAYROLL_SUBDIR)))
+    print_manifest(payroll)
+    missing = failed_required(manifest) + ["payroll " + name for name in failed_required(payroll)]
+    if missing:
+        print("missing required entities: {}".format(", ".join(missing)), file=sys.stderr)
+        return 2
+    return 0
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description="Export bexio data to private JSON files (read-only).")
+    parser.add_argument("--out", default=None, help="target directory (default: <private>/bexio-export/<today>/)")
+    parser.add_argument("--only", action="append", choices=sorted(ENTITIES), metavar="ENTITY",
+                        help="export only this entity (repeatable); the manifest keeps the others")
+    parser.add_argument("--complete", action="store_true",
+                        help="the whole account in one run: every entity, the document PDFs and the payroll, "
+                             "to <private>/bexio-export/<today>-complete/")
+    parser.add_argument("--payroll", action="store_true",
+                        help="export the payroll instead, to <private>/bexio-payroll/ (employees, absences, payslips)")
+    parser.add_argument("--year", action="append", type=int, metavar="YEAR",
+                        help="payroll year for absences and payslips (repeatable; default: this year)")
+    args = parser.parse_args(argv)
+    if args.complete:
+        if args.only or args.out or args.payroll:
+            parser.error("--complete takes neither --only, --out nor --payroll")
+        return run_complete(default_complete_out(), args.year or [datetime.date.today().year])
+    if args.payroll:
+        if args.only or args.out:
+            parser.error("--payroll takes neither --only nor --out")
+        manifest = export_payroll(Client(), PAYROLL, args.year or [datetime.date.today().year])
+        print("exported payroll to {}".format(PAYROLL))
+        print_manifest(manifest)
+        missing = failed_required(manifest)
+        if missing:
+            print("missing required entities: {}".format(", ".join(missing)), file=sys.stderr)
+            return 2
+        return 0
+    if args.year:
+        parser.error("--year goes with --payroll or --complete")
+    out = args.out or default_out()
+    names = list(args.only or ENTITIES)
+    # Each login is only opened when a requested entity needs it: the export login
+    # stops the run before anything is written when it is not in the keychain.
+    client = Client() if any(name not in EXPORT_SCOPE_ENTITIES for name in names) else None
+    export_client = Client(export_scope=True) if any(name in EXPORT_SCOPE_ENTITIES for name in names) else None
+    manifest = export(client, out, only=args.only, export_client=export_client)
+    print("exported to {}".format(out))
+    print_manifest(manifest)
     missing = failed_required(manifest)
     if missing:
         print("missing required entities: {}".format(", ".join(missing)), file=sys.stderr)
