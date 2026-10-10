@@ -253,6 +253,22 @@ class DeliveryNote(unittest.TestCase):
         self.assertEqual(totals, (Decimal("150.00"), Decimal("9.40"), Decimal("159.40")))
         self.assertEqual(len(doc["taxes"]), 2)
 
+    def test_a_delivery_with_a_zero_total_keeps_its_quantities_at_zero_rate(self):
+        # bexio gives the deliveries a zero total though their positions carry prices: the draft agrees with it
+        zero = record(INVOICE, id=803, taxs=[{"percentage": "8.1", "value": "0.00"}, {"percentage": "2.6", "value": "0.00"}],
+                      total_net="0.00", total_taxes="0.00", total_gross="0.00", total="0.00")
+        doc, differences, totals, _rate = isl._document("Delivery Note", zero, LOOKUPS)
+        # the third row is the title line (a text position), which has no price to take out
+        self.assertEqual([r["qty"] for r in doc["items"]], [2.0, 1.0, 1.0])
+        self.assertTrue(all(r["rate"] == 0.0 and r["price_list_rate"] == 0.0 for r in doc["items"]))
+        self.assertEqual(totals, (Decimal("0"), Decimal("0"), Decimal("0")))
+        self.assertEqual(len(differences), 1)
+        self.assertTrue(differences[0].startswith("bexio's total is zero"))
+
+    def test_a_delivery_with_a_non_zero_total_keeps_its_prices(self):
+        doc, _differences, _totals, _rate = isl._document("Delivery Note", record(INVOICE, id=804), LOOKUPS)
+        self.assertEqual([r["rate"] for r in doc["items"]], [50.0, 50.0, 0.0])
+
 
 class Differences(unittest.TestCase):
     def test_a_bexio_tax_that_differs_is_reported_and_not_adjusted(self):

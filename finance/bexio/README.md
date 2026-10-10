@@ -162,7 +162,10 @@ stays under `~/ws_yardr_finance/private/`, never in the repository.
 to Sales Invoice, `credit_vouchers.json` to Sales Invoice with `is_return`
 against the original, `orders.json` to Sales Order, `offers.json` to Quotation,
 `deliveries.json` to Delivery Note (a draft: no stock moves, no GL).
-Each record is read with its positions (the single-document call). The
+Each record is read with its positions (the single-document call). bexio gives
+a delivery a total of zero though its positions carry prices: such a Delivery
+Note keeps each row's quantity at zero rate, so it agrees with bexio's total
+(the prices stay in the private export). The
 functions return the ERPNext document as a dict. Nothing is submitted, and no
 GL posts: the documents are drafts (docstatus 0). The posting plan
 (finance-3qsp) decides how they post; the submit is erp-a2ma's.

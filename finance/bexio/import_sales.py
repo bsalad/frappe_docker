@@ -250,6 +250,14 @@ def _document(doctype, record, lookups, credit=False):
         original = record
         record = _in_chf(record, rate)
     rows, amounts, discount_row = _rows(record, lookups)
+    # bexio gives a delivery a header total of zero though its positions carry prices: the draft keeps the
+    # quantities at zero rate, so it agrees with bexio's total; the prices stay in the private export
+    zero_rated = doctype == "Delivery Note" and record.get("total") is not None and _dec(record["total"]) == ZERO and any(amounts.values())
+    if zero_rated:
+        for row in rows:
+            row.update(rate=0.0, price_list_rate=0.0)
+            row.pop("discount_percentage", None)
+        amounts = {key: ZERO for key in amounts}
     if discount_row and (included or credit):
         raise Unmapped("a document discount with prices including the VAT or on a credit note")
     if included and credit:
@@ -268,6 +276,8 @@ def _document(doctype, record, lookups, credit=False):
     taxable = lines - discount
 
     taxes, computed, differences = [], {}, []
+    if zero_rated:
+        differences.append("bexio's total is zero: rows at zero rate with their quantities, the prices stay in the private export")
     last_rate = None
     for key, amount in amounts.items():
         if key is None:
