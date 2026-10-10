@@ -24,12 +24,16 @@ LOOKUPS = {
     },
 }
 
-CHF_IN = {"id": 9001, "bank_account_id": 11, "currency_id": 1, "value_date": "2026-03-31",
-          "amount": "1500.00", "text": "Zahlung Rechnung 1001", "reference": "RF18 0000 0001"}
-CHF_OUT = {"id": 9002, "bank_account_id": 11, "currency_id": 1, "value_date": "2026-04-02",
-           "amount": "-250.50", "text": "Miete", "reference": ""}
-EUR_OUT = {"id": 9003, "bank_account_id": 12, "currency_id": 2, "value_date": "2025-12-31",
-           "amount": "-99.99", "text": "Software", "reference": "INV-42"}
+# the export's shape: amount unsigned, type gives the direction, status says whether bexio booked it
+CHF_IN = {"id": 9001, "bank_account_id": 11, "currency_id": 1, "value_date": "2026-03-31", "book_date": "2026-03-31",
+          "amount": 1500.0, "type": "CREDIT", "status": "reconciled",
+          "description": "PMNT.RCDT.VCOM", "title": "Zahlung Rechnung 1001"}
+CHF_OUT = {"id": 9002, "bank_account_id": 11, "currency_id": 1, "value_date": "2026-04-02", "book_date": "2026-04-02",
+           "amount": 250.5, "type": "DEBIT", "status": "unreconciled",
+           "description": "PMNT.ICDT.DMCT", "title": "Miete"}
+EUR_OUT = {"id": 9003, "bank_account_id": 12, "currency_id": 2, "value_date": "2025-12-31", "book_date": "2025-12-31",
+           "amount": 99.99, "type": "DEBIT", "status": "auto_reconciled",
+           "description": "PMNT.ICDT.AUTT", "title": "Software"}
 
 
 def record(base, **changes):
@@ -55,18 +59,16 @@ class MappingTest(unittest.TestCase):
         self.assertEqual((doc["bexio_id"], doc["date"]), ("9001", "2026-03-31"))
         self.assertEqual(doc["bank_account"], "Hauptkonto - Testbank AG")
         self.assertEqual((doc["currency"], doc["deposit"], doc["withdrawal"]), ("CHF", 1500.0, 0.0))
-        self.assertEqual((doc["description"], doc["reference_number"]), ("Zahlung Rechnung 1001", "RF18 0000 0001"))
+        self.assertEqual((doc["description"], doc["reference_number"]), ("Zahlung Rechnung 1001", ""))
 
     def test_money_out_is_a_withdrawal(self):
         doc = ib.bank_transaction(CHF_OUT, LOOKUPS)
         self.assertEqual((doc["deposit"], doc["withdrawal"]), (0.0, 250.5))
-        self.assertEqual(doc["reference_number"], "")
 
     def test_foreign_currency_account_keeps_its_currency(self):
         doc = ib.bank_transaction(EUR_OUT, LOOKUPS)
         self.assertEqual(doc["bank_account"], "Fremdwaehrung - Zweitbank AG")
         self.assertEqual((doc["currency"], doc["deposit"], doc["withdrawal"]), ("EUR", 0.0, 99.99))
-        self.assertEqual(doc["reference_number"], "INV-42")
 
     def test_transaction_in_another_currency_than_its_account_is_unmapped(self):
         with self.assertRaisesRegex(ib.Unmapped, "differs from its bank account's CHF"):
@@ -76,18 +78,19 @@ class MappingTest(unittest.TestCase):
         with self.assertRaisesRegex(ib.Unmapped, "bank account 99 has no Bank Account"):
             ib.bank_transaction(record(CHF_IN, bank_account_id=99), LOOKUPS)
 
-    def test_zero_amount_and_missing_date_are_unmapped(self):
+    def test_zero_amount_missing_date_and_unknown_type_are_unmapped(self):
         with self.assertRaisesRegex(ib.Unmapped, "zero amount"):
-            ib.bank_transaction(record(CHF_IN, amount="0.00"), LOOKUPS)
+            ib.bank_transaction(record(CHF_IN, amount=0), LOOKUPS)
         with self.assertRaisesRegex(ib.Unmapped, "no value date"):
             ib.bank_transaction(record(CHF_IN, value_date=None), LOOKUPS)
+        with self.assertRaisesRegex(ib.Unmapped, "neither CREDIT nor DEBIT"):
+            ib.bank_transaction(record(CHF_IN, type="TRANSFER"), LOOKUPS)
 
-    def test_booked_link_is_kept_under_its_own_name(self):
+    def test_the_booking_link_is_not_mapped(self):
+        # the export has no field that names the booking; the posting plan's rule (D7) decides where it goes
         doc = ib.bank_transaction(record(CHF_IN, booked_with="kb_invoice:1001"), LOOKUPS)
-        self.assertEqual(doc["bexio_booked_with"], "kb_invoice:1001")
-
-    def test_no_link_means_no_link_field(self):
-        self.assertNotIn("bexio_booked_with", ib.bank_transaction(CHF_IN, LOOKUPS))
+        self.assertNotIn("bexio_booked_with", doc)
+        self.assertNotIn("booked_with", doc)
 
 
 class PlanTest(unittest.TestCase):
@@ -96,11 +99,17 @@ class PlanTest(unittest.TestCase):
         self.assertEqual([r["error"] is None for r in results], [True, False])
         self.assertEqual(results[1]["bexio_id"], "9009")
 
+    def test_booked_follows_bexio_status(self):
+        results = ib.plan([CHF_IN, CHF_OUT, EUR_OUT, record(CHF_IN, id=9010, status="ignored")], LOOKUPS)
+        self.assertEqual([r["booked"] for r in results], [True, False, True, False])
+
     def test_fields_the_doctype_lacks_are_named(self):
         meta = {"doctype", "company", "bexio_id", "date", "bank_account", "currency", "deposit", "withdrawal",
                 "description", "reference_number"}
-        results = ib.plan([record(CHF_IN, booked_with="kb_invoice:1001")], LOOKUPS, meta)
-        self.assertEqual(results[0]["unknown"], ["Bank Transaction.bexio_booked_with"])
+        results = ib.plan([CHF_IN], LOOKUPS, meta)
+        self.assertEqual(results[0]["unknown"], [])
+        results = ib.plan([CHF_IN], LOOKUPS, meta - {"reference_number"})
+        self.assertEqual(results[0]["unknown"], ["Bank Transaction.reference_number"])
 
 
 class SummaryTest(unittest.TestCase):
@@ -116,9 +125,10 @@ class SummaryTest(unittest.TestCase):
         self.assertNotIn("Hauptkonto", text)
         self.assertNotIn("Fremdwaehrung", text)
 
-    def test_unmapped_count_is_in_the_summary(self):
-        text = ib.summary(ib.plan([CHF_IN, record(CHF_IN, id=9009, bank_account_id=99)], LOOKUPS))
-        self.assertIn("records: 2, mapped: 1, unmapped: 1", text)
+    def test_unmapped_and_booked_counts_are_in_the_summary(self):
+        text = ib.summary(ib.plan([CHF_IN, record(CHF_IN, id=9009, bank_account_id=99), CHF_OUT], LOOKUPS))
+        self.assertIn("records: 3, mapped: 2, unmapped: 1", text)
+        self.assertIn("booked in bexio (reconciled or auto_reconciled): 1, not booked: 1", text)
 
 
 class LookupTest(unittest.TestCase):
@@ -138,28 +148,52 @@ class MainTest(unittest.TestCase):
             self.assertEqual(ib.main(["--dry-run", "--export", export]), 0)
         self.assertIn("not exported yet", out.getvalue())
 
-    def test_dry_run_with_the_export_prints_totals_and_writes_only_the_private_report(self):
+    def _export(self, export, rows):
+        files = {"bank_transactions": rows, "bank_accounts": [{"id": 11, "currency_id": 1}],
+                 "currencies": [{"id": 1, "name": "CHF"}]}
+        for name, body in files.items():
+            with open(os.path.join(export, name + ".json"), "w") as f:
+                json.dump(body, f)
+
+    def _erp_fields(self):
         class Erp(FakeErp):
             def meta(self, doctype):
                 return {"fields": [{"fieldname": f} for f in ("bexio_id", "date", "bank_account", "currency", "deposit",
                                                              "withdrawal", "description", "reference_number", "company")]}
+        return Erp()
 
-        files = {"bank_transactions": [CHF_IN, record(CHF_IN, id=9009, bank_account_id=99)],
-                 "bank_accounts": [{"id": 11, "currency_id": 1}], "currencies": [{"id": 1, "name": "CHF"}]}
+    def test_dry_run_with_the_export_prints_totals_and_writes_only_the_private_report(self):
         with tempfile.TemporaryDirectory() as export:
-            for name, rows in files.items():
-                with open(os.path.join(export, name + ".json"), "w") as f:
-                    json.dump(rows, f)
+            self._export(export, [CHF_IN, record(CHF_IN, id=9009, bank_account_id=99)])
             report = os.path.join(export, "report.txt")
-            with mock.patch.object(im.Erp, "from_file", return_value=Erp()), \
+            with mock.patch.object(im.Erp, "from_file", return_value=self._erp_fields()), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 code = ib.main(["--dry-run", "--export", export, "--report", report])
             with open(report) as f:
                 self.assertEqual(f.read(), "Bank Transaction 9009: unmapped: bank account 99 has no Bank Account with that bexio_id\n")
+            self.assertFalse(os.path.exists(os.path.join(export, "bank-docs.json")))
         self.assertEqual(code, 1)
         self.assertIn("records: 2, mapped: 1, unmapped: 1", out.getvalue())
+        self.assertIn("dry run: nothing was written to ERPNext", out.getvalue())
 
-    def test_a_live_run_is_refused(self):
+    def test_write_keeps_the_documents_in_a_private_file_for_the_loader(self):
+        with tempfile.TemporaryDirectory() as export:
+            self._export(export, [CHF_IN, CHF_OUT])
+            docs = os.path.join(export, "bank-docs.json")
+            report = os.path.join(export, "report.txt")
+            with mock.patch.object(im.Erp, "from_file", return_value=self._erp_fields()), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                code = ib.main(["--write", docs, "--export", export, "--report", report])
+            with open(docs) as f:
+                written = json.load(f)["documents"]
+        self.assertEqual(code, 0)
+        self.assertEqual([d["bexio_id"] for d in written], ["9001", "9002"])
+        self.assertEqual([d["booked"] for d in written], [True, False])
+        self.assertEqual(written[0]["values"]["deposit"], 1500.0)
+        self.assertNotIn("doctype", written[0]["values"])
+        self.assertIn("wrote 2 documents", out.getvalue())
+
+    def test_a_run_without_dry_run_or_write_is_refused(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             ib.main([])
 

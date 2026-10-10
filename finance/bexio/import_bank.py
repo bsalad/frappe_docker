@@ -3,22 +3,24 @@
 Step four of the bexio pipeline, after import_master.py has made the Bank Accounts
 (keyed by bexio_id). Each function takes one export record and the lookups and
 returns the ERPNext Bank Transaction as a dict, not yet inserted: the live write and
-its order are erp-a2ma's, after the posting plan (finance-3qsp). So nothing is
-written here: --dry-run reads ERPNext and prints totals only.
+its order are erp-7avs's, after the posting plan's open decisions (finance-3qsp, D7).
+So nothing is written to ERPNext here: --dry-run reads ERPNext and prints totals only,
+--write also keeps the documents in a private file for the loader.
 
-The export has no bank_transactions.json yet: the banking endpoint answers 403 (the
-manifest records it), and finance-3qsp's export login adds the scope. Until the file
-exists the dry run says "not exported yet". The field names below are ASSUMED: the bexio
-docs could not be read for the banking transactions, so they are kept in one place and
-the first thing to check when the file exists.
+The export's bank_transactions.json has amount unsigned (always positive) and type
+CREDIT (money in) or DEBIT (money out). status says whether bexio has booked the
+transaction: reconciled and auto_reconciled are booked (against a payment or a banking
+entry, which the export does not say), unreconciled and ignored are not. The export
+has no field that names the booking, so the link is not mapped here (D7).
 
 A record that cannot be mapped (an unknown bank account, a currency other than its
 account's, a zero amount) raises Unmapped, and the report names it by bexio id only.
-Amounts stay in the account's currency: no conversion, so no CHF totals here.
+Amounts stay in the transaction's currency: no conversion, so no CHF totals here.
 
 Run it as:
 
     python3 finance/bexio/import_bank.py --dry-run [--export DIR]
+    python3 finance/bexio/import_bank.py --write <private>/bexio-bank-docs.json [--export DIR]
 
 --export defaults to the newest directory under <private>/bexio-export/. The output
 is totals only; the unmapped records go to a file under <private>, never to the
@@ -37,10 +39,8 @@ import import_master as im
 COMPANY = im.COMPANY
 TRANSACTIONS = "bank_transactions"
 
-# ASSUMED field names of a bexio banking transaction. amount is signed: negative when
-# money leaves the account (ASSUMED, to be confirmed against the export).
-BOOKED_WITH = "booked_with"          # ASSUMED: what the transaction is booked against, if booked
-ERP_BOOKED_WITH = "bexio_booked_with"  # the ERPNext field it would land in; the posting plan decides
+# bexio's status values: these two mean bexio has booked the transaction
+BOOKED = ("reconciled", "auto_reconciled")
 
 ZERO = Decimal("0")
 
@@ -70,20 +70,18 @@ def bank_transaction(record, lookups):
     amount = _dec(record["amount"])
     if amount == ZERO:
         raise Unmapped("zero amount")
+    if record.get("type") not in ("CREDIT", "DEBIT"):
+        raise Unmapped("type {} is neither CREDIT nor DEBIT".format(record.get("type")))
 
-    # ERPNext keeps the direction in two columns: money in is a deposit, money out a withdrawal
-    doc = {
+    # the export's amount is unsigned; its type gives the direction, which ERPNext keeps in two columns
+    deposit = amount if record["type"] == "CREDIT" else ZERO
+    withdrawal = amount if record["type"] == "DEBIT" else ZERO
+    return {
         "doctype": "Bank Transaction", "company": COMPANY, "bexio_id": str(record["id"]),
         "date": record["value_date"], "bank_account": account["name"], "currency": currency,
-        "deposit": float(amount) if amount > 0 else 0.0,
-        "withdrawal": float(-amount) if amount < 0 else 0.0,
-        "description": record.get("text") or "",
-        "reference_number": record.get("reference") or "",
+        "deposit": float(deposit), "withdrawal": float(withdrawal),
+        "description": record.get("title") or "", "reference_number": "",
     }
-    # the link to what the transaction is booked against, kept for reconciliation later
-    if record.get(BOOKED_WITH):
-        doc[ERP_BOOKED_WITH] = str(record[BOOKED_WITH])
-    return doc
 
 
 def plan(records, lookups, meta=None):
@@ -92,7 +90,8 @@ def plan(records, lookups, meta=None):
     for record in records:
         result = {"bexio_id": str(record.get("id")), "account": str(record.get("bank_account_id")),
                   "year": str(record.get("value_date") or "????")[:4], "doc": None, "error": None,
-                  "unknown": [], "currency": None, "in": ZERO, "out": ZERO}
+                  "unknown": [], "currency": None, "in": ZERO, "out": ZERO,
+                  "booked": record.get("status") in BOOKED}
         try:
             doc = bank_transaction(record, lookups)
         except Unmapped as err:
@@ -152,6 +151,9 @@ def summary(results):
     unmapped = sum(1 for r in results if r["error"])
     lines.append("")
     lines.append("records: {}, mapped: {}, unmapped: {}".format(len(results), len(results) - unmapped, unmapped))
+    booked = sum(1 for r in results if r["doc"] and r["booked"])
+    lines.append("booked in bexio (reconciled or auto_reconciled): {}, not booked: {}".format(
+        booked, sum(1 for r in results if r["doc"]) - booked))
     missing = collections.Counter(field for r in results for field in r["unknown"])
     for field, count in sorted(missing.items()):
         lines.append("ERPNext has no field {} ({} records): the posting plan decides it".format(field, count))
@@ -163,16 +165,36 @@ def detail_lines(results):
     return ["Bank Transaction {}: unmapped: {}".format(r["bexio_id"], r["error"]) for r in results if r["error"]]
 
 
+def write_private(path, text):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text + "\n")
+
+
+def write_documents(results, path):
+    """The mapped Bank Transactions as the loader takes them, into the private file; returns their number.
+
+    Each is keyed by bexio_id; the loader inserts it and submits it, and reconciles it only once the posting
+    plan decides the booking link (D7), so nothing here says what a transaction is booked against.
+    """
+    documents = [{"doctype": r["doc"]["doctype"], "bexio_id": r["bexio_id"], "booked": r["booked"],
+                  "values": {k: v for k, v in r["doc"].items() if k != "doctype"}}
+                 for r in results if r["doc"]]
+    write_private(path, json.dumps({"documents": documents}, indent=1))
+    return len(documents)
+
+
 def main(argv):
-    parser = argparse.ArgumentParser(description="Map the exported bexio bank transactions to ERPNext (dry run only for now).")
+    parser = argparse.ArgumentParser(description="Map the exported bexio bank transactions to ERPNext (nothing is written to ERPNext).")
     parser.add_argument("--export", default=None, help="export directory (default: the newest under <private>/bexio-export/)")
     parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals")
+    parser.add_argument("--write", metavar="FILE", help="also write the mapped documents to a private file for the loader")
     parser.add_argument("--report", default=os.path.join(im.PRIVATE, "bexio-bank-differences.txt"),
                         help="private file for the unmapped records, by bexio id")
     parser.add_argument("--token-file", default=im.TOKEN_FILE)
     args = parser.parse_args(argv)
-    if not args.dry_run:
-        parser.error("dry run only for now: the live run is erp-a2ma's, after the posting plan (finance-3qsp)")
+    if not (args.dry_run or args.write):
+        parser.error("give --dry-run or --write: the live run waits for the posting plan's open decisions (D7)")
 
     export_dir = args.export or im.newest_export()
     file = os.path.join(export_dir, TRANSACTIONS + ".json")
@@ -193,11 +215,14 @@ def main(argv):
     results = plan(records, lookups, meta)
     print("bank transactions from {}".format(export_dir))
     print(summary(results))
+    if args.write:
+        print("wrote {} documents to the private file for the loader; nothing was written to ERPNext".format(
+            write_documents(results, args.write)))
+    else:
+        print("dry run: nothing was written to ERPNext")
     lines = detail_lines(results)
-    print("dry run: nothing was written; {} unmapped records in {}".format(len(lines), args.report))
-    fd = os.open(args.report, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + ("\n" if lines else ""))
+    print("{} unmapped records in {}".format(len(lines), args.report))
+    write_private(args.report, "\n".join(lines))
     return 1 if lines else 0
 
 
