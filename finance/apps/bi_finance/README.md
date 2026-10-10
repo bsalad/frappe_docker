@@ -47,8 +47,9 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
 - `bi_finance/cash_forecast.py`: the 13-week cash forecast without the site: the weeks of each line, the
   recurring costs (monthly, quarterly, yearly) from the purchase bills per supplier and from the outgoing bank
   lines per description key (the first three words, digits, dates and months dropped), the payroll run (the salary
-  accounts 5000 to 5099 only, the 25th or the Friday before a weekend; the 57xx social contributions come with the
-  insurers' bills, the 58xx costs with the bills or bank lines), the VAT owed (due at the end of the quarter's second month; a refund 30 days
+  accounts 5000 to 5099 only, on the last day of the month or the Friday before a weekend, since the books pay the
+  salaries at month end and not on the 25th; the 57xx social contributions come with the insurers' bills, the 58xx
+  costs with the bills or bank lines), the VAT owed (due at the end of the quarter's second month; a refund 30 days
   after), the running balance and the lowest week. Pure Python.
   The bank lines left out of the recurring costs: a payroll or VAT word, a payroll or VAT Journal Entry, a
   Payment Entry of a Purchase Invoice, or a bill of the same amount dated within five days.

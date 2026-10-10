@@ -236,21 +236,36 @@ class Payroll(unittest.TestCase):
         rows = [(D(2026, 9, 30), "5700", 300.0), (D(2026, 9, 30), "5800", 50.0)]
         self.assertIsNone(cf.payroll_from_postings(cf.payroll_postings(rows)))
 
-    def test_the_run_is_on_the_twenty_fifth(self):
-        self.assertEqual(cf.payroll_run(2026, 11), D(2026, 11, 25))
+    def test_the_run_is_on_the_last_day_of_the_month(self):
+        self.assertEqual(cf.payroll_run(2026, 11), D(2026, 11, 30))
 
-    def test_a_twenty_fifth_on_a_sunday_is_the_friday_before(self):
-        self.assertEqual(cf.payroll_run(2026, 10), D(2026, 10, 23))
+    def test_a_month_end_on_a_saturday_is_the_friday_before(self):
+        self.assertEqual(cf.payroll_run(2026, 10), D(2026, 10, 30))
 
-    def test_a_twenty_fifth_on_a_saturday_is_the_friday_before(self):
-        self.assertEqual(cf.payroll_run(2026, 7), D(2026, 7, 24))
+    def test_a_month_end_on_a_sunday_is_the_friday_before(self):
+        self.assertEqual(cf.payroll_run(2026, 5), D(2026, 5, 29))
+
+    def test_a_month_end_on_a_weekday_is_the_run_itself(self):
+        self.assertEqual(cf.payroll_run(2028, 2), D(2028, 2, 29))
 
     def test_the_runs_from_as_of_to_the_horizon(self):
         self.assertEqual(list(cf.payroll_dates(D(2026, 10, 10), D(2026, 12, 31))),
-                         [D(2026, 10, 23), D(2026, 11, 25), D(2026, 12, 25)])
+                         [D(2026, 10, 30), D(2026, 11, 30), D(2026, 12, 31)])
+
+    def test_a_quarter_end_window_holds_two_runs(self):
+        # 30 June 2026 is a quarter end: the window is the as-of day and the 90 days after it. The run of 30 June is
+        # the as-of day's own, so the window holds the runs of 31 July and 31 August; the 25th rule had three.
+        as_of = D(2026, 6, 30)
+        self.assertEqual(list(cf.payroll_dates(as_of, cf.horizon_end(as_of))), [D(2026, 7, 31), D(2026, 8, 31)])
+
+    def test_a_run_on_the_as_of_day_is_not_in_the_forecast(self):
+        self.assertEqual(list(cf.payroll_dates(D(2026, 10, 30), D(2026, 11, 30))), [D(2026, 11, 30)])
+
+    def test_a_run_the_day_after_the_as_of_date_is_in_the_forecast(self):
+        self.assertEqual(list(cf.payroll_dates(D(2026, 10, 29), D(2026, 11, 30))), [D(2026, 10, 30), D(2026, 11, 30)])
 
     def test_a_run_before_the_as_of_date_is_not_in_the_forecast(self):
-        self.assertEqual(list(cf.payroll_dates(D(2026, 10, 24), D(2026, 11, 30))), [D(2026, 11, 25)])
+        self.assertEqual(list(cf.payroll_dates(D(2026, 10, 31), D(2026, 11, 30))), [D(2026, 11, 30)])
 
 
 class Vat(unittest.TestCase):

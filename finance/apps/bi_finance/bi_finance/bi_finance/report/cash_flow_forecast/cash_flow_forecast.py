@@ -31,8 +31,8 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
     to a purchase invoice; the other accounts are listed in the message as not modelled. The owners' current accounts
     (2100, 2121) are labelled "(average, discretionary)" and can be left out by a filter;
 - payroll: the salary accounts 5000 to 5099 of the last year (not the 57xx social contributions nor the 58xx other
-  personnel costs: those are bills or bank lines), the average of the last three months, paid on the 25th
-  (the Friday before when the 25th is a weekend);
+  personnel costs: those are bills or bank lines), the average of the last three months, paid on the last day of
+  the month (the Friday before when that is a weekend);
 - VAT: the balance of 2200 and 2202 less 1170 to 1172, split at the start of the current quarter: the quarter closed
   last is paid on its due date, the current quarter's VAT so far is projected on its own due date; a refund comes
   in 30 days after the due date.
@@ -523,7 +523,7 @@ def compute(company, as_of, include_run_rate=True, include_new_purchases=True, i
 
     amount = cf.payroll_from_postings(cf.payroll_postings(personnel_postings(company, as_of)))
     if amount:
-        note = _("average of the last three salary months (accounts {0} to {1}), run on the 25th or the Friday before a weekend").format(
+        note = _("average of the last three salary months (accounts {0} to {1}), run on the last day of the month or the Friday before a weekend").format(
             *cf.SALARY_ACCOUNTS)
         for day in cf.payroll_dates(as_of, horizon):
             lines.append(line("payroll", day, amount, "", "", "", note))

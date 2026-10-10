@@ -20,8 +20,6 @@ import statistics
 
 WEEKS = 13
 DAYS_PER_WEEK = 7
-# The salary run is on this day of the month, or the Friday before when it falls on a weekend.
-PAYROLL_DAY = 25
 # The VAT return and payment for a quarter are due at the end of the quarter's second month after it ends.
 # A refund is paid this many days after that due date.
 VAT_REFUND_DAYS = 30
@@ -280,19 +278,21 @@ def payroll_from_postings(postings):
 
 
 def payroll_run(year, month):
-    """The salary run of a month: the 25th, or the Friday before when the 25th is a Saturday or a Sunday."""
-    day = datetime.date(year, month, PAYROLL_DAY)
+    """The salary run of a month: its last day, or the Friday before when that is a Saturday or a Sunday. The books
+    pay the salaries on days 28 to 31 (erp-z54w), so the run is at month end, not on the 25th."""
+    day = datetime.date(year, month, calendar.monthrange(year, month)[1])
     return day - datetime.timedelta(days=max(day.weekday() - 4, 0))
 
 
 def payroll_dates(as_of, end):
-    """Each monthly salary run from as_of to end."""
+    """Each monthly salary run after as_of and up to end. A run on as_of itself is not one: the books are read through
+    as_of, so a run paid that day is already in the opening balance (the back-test of erp-q1w8 reads it so)."""
     year, month = as_of.year, as_of.month
     while True:
         run = payroll_run(year, month)
         if run > end:
             return
-        if run >= as_of:
+        if run > as_of:
             yield run
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
 
