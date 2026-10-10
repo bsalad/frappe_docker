@@ -36,6 +36,10 @@ PERIODS = {
 REGULAR_SHARE = 0.8
 RECEIPT = "receipt"
 OUTFLOW_KINDS = ("bill", "recurring", "payroll", "vat")
+# The salary accounts by number, inclusive (5000 Loehne, 5003 and the rest of the 50xx run). The payroll line is
+# the salary run only: the 57xx social contributions are paid through the insurers' bills, the 58xx other personnel
+# costs come as bills or bank lines, so none of them is in the payroll basis.
+SALARY_ACCOUNTS = ("5000", "5099")
 # The VAT accounts by number: the liabilities (Umsatzsteuer, the transitory tax) and the input tax.
 VAT_LIABILITY_ACCOUNTS = ("2200", "2202")
 VAT_INPUT_ACCOUNTS = ("1170", "1171", "1172")
@@ -192,8 +196,14 @@ def recurring_dates(item, as_of, end):
             yield day
 
 
+def payroll_postings(rows):
+    """rows: (posting date, account number, debit minus credit) of the personnel accounts (group 5). The salary
+    accounts' postings only, as (posting date, amount): a contribution posted on the same day is not a salary."""
+    return [(day, amount) for day, number, amount in rows if SALARY_ACCOUNTS[0] <= number <= SALARY_ACCOUNTS[1]]
+
+
 def payroll_from_postings(postings):
-    """postings: (posting date, amount) of the salary accounts (group 5) over the look-back window.
+    """postings: (posting date, amount) of the salary accounts over the look-back window (payroll_postings).
     The payroll is the average of the last three months with postings. None when there are no postings."""
     monthly = {}
     for day, amount in postings:

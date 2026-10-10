@@ -14,7 +14,8 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
     when a purchase bill of the same amount is dated within five days of it. A group needs 80% of its gaps in its
     period, since a key can mix payees; lines of a group on one day are one occurrence, their sum; its amount
     is the median of its occurrences;
-- payroll: the salary accounts (group 5) of the last year, the average of the last three months, paid on the 25th
+- payroll: the salary accounts 5000 to 5099 of the last year (not the 57xx social contributions nor the 58xx other
+  personnel costs: those are bills or bank lines), the average of the last three months, paid on the 25th
   (the Friday before when the 25th is a weekend);
 - VAT: the balance of 2200 and 2202 less 1170 to 1172, split at the start of the current quarter: the quarter closed
   last is paid on its due date, the current quarter's VAT so far is projected on its own due date; a refund comes
@@ -33,6 +34,9 @@ from frappe.utils import escape_html, flt, getdate, nowdate
 from bi_finance import cash_forecast as cf
 
 LOOKBACK_DAYS = 365
+# The payables of the insurers' bills (social security, pension, accident and sickness, withholding tax): their
+# contributions reach the forecast through the bills, not the payroll line.
+INSURER_PAYABLE_ACCOUNTS = ("2270", "2279")
 
 
 def kind_label(kind):
@@ -164,17 +168,18 @@ def reconciled_bank_lines(names):
     return {row[0] for row in payroll_or_vat}, {row[0] for row in bill}
 
 
-def salary_postings(company, as_of):
-    """(posting date, debit minus credit) per day of the salary accounts (group 5) in the last year."""
+def personnel_postings(company, as_of):
+    """(posting date, account number, debit minus credit) per day and account of the personnel accounts (group 5) in
+    the last year. cf.payroll_postings keeps the salary accounts of them."""
     rows = frappe.db.sql(
-        """select gle.posting_date, sum(gle.debit - gle.credit)
+        """select gle.posting_date, a.account_number, sum(gle.debit - gle.credit)
         from `tabGL Entry` gle join `tabAccount` a on a.name = gle.account
         where gle.company = %s and gle.is_cancelled = 0 and a.is_group = 0 and a.account_number like %s
           and gle.posting_date between %s and %s
-        group by gle.posting_date""",
+        group by gle.posting_date, a.account_number""",
         (company, "5%", as_of - datetime.timedelta(days=LOOKBACK_DAYS), as_of),
     )
-    return [(day, flt(amount)) for day, amount in rows]
+    return [(day, number, flt(amount)) for day, number, amount in rows]
 
 
 def vat_balances(company, as_of):
@@ -228,15 +233,40 @@ def recurring_sources(company, as_of):
     }
 
 
+def insurer_suppliers(company):
+    """The suppliers with a purchase bill booked to an insurer's payable (INSURER_PAYABLE_ACCOUNTS)."""
+    accounts = frappe.get_all(
+        "Account", filters={"company": company, "account_number": ["between", list(INSURER_PAYABLE_ACCOUNTS)]},
+        pluck="name")
+    if not accounts:
+        return set()
+    return set(frappe.get_all(
+        "Purchase Invoice", filters={"company": company, "docstatus": 1, "credit_to": ["in", accounts]},
+        pluck="supplier"))
+
+
 def dry_run(company=None, as_of=None):
     """Counts only, for a read-only run of the bank source (bench execute): the groups per period, the bank lines
     they cover, the lines each rule left out, and the bank groups whose key is a bill supplier's key (a possible
-    overlap of the two sources). No description and no amount, so the output can go in a note."""
+    overlap of the two sources). The payroll and the insurers' bills: how many, not what they are. No description
+    and no amount, so the output can go in a note."""
     company = company or frappe.defaults.get_user_default("company")
-    sources = recurring_sources(company, getdate(as_of or nowdate()))
+    as_of = getdate(as_of or nowdate())
+    sources = recurring_sources(company, as_of)
     bill_keys = {cf.description_key(item["supplier"]) for item in sources["bills"]}
+    insurers = insurer_suppliers(company)
+    lines = compute(company, as_of)["lines"]
+    salary_months = {(day.year, day.month) for day, _amount in cf.payroll_postings(personnel_postings(company, as_of))}
     return {
         "bill_groups": len(sources["bills"]),
+        "bill_groups_per_period": dict(collections.Counter(item["period"] for item in sources["bills"])),
+        "insurer_bill_groups_per_period": dict(collections.Counter(
+            item["period"] for item in sources["bills"] if item["supplier"] in insurers)),
+        "insurer_open_bills": sum(1 for party, _amount, _due in open_documents(company, as_of, "Purchase Invoice").values()
+                                  if party in insurers),
+        "insurer_recurring_lines": sum(1 for l in lines if l["kind"] == "recurring" and l["party"] in insurers),
+        "payroll_salary_months": len(salary_months),
+        "payroll_lines": sum(1 for l in lines if l["kind"] == "payroll"),
         "bank_lines_kept": sources["kept"],
         "bank_lines_left_out": dict(sources["left_out"]),
         "bank_groups_per_period": dict(collections.Counter(item["period"] for item in sources["bank"])),
@@ -288,9 +318,10 @@ def compute(company, as_of):
                 item["period"], item["count"], item["supplier"])
             lines.append(line("recurring", day, item["amount"], "", "Bank Transaction", item["last_bill"], note))
 
-    amount = cf.payroll_from_postings(salary_postings(company, as_of))
+    amount = cf.payroll_from_postings(cf.payroll_postings(personnel_postings(company, as_of)))
     if amount:
-        note = _("average of the last three salary months, run on the 25th or the Friday before a weekend")
+        note = _("average of the last three salary months (accounts {0} to {1}), run on the 25th or the Friday before a weekend").format(
+            *cf.SALARY_ACCOUNTS)
         for day in cf.payroll_dates(as_of, horizon):
             lines.append(line("payroll", day, amount, "", "", "", note))
 

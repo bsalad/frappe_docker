@@ -202,6 +202,39 @@ class Payroll(unittest.TestCase):
     def test_no_postings_no_payroll(self):
         self.assertIsNone(cf.payroll_from_postings([]))
 
+    def test_the_salary_accounts_are_5000_to_5099(self):
+        rows = [
+            (D(2026, 9, 30), "4000", 1.0),
+            (D(2026, 9, 30), "5000", 1000.0),
+            (D(2026, 9, 30), "5003", 200.0),
+            (D(2026, 9, 30), "5099", 30.0),
+            (D(2026, 9, 30), "5100", 4.0),
+            (D(2026, 9, 30), "5700", 300.0),
+            (D(2026, 9, 30), "5800", 50.0),
+        ]
+        self.assertEqual(cf.payroll_postings(rows), [(D(2026, 9, 30), 1000.0), (D(2026, 9, 30), 200.0), (D(2026, 9, 30), 30.0)])
+
+    def test_a_contribution_on_the_salary_date_is_not_in_the_payroll(self):
+        rows = []
+        for month, salary, contribution in ((7, 800.0, 260.0), (8, 1000.0, 330.0), (9, 1200.0, 390.0)):
+            rows.append((D(2026, month, 30), "5000", salary))
+            rows.append((D(2026, month, 30), "5700", contribution))
+        self.assertEqual(cf.payroll_from_postings(cf.payroll_postings(rows)), 1000.0)
+
+    def test_a_month_with_contributions_and_no_salary_is_no_payroll_month(self):
+        rows = [
+            (D(2026, 7, 30), "5700", 900.0),
+            (D(2026, 8, 30), "5000", 1000.0),
+            (D(2026, 8, 30), "5800", 80.0),
+            (D(2026, 9, 30), "5000", 1200.0),
+            (D(2026, 10, 30), "5740", 900.0),
+        ]
+        self.assertEqual(cf.payroll_from_postings(cf.payroll_postings(rows)), 1100.0)
+
+    def test_only_contributions_no_payroll(self):
+        rows = [(D(2026, 9, 30), "5700", 300.0), (D(2026, 9, 30), "5800", 50.0)]
+        self.assertIsNone(cf.payroll_from_postings(cf.payroll_postings(rows)))
+
     def test_the_run_is_on_the_twenty_fifth(self):
         self.assertEqual(cf.payroll_run(2026, 11), D(2026, 11, 25))
 
