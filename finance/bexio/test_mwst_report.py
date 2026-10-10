@@ -514,5 +514,76 @@ class JournalRun(unittest.TestCase):
             self.assertIn("405,journal entries (by account),0.00,8.10", report)
 
 
+def gl(number, voucher_type, voucher_no, debit="0", credit="0"):
+    """One GL entry as gl_entries() gives it. Invented figures."""
+    return {"number": number, "voucher_type": voucher_type, "voucher_no": voucher_no,
+            "debit": D(debit), "credit": D(credit)}
+
+
+class GlChecks(unittest.TestCase):
+    def test_a_sales_invoice_credit_and_its_reversal_leave_no_owed_tax(self):
+        gl_rows = [
+            gl("2200", "Sales Invoice", "SI-1", credit="81.00"),
+            gl("2200", "Journal Entry", "JE-1", debit="81.00"),
+            gl("2202", "Journal Entry", "JE-1", credit="81.00"),
+        ]
+        self.assertEqual(mr.gl_owed(gl_rows), D("0"))
+
+    def test_a_receipt_move_counts_as_owed_tax(self):
+        gl_rows = [
+            gl("2200", "Sales Invoice", "SI-1", credit="81.00"),
+            gl("2200", "Journal Entry", "JE-1", debit="81.00"),
+            gl("2200", "Journal Entry", "JE-2", credit="40.50"),
+        ]
+        self.assertEqual(mr.gl_owed(gl_rows), D("40.50"))
+
+    def test_a_purchase_invoice_debit_is_not_input_tax_but_a_move_is(self):
+        gl_rows = [
+            gl("1171", "Purchase Invoice", "PI-1", debit="7.50"),
+            gl("1171", "Journal Entry", "JE-3", debit="12.00"),
+            gl("1170", "Bank Entry", "BE-1", debit="3.00"),
+            gl("1172", "Journal Entry", "JE-3", credit="12.00"),
+        ]
+        self.assertEqual(mr.gl_deductible(gl_rows), D("15.00"))
+
+    def test_the_settlement_entry_is_found_and_its_legs_are_summed(self):
+        gl_rows = [
+            gl("2200", "Journal Entry", "JE-9", debit="100.00"),
+            gl("2201", "Journal Entry", "JE-9", credit="90.00"),
+            gl("1170", "Journal Entry", "JE-9", credit="4.00"),
+            gl("1171", "Journal Entry", "JE-9", credit="6.00"),
+            gl("2201", "Bank Entry", "BE-2", debit="50.00"),
+            gl("1020", "Bank Entry", "BE-2", credit="50.00"),
+        ]
+        self.assertEqual(mr.settlement(gl_rows), (True, D("100.00"), D("10.00")))
+
+    def test_a_quarter_without_a_settlement_is_not_settled(self):
+        gl_rows = [
+            gl("2200", "Journal Entry", "JE-4", credit="40.50"),
+            gl("2201", "Bank Entry", "BE-2", debit="50.00"),
+            gl("1020", "Bank Entry", "BE-2", credit="50.00"),
+        ]
+        self.assertEqual(mr.settlement(gl_rows), (False, D("0"), D("0")))
+
+    def test_the_reconcile_lines_name_the_settlement_and_its_difference(self):
+        t = mr.plan([doc(datetime.date(2026, 8, 3), D("1000.00"), [
+            tax("UN81 8.1% Normalsatz", "81.00"),
+        ])], [], TEMPLATE_NAMES)
+        gl_rows = [
+            gl("2200", "Journal Entry", "JE-1", credit="81.00"),
+            gl("2200", "Journal Entry", "JE-9", debit="81.00"),
+            gl("2201", "Journal Entry", "JE-9", credit="81.00"),
+        ]
+        lines = mr.reconcile_lines(t, gl_rows)
+        self.assertIn("settlement: settled: yes; 2200 debit 81.00 vs owed 81.00: difference 0.00; "
+                      "1170+1171 credit 0.00 vs input tax 0.00: difference 0.00", lines)
+
+    def test_an_unsettled_quarter_says_so(self):
+        t = mr.plan([doc(datetime.date(2026, 8, 3), D("1000.00"), [
+            tax("UN81 8.1% Normalsatz", "81.00"),
+        ])], [], TEMPLATE_NAMES)
+        self.assertIn("settlement: settled: no", mr.reconcile_lines(t, []))
+
+
 if __name__ == "__main__":
     unittest.main()

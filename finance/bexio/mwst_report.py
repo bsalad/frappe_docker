@@ -473,7 +473,7 @@ def main(argv):
             payments, invoices = fetch_payments(erp, start, end)
         else:
             docs = fetch(erp, start, end)
-        gl = gl_by_account(erp, start, end)
+        gl = gl_entries(erp, start, end)
         journal = fetch_journal_lines(erp, start, end)
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
@@ -499,35 +499,78 @@ def main(argv):
     return 1 if totals.unmapped else 0
 
 
-def gl_by_account(erp, start, end):
-    """Net GL balance (debit minus credit) of the VAT accounts 2200, 1170, 1171 in the period. The check against the
-    report: manual journal entries with tax show up here and not in the invoice rows."""
-    accounts = erp.list("Account", [["company", "=", COMPANY], ["account_number", "in", ["2200", "1170", "1171"]]],
+GL_ACCOUNTS = ("2200", "1170", "1171", "2201")
+
+
+def gl_entries(erp, start, end):
+    """The GL entries of the period on the VAT accounts 2200, 1170, 1171 and the settlement account 2201, one dict
+    each with the account number, the voucher it posts from, debit and credit (read only). The checks below go by
+    voucher, because bexio's settlement is a voucher of its own and the invoice rows are not."""
+    accounts = erp.list("Account", [["company", "=", COMPANY], ["account_number", "in", list(GL_ACCOUNTS)]],
                         ["name", "account_number"])
-    names = {a["name"]: a["account_number"] for a in accounts}
+    names = {a["name"]: str(a["account_number"]) for a in accounts}
     if not names:
-        return {}
+        return []
     entries = erp.list("GL Entry", [["account", "in", list(names)], ["is_cancelled", "=", 0],
                                     ["posting_date", "between", [str(start), str(end)]]],
-                       ["account", "debit", "credit"])
-    out = {}
-    for e in entries:
-        out[names[e["account"]]] = out.get(names[e["account"]], ZERO) + Decimal(str(e["debit"])) - Decimal(str(e["credit"]))
-    return out
+                       ["account", "voucher_type", "voucher_no", "debit", "credit"])
+    return [{"number": names[e["account"]], "voucher_type": e["voucher_type"], "voucher_no": e["voucher_no"],
+             "debit": Decimal(str(e["debit"])), "credit": Decimal(str(e["credit"]))} for e in entries]
+
+
+def gl_owed(gl):
+    """Sales tax moved to 2200 in the period: the credits on 2200 from vouchers other than Sales Invoice. The
+    Sales Invoice credits are left out, because the import's mirror entries reverse them to 2202 at the invoice date,
+    so the credit of a sale and its reversal net out, and what remains is the receipt's move and manual sales tax."""
+    return sum((e["credit"] for e in gl if e["number"] == "2200" and e["voucher_type"] != "Sales Invoice"), ZERO)
+
+
+def gl_deductible(gl):
+    """Input tax moved to 1170 and 1171 in the period: the debits from vouchers other than Purchase Invoice, the
+    same way as gl_owed. Purchase Invoice debits are left out for the same reason, bexio books them at the bill date."""
+    return sum((e["debit"] for e in gl if e["number"] in ("1170", "1171") and e["voucher_type"] != "Purchase Invoice"),
+               ZERO)
+
+
+def settlement(gl):
+    """The settlement of the period: the vouchers that post against 2201, read for their 2200 debit (the sales tax
+    declared) and their 1170 and 1171 credits (the input tax declared). bexio books it once per quarter; a voucher
+    that only moves 2201 against the bank is not a settlement. Returns (settled, declared owed, declared input)."""
+    vouchers = {(e["voucher_type"], e["voucher_no"]) for e in gl if e["number"] == "2201"}
+    owed = ZERO
+    deductible = ZERO
+    for e in gl:
+        if (e["voucher_type"], e["voucher_no"]) not in vouchers:
+            continue
+        if e["number"] == "2200":
+            owed += e["debit"]
+        elif e["number"] in ("1170", "1171"):
+            deductible += e["credit"]
+    return bool(owed or deductible), owed, deductible
 
 
 def reconcile_lines(totals, gl):
-    """Sales tax (Ziffer 399) against the credit of 2200, Vorsteuer (420) against the debit of 1170 and 1171."""
+    """Sales tax (Ziffer 399) against the gross credits of 2200, Vorsteuer (420) against the gross debits of 1170 and
+    1171, and the settlement of the period against both sums. The net of the accounts is zero in a settled quarter,
+    so it is not what is checked here."""
     rows, _ = form_totals(totals)
     owed = rows.get("399", [ZERO, ZERO])[1]
     vorsteuer = rows.get("420", [ZERO, ZERO])[1]
-    gl_sales = -gl.get("2200", ZERO)
-    gl_input = gl.get("1170", ZERO) + gl.get("1171", ZERO)
-    return [
-        "check against GL: 2200 credit {:,.2f} vs Ziffer 399 {:,.2f}: difference {:,.2f}".format(gl_sales, owed, gl_sales - owed),
-        "check against GL: 1170+1171 debit {:,.2f} vs Ziffer 420 {:,.2f}: difference {:,.2f}".format(gl_input, vorsteuer, gl_input - vorsteuer),
-        "differences come from the bases not in a checked Ziffer and from the rows the report does not read (swiss.md)",
+    gl_sales = gl_owed(gl)
+    gl_input = gl_deductible(gl)
+    settled, declared_owed, declared_input = settlement(gl)
+    lines = [
+        "check against GL: owed on 2200 {:,.2f} vs Ziffer 399 {:,.2f}: difference {:,.2f}".format(gl_sales, owed, gl_sales - owed),
+        "check against GL: input tax on 1170+1171 {:,.2f} vs Ziffer 420 {:,.2f}: difference {:,.2f}".format(gl_input, vorsteuer, gl_input - vorsteuer),
     ]
+    if settled:
+        lines.append("settlement: settled: yes; 2200 debit {:,.2f} vs owed {:,.2f}: difference {:,.2f}; 1170+1171 credit {:,.2f} vs input tax {:,.2f}: difference {:,.2f}".format(
+            declared_owed, gl_sales, declared_owed - gl_sales, declared_input, gl_input, declared_input - gl_input))
+    else:
+        lines.append("settlement: settled: no")
+    lines.append("differences come from manual journal entries with tax, from the bases not in a checked Ziffer, and, "
+                 "for Ziffer 420, from the direct input tax that the payment mode does not read yet")
+    return lines
 
 
 if __name__ == "__main__":
