@@ -75,7 +75,7 @@ insurer's or the Ausgleichskasse's own sheet before a live run.
 | Need | How it is met | 2026 public values | Status | Source |
 | --- | --- | --- | --- | --- |
 | AHV/IV/EO | Salary Components with a formula on the gross AHV wage: 5.30% employee, 5.30% employer | 10.60% total, 5.30% each side. The sources do not agree on the split between AHV, IV and EO; the formula does not need it | Config, no code. Check the wage base (family allowances excluded) with the Ausgleichskasse | [weka](https://www.weka.ch/themen/personal/lohn-und-gehalt/lohnabrechnung/article/lohnabzuege-die-aktuellen-sozialversicherungsbeitraege/), [onlinetreuhand 2026](https://www.onlinetreuhand.ch/fileadmin/user_upload/Onlinetreuhand/Dokumente/Sozialversicherungen_2026.pdf) |
-| ALV (incl. ceiling) | Component with `min(base, ceiling)`: 1.10% employee, 1.10% employer | 2.20% total up to CHF 148,200 a year (unchanged from 2025). ALV 2 above the ceiling is not in the sources | Config, no code. **ALV 2 open** | same sources |
+| ALV (incl. ceiling) | Component with `min(base, ceiling)`: 1.10% employee, 1.10% employer | 2.20% total up to CHF 148,200 a year (unchanged from 2025). No contribution above the ceiling: the 1% solidarity contribution (ALV 2) lapsed on 1 Jan 2023 | Config, no code. Nothing above the ceiling | same sources; [law.ch](https://law.ch/lawnews/2022/10/arbeitslosenversicherung-solidaritaetsprozent-entfaellt-per-01-01-2023/) |
 | BVG (coordinated salary) | Component on `salary - coordination deduction`, with an entry threshold, and the age-based rates of the Pensionskasse. The split and the rates are the fund's plan, not the law | Entry threshold CHF 22,680; coordination deduction CHF 26,460 | Config is possible (the formula reads the employee's date of birth). The plan rates are open | [convit](https://convit.ch/wissen/bvg-koordinationsabzug), [auditrium](https://www.auditrium.ch/blog/articles/koordinationsabzug-2026-wichtige-aenderungen-fuer-unternehmen) |
 | UVG / NBU | Components with the insurer's percentage on the insured salary. BU/UVG employer share, NBU employee share | Set by the insurer per policy | Config. Needs the policy sheets | none; insurer documents |
 | KTG | Component with the insurer's rate on the insured salary | Set by the insurer | Config. Needs the policy sheet | none |
@@ -108,9 +108,9 @@ Journal Entries. Creating Salary Slips for those months does not create GL again
 slips are never picked up by a Payroll Entry accrual. The accrual picks only slips that
 name that Payroll Entry (`payroll_entry`) and have an empty `journal_entry`
 (`payroll_entry.py`, `get_sal_slip_list`). The rule for history: leave `payroll_entry`
-empty, and set `journal_entry` on each historical slip to the Journal Entry that already
-books its month. The first rule alone excludes them; the second shows the link to the
-existing entry. This is the design to test. It is not yet run.
+empty. That alone excludes them. Setting `journal_entry` as well is optional: it is one Link,
+and `import_payroll.py` loads one Journal Entry per bexio journal line (`journal-<id>`), so a
+month can have several. Link it only when a month has a single entry; otherwise leave it empty. This is the design to test. It is not yet run.
 
 The check after the load is the one `import_payroll.py --check` already does: the GL per
 account and year against bexio's lines, with counts and totals only in the notes.
@@ -130,8 +130,8 @@ slot that ledgerdemain gives (`erpnext-setup.md`).
    Invented-data tests for each formula, with the ALV ceiling and the BVG threshold.
 4. **Employee load from the bexio export.** Offline importer, the same shape as
    `import_master.py`, writing only Employee and the AHV number. Mocked data in tests.
-5. **History loader.** One submitted Salary Slip per employee and month, `journal_entry`
-   set to the existing JE, PDF attached. Check: no new GL (`make_accrual_jv_entry` is not
+5. **History loader.** One submitted Salary Slip per employee and month, `payroll_entry`
+   empty, PDF attached. Check: no new GL (`make_accrual_jv_entry` is not
    called on these), and the GL per account and year equals before the load.
 6. **Lohnausweis check.** Compare the erpnextswiss Salary Certificate layout with the 2026
    Form 11. Compare one year's output with the bexio paystub totals (counts and totals in
@@ -166,8 +166,8 @@ Risks:
 Go with HRMS `v16.50.0`, pinned as a tag. Write the Swiss deductions as Salary Components
 with formulas (AHV, ALV, BVG, UVG/NBU, KTG, FAK) as settings in the `bi_finance` fixtures.
 Use erpnextswiss's Salary Certificate for the Lohnausweis, after its field layout is checked
-against the 2026 Form 11. Load the bexio history as submitted Salary Slips linked to the
-Journal Entries that already book them, so no GL is posted twice. Do not start the live site
+against the 2026 Form 11. Load the bexio history as submitted Salary Slips with no
+`payroll_entry`, so no GL is posted twice. Do not start the live site
 until the two gaps have a decision: how ELM is transmitted, and how Quellensteuer is
 calculated.
 
