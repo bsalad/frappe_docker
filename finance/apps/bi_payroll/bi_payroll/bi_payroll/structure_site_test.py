@@ -21,3 +21,9 @@ class TestStructure(IntegrationTestCase):
         for component in STRUCTURE_EARNINGS + STRUCTURE_DEDUCTIONS:
             with self.subTest(component=component):
                 self.assertTrue(structure_row(component)["formula"])
+
+    def test_an_employer_share_is_not_a_statistical_row(self):
+        # erp-fs9c: a statistical row is kept off the slip, so the hand-over's employer columns were 0
+        for component in ["AHV/IV/EO Employer", "ALV Employer", "BVG Employer", "UVG Employer", "KTG Employer", "FAK Employer"]:
+            with self.subTest(component=component):
+                self.assertEqual(structure_row(component)["statistical_component"], 0)

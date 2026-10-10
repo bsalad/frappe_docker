@@ -187,5 +187,17 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(defaults["swiss_bvg_coordination"], "26460")
 
 
+class EmployerShares(unittest.TestCase):
+    # erp-fs9c: the employer components were statistical, and HRMS keeps those off the slip, so the hand-over's
+    # employer columns were 0. They are on the slip now, and out of gross and net (do_not_include_in_total).
+    def test_each_employer_share_is_on_the_slip(self):
+        employers = [c for c in load("salary_component.json") if c["salary_component"].endswith("Employer")]
+        self.assertEqual(len(employers), 6)
+        for c in employers:
+            with self.subTest(component=c["salary_component"]):
+                self.assertEqual(c["statistical_component"], 0)
+                self.assertEqual(c["do_not_include_in_total"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
