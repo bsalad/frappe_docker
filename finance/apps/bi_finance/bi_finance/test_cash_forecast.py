@@ -95,7 +95,7 @@ class RecurringCosts(unittest.TestCase):
 
 
 class Payroll(unittest.TestCase):
-    def test_the_average_of_the_last_three_months_on_the_day_of_the_last_posting(self):
+    def test_the_average_of_the_last_three_months_with_postings(self):
         postings = [
             (D(2026, 6, 20), 5000.0),  # outside the last three months
             (D(2026, 7, 20), 800.0),
@@ -103,17 +103,26 @@ class Payroll(unittest.TestCase):
             (D(2026, 9, 26), 1200.0),
             (D(2026, 9, 30), 300.0),
         ]
-        self.assertEqual(cf.payroll_from_postings(postings), (1100.0, 30))
+        self.assertEqual(cf.payroll_from_postings(postings), 1100.0)
 
     def test_no_postings_no_payroll(self):
         self.assertIsNone(cf.payroll_from_postings([]))
 
-    def test_the_run_is_monthly_on_its_day_clamped_to_short_months(self):
-        self.assertEqual(list(cf.payroll_dates(31, D(2026, 2, 10), D(2026, 4, 30))),
-                         [D(2026, 2, 28), D(2026, 3, 31), D(2026, 4, 30)])
+    def test_the_run_is_on_the_twenty_fifth(self):
+        self.assertEqual(cf.payroll_run(2026, 11), D(2026, 11, 25))
+
+    def test_a_twenty_fifth_on_a_sunday_is_the_friday_before(self):
+        self.assertEqual(cf.payroll_run(2026, 10), D(2026, 10, 23))
+
+    def test_a_twenty_fifth_on_a_saturday_is_the_friday_before(self):
+        self.assertEqual(cf.payroll_run(2026, 7), D(2026, 7, 24))
+
+    def test_the_runs_from_as_of_to_the_horizon(self):
+        self.assertEqual(list(cf.payroll_dates(D(2026, 10, 10), D(2026, 12, 31))),
+                         [D(2026, 10, 23), D(2026, 11, 25), D(2026, 12, 25)])
 
     def test_a_run_before_the_as_of_date_is_not_in_the_forecast(self):
-        self.assertEqual(list(cf.payroll_dates(5, D(2026, 2, 10), D(2026, 3, 31))), [D(2026, 3, 5)])
+        self.assertEqual(list(cf.payroll_dates(D(2026, 10, 24), D(2026, 11, 30))), [D(2026, 11, 25)])
 
 
 class Vat(unittest.TestCase):
@@ -124,16 +133,31 @@ class Vat(unittest.TestCase):
     def test_more_input_tax_than_owed_is_not_owed(self):
         self.assertEqual(cf.vat_owed({"2200": -100.0, "1171": 500.0}), -400.0)
 
-    def test_the_last_quarter_end_on_or_before_the_day(self):
-        self.assertEqual(cf.last_quarter_end(D(2026, 10, 10)), D(2026, 9, 30))
-        self.assertEqual(cf.last_quarter_end(D(2026, 1, 2)), D(2025, 12, 31))
-        self.assertEqual(cf.last_quarter_end(D(2026, 3, 31)), D(2026, 3, 31))
+    def test_the_quarter_of_a_day(self):
+        self.assertEqual(cf.quarter_start(AS_OF), D(2026, 10, 1))
+        self.assertEqual(cf.quarter_end(AS_OF), D(2026, 12, 31))
+        self.assertEqual(cf.quarter_start(D(2026, 9, 30)), D(2026, 7, 1))
+        self.assertEqual(cf.quarter_end(D(2026, 2, 1)), D(2026, 3, 31))
 
-    def test_the_payment_is_sixty_days_after_the_quarter_end(self):
-        self.assertEqual(cf.vat_pay_date(AS_OF), D(2026, 11, 29))
+    def test_the_return_is_due_at_the_end_of_the_second_month_after_the_quarter(self):
+        self.assertEqual(cf.vat_due_date(D(2026, 3, 31)), D(2026, 5, 31))
+        self.assertEqual(cf.vat_due_date(D(2026, 6, 30)), D(2026, 8, 31))
+        self.assertEqual(cf.vat_due_date(D(2026, 9, 30)), D(2026, 11, 30))
+        self.assertEqual(cf.vat_due_date(D(2026, 12, 31)), D(2027, 2, 28))
+        self.assertEqual(cf.vat_due_date(D(2027, 12, 31)), D(2028, 2, 29))
 
-    def test_a_payment_day_that_has_passed_is_due_now(self):
-        self.assertEqual(cf.vat_pay_date(D(2026, 12, 5)), D(2026, 12, 5))
+    def test_a_closed_quarter_is_paid_on_its_due_date_not_on_the_as_of_date(self):
+        self.assertEqual(cf.vat_lines(AS_OF, 800.0, 0.0), [(D(2026, 11, 30), 800.0, D(2026, 9, 30))])
+
+    def test_the_current_quarter_is_projected_on_its_own_due_date(self):
+        as_of = D(2026, 12, 20)
+        self.assertEqual(cf.vat_lines(as_of, 0.0, 900.0), [(D(2027, 2, 28), 900.0, D(2026, 12, 31))])
+
+    def test_a_refund_comes_in_thirty_days_after_the_due_date(self):
+        self.assertEqual(cf.vat_lines(AS_OF, -400.0, 0.0), [(D(2026, 12, 30), -400.0, D(2026, 9, 30))])
+
+    def test_a_quarter_with_nothing_owed_has_no_line(self):
+        self.assertEqual(cf.vat_lines(AS_OF, 0.0, 0.0), [])
 
 
 class Forecast(unittest.TestCase):
@@ -165,6 +189,11 @@ class Forecast(unittest.TestCase):
         weeks, lowest, _ = cf.forecast(AS_OF, 1000.0, lines)
         self.assertEqual(weeks[4]["closing"], -500.0)
         self.assertEqual(lowest, 5)
+
+    def test_a_refund_is_an_inflow_in_its_week(self):
+        lines = [self.line("vat", AS_OF + datetime.timedelta(days=20), -300.0)]
+        weeks, _, _ = cf.forecast(AS_OF, 1000.0, lines)
+        self.assertEqual((weeks[2]["vat"], weeks[2]["net"], weeks[2]["closing"]), (-300.0, 300.0, 1300.0))
 
     def test_each_line_gets_its_week(self):
         lines = self.lines()

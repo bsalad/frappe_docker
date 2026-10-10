@@ -7,8 +7,8 @@ Weeks run from the as-of date: week 1 is the as-of day and the six after it, wee
 the horizon. A line due before the as-of date is overdue and falls in week 1: it is still owed.
 
 Kinds of line: receipt (a customer pays an open Sales Invoice), bill (an open Purchase Invoice), recurring
-(a cost that repeats per supplier), payroll (the monthly salary run), vat (the VAT owed on the books).
-Only receipts come in; the others go out.
+(a cost that repeats per supplier), payroll (the monthly salary run), vat (the VAT the books owe, or a refund).
+Only receipts come in; the others go out. A refund is a vat line with a negative amount, so it comes in.
 """
 
 import calendar
@@ -17,8 +17,11 @@ import statistics
 
 WEEKS = 13
 DAYS_PER_WEEK = 7
-# VAT is paid 60 days after the quarter it is for ends (the calendar quarters).
-VAT_PAYMENT_DAYS = 60
+# The salary run is on this day of the month, or the Friday before when it falls on a weekend.
+PAYROLL_DAY = 25
+# The VAT return and payment for a quarter are due at the end of the quarter's second month after it ends.
+# A refund is paid this many days after that due date.
+VAT_REFUND_DAYS = 30
 # A recurring cost whose occurrence falls this close to an open bill of the same supplier is that bill, not a second one.
 OPEN_BILL_MATCH_DAYS = 15
 # Days between one bill and the next, as the median, for each period; the periods in months, below.
@@ -121,28 +124,28 @@ def recurring_dates(item, as_of, end):
 
 def payroll_from_postings(postings):
     """postings: (posting date, amount) of the salary accounts (group 5) over the look-back window.
-    The payroll is the average of the last three months with postings; the run is on the day of month of
-    the last posting in the latest month. None when there are no postings."""
+    The payroll is the average of the last three months with postings. None when there are no postings."""
     monthly = {}
     for day, amount in postings:
-        key = (day.year, day.month)
-        monthly.setdefault(key, [0.0, None])
-        monthly[key][0] += amount
-        if monthly[key][1] is None or day > monthly[key][1]:
-            monthly[key][1] = day
+        monthly.setdefault((day.year, day.month), 0.0)
+        monthly[(day.year, day.month)] += amount
     if not monthly:
         return None
     latest = sorted(monthly)[-3:]
-    amount = statistics.mean(monthly[key][0] for key in latest)
-    return round(amount, 2), monthly[latest[-1]][1].day
+    return round(statistics.mean(monthly[key] for key in latest), 2)
 
 
-def payroll_dates(day_of_month, as_of, end):
-    """Each monthly salary run from as_of to end, on the day of month (clamped to short months)."""
+def payroll_run(year, month):
+    """The salary run of a month: the 25th, or the Friday before when the 25th is a Saturday or a Sunday."""
+    day = datetime.date(year, month, PAYROLL_DAY)
+    return day - datetime.timedelta(days=max(day.weekday() - 4, 0))
+
+
+def payroll_dates(as_of, end):
+    """Each monthly salary run from as_of to end."""
     year, month = as_of.year, as_of.month
     while True:
-        last = calendar.monthrange(year, month)[1]
-        run = datetime.date(year, month, min(day_of_month, last))
+        run = payroll_run(year, month)
         if run > end:
             return
         if run >= as_of:
@@ -158,16 +161,43 @@ def vat_owed(balances):
     return round(liabilities - input_tax, 2)
 
 
-def last_quarter_end(day):
-    """The last calendar quarter end on or before day."""
-    ends = [datetime.date(year, month, calendar.monthrange(year, month)[1])
-            for year in (day.year - 1, day.year) for month in (3, 6, 9, 12)]
-    return max(end for end in ends if end <= day)
+def quarter_start(day):
+    """The first day of the calendar quarter day falls in."""
+    return datetime.date(day.year, 3 * ((day.month - 1) // 3) + 1, 1)
 
 
-def vat_pay_date(as_of):
-    """The VAT on the books is paid 60 days after the last quarter end. When that day has passed, it is due now."""
-    return max(last_quarter_end(as_of) + datetime.timedelta(days=VAT_PAYMENT_DAYS), as_of)
+def quarter_end(day):
+    """The last day of the calendar quarter day falls in."""
+    start = quarter_start(day)
+    last_month = start.month + 2
+    return datetime.date(start.year, last_month, calendar.monthrange(start.year, last_month)[1])
+
+
+def vat_due_date(end):
+    """The VAT return and payment for the quarter ending on end are due at the end of its second month after it:
+    Q1 by 31 May, Q2 by 31 August, Q3 by 30 November, Q4 by the end of February."""
+    later = add_months(end.replace(day=1), 2)
+    return datetime.date(later.year, later.month, calendar.monthrange(later.year, later.month)[1])
+
+
+def vat_lines(as_of, owed_closed, owed_this_quarter):
+    """The VAT cash from the books, as (day, amount, quarter end): a payment is positive, a refund negative.
+    owed_closed: the VAT the books owed at the start of the current quarter, which is the VAT of the quarter closed
+    last; it is paid on that quarter's due date. owed_this_quarter: the VAT booked since the current quarter
+    started, paid on the current quarter's due date (it may fall beyond the horizon). The open invoices' VAT is
+    already in the books, since a submitted invoice is booked to VAT, so it is not added again.
+    A refund (input tax above output tax) comes in VAT_REFUND_DAYS after the due date."""
+    closed_end = quarter_start(as_of) - datetime.timedelta(days=1)
+    lines = []
+    for end, owed in ((closed_end, owed_closed), (quarter_end(as_of), owed_this_quarter)):
+        amount = round(owed, 2)
+        if amount == 0:
+            continue
+        due = vat_due_date(end)
+        if amount < 0:
+            due += datetime.timedelta(days=VAT_REFUND_DAYS)
+        lines.append((due, amount, end))
+    return lines
 
 
 def expected_receipt(due, late_days):
@@ -176,7 +206,7 @@ def expected_receipt(due, late_days):
 
 
 def forecast(as_of, opening, lines):
-    """lines: dicts with kind, day, amount (positive), party, doctype, name, note.
+    """lines: dicts with kind, day, amount (positive; negative for a vat refund), party, doctype, name, note.
     Places each line in its week and runs the balance from the opening cash.
     Returns (weeks, lowest, beyond): weeks is 13 dicts (week, start, end, the amount per kind, net, closing);
     lowest is the week with the lowest closing balance, the earliest on a tie; beyond counts the lines after the horizon."""

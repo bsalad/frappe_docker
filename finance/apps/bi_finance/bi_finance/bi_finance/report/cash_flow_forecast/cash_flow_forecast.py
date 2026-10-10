@@ -7,8 +7,11 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
 - bills: the open Purchase Invoices, on the due date;
 - recurring costs: the suppliers whose bills repeat monthly, quarterly or yearly over the last year, unless an
   open bill of theirs falls due within a couple of weeks of the occurrence;
-- payroll: the salary accounts (group 5) of the last year, the average of the last three months, paid monthly;
-- VAT: the balance of 2200 and 2202 less 1170 to 1172 on the as-of date, paid 60 days after the last quarter end.
+- payroll: the salary accounts (group 5) of the last year, the average of the last three months, paid on the 25th
+  (the Friday before when the 25th is a weekend);
+- VAT: the balance of 2200 and 2202 less 1170 to 1172, split at the start of the current quarter: the quarter closed
+  last is paid on its due date, the current quarter's VAT so far is projected on its own due date; a refund comes
+  in 30 days after the due date.
 
 Everything is as of the as-of date, so the report can be run for a past date (the back-test).
 """
@@ -171,17 +174,23 @@ def compute(company, as_of):
             note = _("{0}, from its last bill").format(item["period"])
             lines.append(line("recurring", day, item["amount"], item["supplier"], "Purchase Invoice", item["last_bill"], note))
 
-    payroll = cf.payroll_from_postings(salary_postings(company, as_of))
-    if payroll:
-        amount, day_of_month = payroll
-        note = _("average of the last three salary months, run on day {0}").format(day_of_month)
-        for day in cf.payroll_dates(day_of_month, as_of, horizon):
+    amount = cf.payroll_from_postings(salary_postings(company, as_of))
+    if amount:
+        note = _("average of the last three salary months, run on the 25th or the Friday before a weekend")
+        for day in cf.payroll_dates(as_of, horizon):
             lines.append(line("payroll", day, amount, "", "", "", note))
 
-    owed = cf.vat_owed(vat_balances(company, as_of))
-    if owed > 0:
-        note = _("owed on the books on {0}, paid 60 days after the last quarter end").format(as_of)
-        lines.append(line("vat", cf.vat_pay_date(as_of), owed, "", "", "", note))
+    closed_end = cf.quarter_start(as_of) - datetime.timedelta(days=1)
+    owed_closed = cf.vat_owed(vat_balances(company, closed_end))
+    owed_this_quarter = cf.vat_owed(vat_balances(company, as_of)) - owed_closed
+    for day, amount, end in cf.vat_lines(as_of, owed_closed, owed_this_quarter):
+        if end == closed_end:
+            basis = _("VAT of the quarter ending {0}, as the books owed it on {1}").format(end, closed_end)
+        else:
+            basis = _("VAT booked in the quarter ending {0} so far, as of {1}").format(end, as_of)
+        if amount < 0:
+            basis = _("refund, {0}").format(basis)
+        lines.append(line("vat", day, amount, "", "", "", basis))
 
     weeks, lowest, beyond = cf.forecast(as_of, opening, lines)
     return {
