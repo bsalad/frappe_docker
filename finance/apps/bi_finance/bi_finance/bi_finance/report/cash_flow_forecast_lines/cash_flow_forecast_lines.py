@@ -17,7 +17,8 @@ def execute(filters=None):
     company = filters.company or frappe.defaults.get_user_default("company")
     as_of = getdate(filters.as_of_date or nowdate())
     result = compute(company, as_of, include_run_rate=cint(filters.get("include_run_rate", 1)),
-                     include_new_purchases=cint(filters.get("include_new_purchases", 1)))
+                     include_new_purchases=cint(filters.get("include_new_purchases", 1)),
+                     include_owner_accounts=cint(filters.get("include_owner_accounts", 1)))
 
     rows = []
     for line in result["lines"]:

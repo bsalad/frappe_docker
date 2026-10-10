@@ -22,6 +22,11 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
     when a purchase bill of the same amount is dated within five days of it. A group needs 80% of its gaps in its
     period, since a key can mix payees; lines of a group on one day are one occurrence, their sum; its amount
     is the median of its occurrences;
+  - the bank outflows booked by a Journal Entry, grouped by the contra account: one line per recurring account (the
+    Journal Entries that credit a bank or cash account, their debit lines), left out for the accounts another line
+    carries (payroll, insurers, VAT, bills, bank and cash accounts) and for the entries reconciled to a purchase
+    invoice; a bank line a Journal Entry reconciles to is counted here, not as a bank group. The owners' current
+    accounts (2100, 2121) are labelled "(average, discretionary)" and can be left out by a filter;
 - payroll: the salary accounts 5000 to 5099 of the last year (not the 57xx social contributions nor the 58xx other
   personnel costs: those are bills or bank lines), the average of the last three months, paid on the 25th
   (the Friday before when the 25th is a weekend);
@@ -42,9 +47,6 @@ from frappe.utils import cint, escape_html, flt, fmt_money, getdate, nowdate
 from bi_finance import cash_forecast as cf
 
 LOOKBACK_DAYS = 365
-# The payables of the insurers' bills (social security, pension, accident and sickness, withholding tax): their
-# contributions reach the forecast through the bills, not the payroll line.
-INSURER_PAYABLE_ACCOUNTS = ("2270", "2279")
 
 
 def kind_label(kind):
@@ -163,7 +165,7 @@ def bank_outflows(company, as_of, bills):
         },
         fields=["name", "date", "withdrawal", "description"],
     ) if accounts else []
-    payroll_or_vat_paid, bill_paid, transfer_paid = reconciled_bank_lines([line.name for line in lines])
+    payroll_or_vat_paid, bill_paid, transfer_paid, journal_paid = reconciled_bank_lines([line.name for line in lines])
     bill_days = [(day, amount) for _supplier, day, amount, _name in bills]
     kept = []
     for line in lines:
@@ -179,6 +181,9 @@ def bank_outflows(company, as_of, bills):
         elif line.name in transfer_paid:
             # the other leg is an account in the opening cash already: the money stays in the company
             left_out["transfer between own bank accounts"] += 1
+        elif line.name in journal_paid:
+            # a journal entry is a contra account's line (contra_sources), counted there once
+            left_out["journal entry, counted by its contra account"] += 1
         elif cf.paid_by_a_bill(line.date, amount, bill_days):
             left_out["amount of a bill"] += 1
         else:
@@ -187,12 +192,12 @@ def bank_outflows(company, as_of, bills):
 
 
 def reconciled_bank_lines(names):
-    """(payroll or VAT journal entry, purchase bill payment, transfer) as three sets of the bank transaction names: a
-    Journal Entry on a salary (5xxx) or VAT liability (2200, 2202) account, a Payment Entry referencing a Purchase
-    Invoice, and a transfer between the company's own accounts (a Journal Entry with two bank or cash lines, or an
-    Internal Transfer Payment Entry)."""
+    """(payroll or VAT journal entry, purchase bill payment, transfer, journal entry) as four sets of the bank transaction
+    names: a Journal Entry on a salary (5xxx) or VAT liability (2200, 2202) account, a Payment Entry referencing a Purchase
+    Invoice, a transfer between the company's own accounts (a Journal Entry with two bank or cash lines, or an Internal
+    Transfer Payment Entry), and any line a Journal Entry reconciles to."""
     if not names:
-        return set(), set(), set()
+        return set(), set(), set(), set()
     payroll_or_vat = frappe.db.sql(
         """select distinct btp.parent
         from `tabBank Transaction Payments` btp
@@ -229,8 +234,14 @@ def reconciled_bank_lines(names):
           and pe.payment_type = 'Internal Transfer'""",
         (names,),
     )
+    journal = frappe.db.sql(
+        """select distinct btp.parent
+        from `tabBank Transaction Payments` btp
+        where btp.payment_document = 'Journal Entry' and btp.parent in %s""",
+        (names,),
+    )
     transfer = {row[0] for row in transfer_je} | {row[0] for row in transfer_pe}
-    return {row[0] for row in payroll_or_vat}, {row[0] for row in bill}, transfer
+    return {row[0] for row in payroll_or_vat}, {row[0] for row in bill}, transfer, {row[0] for row in journal}
 
 
 def personnel_postings(company, as_of):
@@ -284,16 +295,70 @@ def opening_cash(company, as_of):
     return flt(rows[0][0])
 
 
+def journal_outflows(company, as_of):
+    """(contra account number, account type, account name, posting date, amount, journal entry) of the debit lines of the
+    last year's Journal Entries that credit a Bank or Cash account: the other side of each bank outflow by Journal
+    Entry. The amount is the debit on that line, in the company currency."""
+    since = as_of - datetime.timedelta(days=LOOKBACK_DAYS)
+    rows = frappe.db.sql(
+        """select coalesce(a.account_number, a.name), a.account_type, a.name, contra.posting_date, contra.debit, contra.voucher_no
+        from `tabGL Entry` contra join `tabAccount` a on a.name = contra.account
+        where contra.company = %s and contra.voucher_type = 'Journal Entry' and contra.is_cancelled = 0
+          and contra.debit > 0 and a.is_group = 0 and contra.posting_date between %s and %s
+          and contra.voucher_no in (
+            select bank.voucher_no
+            from `tabGL Entry` bank join `tabAccount` ba on ba.name = bank.account
+            where bank.company = %s and bank.voucher_type = 'Journal Entry' and bank.is_cancelled = 0
+              and bank.credit > 0 and ba.account_type in ('Bank', 'Cash') and bank.posting_date between %s and %s)""",
+        (company, since, as_of, company, since, as_of),
+    )
+    return [(number, account_type, name, day, flt(amount), entry) for number, account_type, name, day, amount, entry in rows]
+
+
+def billed_journal_entries(company, entries):
+    """The journal entries of entries reconciled to a purchase invoice: a Payment Ledger row of the Journal Entry against
+    the invoice. Those are bill payments, carried by the bills."""
+    if not entries:
+        return set()
+    rows = frappe.db.sql(
+        """select distinct ple.voucher_no
+        from `tabPayment Ledger Entry` ple
+        where ple.company = %s and ple.voucher_type = 'Journal Entry' and ple.against_voucher_type = 'Purchase Invoice'
+          and ple.delinked = 0 and ple.voucher_no in %s""",
+        (company, entries),
+    )
+    return {row[0] for row in rows}
+
+
+def contra_sources(company, as_of):
+    """The recurring costs of the Journal Entries by their contra account, as recurring_costs finds them. The key of each
+    is the account number ("supplier" in recurring_costs' dict); "label" is the account's name in the chart as the site
+    shows it. Also the Counter of the rows each rule left out (cf.journal_occurrences)."""
+    rows = journal_outflows(company, as_of)
+    names = {number: name for number, _account_type, name, _day, _amount, _entry in rows}
+    billed = billed_journal_entries(company, list({row[5] for row in rows}))
+    occurrences, left_out = cf.journal_occurrences(
+        [(number, account_type, day, amount, entry) for number, account_type, _name, day, amount, entry in rows], billed)
+    items = cf.recurring_costs(occurrences, as_of, strict=True)
+    for item in items:
+        item["label"] = names[item["supplier"]]
+    return items, left_out
+
+
 def recurring_sources(company, as_of):
     """The recurring costs of each source as recurring_costs finds them: "bills" from the purchase bills, "bank"
-    from the bank lines, keyed by their description's group key. "left_out" counts the bank lines each rule
-    left out; "kept" is the number of bank lines that remain."""
+    from the bank lines, keyed by their description's group key, and "contra" from the Journal Entries, keyed by the
+    contra account. "left_out" counts the bank lines each rule left out; "kept" is the number of bank lines that remain;
+    "contra_left_out" counts the journal entry lines left out (contra_sources)."""
     bills = bills_in_window(company, as_of)
     bank, left_out = bank_outflows(company, as_of, bills)
+    contra, contra_left_out = contra_sources(company, as_of)
     return {
         "bills": cf.recurring_costs(bills, as_of),
         "bank": cf.recurring_costs(bank, as_of, strict=True),
+        "contra": contra,
         "left_out": left_out,
+        "contra_left_out": contra_left_out,
         "kept": len(bank),
     }
 
@@ -302,7 +367,7 @@ def insurer_suppliers(company):
     """The suppliers with a purchase bill that has an item booked to an insurer's payable (INSURER_PAYABLE_ACCOUNTS).
     The bill's own credit account is the supplier's payable (2000), so the item's expense account is what tells."""
     accounts = frappe.get_all(
-        "Account", filters={"company": company, "account_number": ["between", list(INSURER_PAYABLE_ACCOUNTS)]},
+        "Account", filters={"company": company, "account_number": ["between", list(cf.INSURER_PAYABLE_ACCOUNTS)]},
         pluck="name")
     if not accounts:
         return set()
@@ -342,6 +407,9 @@ def dry_run(company=None, as_of=None):
         "bank_groups_per_period": dict(collections.Counter(item["period"] for item in sources["bank"])),
         "bank_lines_in_groups": sum(item["count"] for item in sources["bank"]),
         "bank_groups_with_a_bill_supplier_key": sum(1 for item in sources["bank"] if item["supplier"] in bill_keys),
+        "contra_groups_per_period": dict(collections.Counter(item["period"] for item in sources["contra"])),
+        "contra_lines_in_groups": sum(item["count"] for item in sources["contra"]),
+        "contra_left_out": dict(sources["contra_left_out"]),
     }
 
 
@@ -350,12 +418,13 @@ def line(kind, day, amount, party, doctype, name, note):
             "doctype": doctype, "name": name, "note": note}
 
 
-def compute(company, as_of, include_run_rate=True, include_new_purchases=True):
+def compute(company, as_of, include_run_rate=True, include_new_purchases=True, include_owner_accounts=True):
     """The forecast for the company as of the date: the weeks, the lowest week, the lines in the horizon, and
     the counts the messages tell. include_run_rate: the new sales run-rate's lines are in the forecast (see the
     module's docstring); run_rate is its weekly amount and the first day of its oldest window, None when left out.
     include_new_purchases: the same for the new purchases run-rate, new_purchases its weekly amount, since and the
-    excluded suppliers' count."""
+    excluded suppliers' count. include_owner_accounts: the owners' current accounts' recurring lines are in the
+    forecast."""
     horizon = cf.horizon_end(as_of)
     opening = opening_cash(company, as_of)
     receivables = open_documents(company, as_of, "Sales Invoice")
@@ -411,6 +480,14 @@ def compute(company, as_of, include_run_rate=True, include_new_purchases=True):
             note = _("{0}, {1} bank lines described “{2}”, from the last one").format(
                 item["period"], item["count"], item["supplier"])
             lines.append(line("recurring", day, item["amount"], "", "Bank Transaction", item["last_bill"], note))
+    for item in sources["contra"]:
+        owner = item["supplier"] in cf.OWNER_ACCOUNTS
+        if owner and not include_owner_accounts:
+            continue
+        label = item["label"] + (" " + _("(average, discretionary)") if owner else "")
+        for day in cf.recurring_dates(item, as_of, horizon):
+            note = _("{0}, {1} journal entries to this account, from the last one").format(item["period"], item["count"])
+            lines.append(line("recurring", day, item["amount"], label, "Journal Entry", item["last_bill"], note))
 
     amount = cf.payroll_from_postings(cf.payroll_postings(personnel_postings(company, as_of)))
     if amount:
@@ -451,7 +528,8 @@ def execute(filters=None):
     as_of = getdate(filters.as_of_date or nowdate())
     currency = frappe.get_cached_value("Company", company, "default_currency")
     result = compute(company, as_of, include_run_rate=cint(filters.get("include_run_rate", 1)),
-                     include_new_purchases=cint(filters.get("include_new_purchases", 1)))
+                     include_new_purchases=cint(filters.get("include_new_purchases", 1)),
+                     include_owner_accounts=cint(filters.get("include_owner_accounts", 1)))
     weeks, lowest, opening = result["weeks"], result["lowest"], result["opening"]
 
     rows = [
@@ -487,7 +565,11 @@ def execute(filters=None):
         "type": "line",
     }
 
-    messages = []
+    messages = [_(
+        "Journal entries are recurring costs by their contra account, one line each. Left out, as another line carries "
+        "them: payroll (5xxx, 1091), insurers (2270 to 2279), VAT (1170 to 1172, 2200, 2202), bill payments (2000), "
+        "transfers between bank and cash accounts, and entries reconciled to a purchase invoice. The owners' current "
+        "accounts (2100, 2121) are labelled average and discretionary; the filter \"Include owner accounts\" leaves them out.")]
     if result["run_rate"]:
         messages.append(_("New sales are in the forecast at {0} a week: the mean of the last four 13-week windows since {1}, receipts from the invoices issued in each window.").format(
             fmt_money(result["run_rate"]["weekly"], currency=currency), result["run_rate"]["since"]))

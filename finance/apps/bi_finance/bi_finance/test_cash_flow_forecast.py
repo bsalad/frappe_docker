@@ -27,11 +27,12 @@ def bank_line(name, day, withdrawal, description):
 
 
 class BankOutflows(unittest.TestCase):
-    def patched(self, lines, transfer_je=(), transfer_pe=()):
+    def patched(self, lines, transfer_je=(), transfer_pe=(), journal=()):
         frappe = mock.Mock()
         frappe.get_all.side_effect = [["Test Bank - TC"], lines]
-        # the four reconciliation queries in order: payroll or VAT, bill payment, transfer by Journal Entry, transfer by Payment Entry
-        frappe.db.sql.side_effect = [[], [], list(transfer_je), list(transfer_pe)]
+        # the five reconciliation queries in order: payroll or VAT, bill payment, transfer by Journal Entry, transfer by
+        # Payment Entry, any Journal Entry
+        frappe.db.sql.side_effect = [[], [], list(transfer_je), list(transfer_pe), [(name,) for name in journal]]
         return mock.patch.object(cff, "frappe", frappe)
 
     def test_a_monthly_transfer_to_an_own_account_is_not_a_recurring_cost(self):
@@ -64,19 +65,113 @@ class BankOutflows(unittest.TestCase):
 
     def test_the_transfer_set_is_read_from_both_journal_entries_and_internal_transfers(self):
         with mock.patch.object(cff, "frappe", mock.Mock()) as frappe:
-            frappe.db.sql.side_effect = [[("BT-1",)], [], [("BT-2",)], [("BT-3",)]]
-            payroll_or_vat, bill, transfer = cff.reconciled_bank_lines(["BT-1", "BT-2", "BT-3"])
+            frappe.db.sql.side_effect = [[("BT-1",)], [], [("BT-2",)], [("BT-3",)], [("BT-1",), ("BT-4",)]]
+            payroll_or_vat, bill, transfer, journal = cff.reconciled_bank_lines(["BT-1", "BT-2", "BT-3", "BT-4"])
         self.assertEqual(payroll_or_vat, {"BT-1"})
         self.assertEqual(bill, set())
         self.assertEqual(transfer, {"BT-2", "BT-3"})
+        self.assertEqual(journal, {"BT-1", "BT-4"})
         # a Journal Entry is a transfer only with two bank or cash lines
         self.assertIn("having count(*) >= 2", frappe.db.sql.call_args_list[2].args[0])
         self.assertIn("Internal Transfer", frappe.db.sql.call_args_list[3].args[0])
+        self.assertIn("payment_document = 'Journal Entry'", frappe.db.sql.call_args_list[4].args[0])
 
     def test_no_lines_no_reconciliation_queries(self):
         with mock.patch.object(cff, "frappe", mock.Mock()) as frappe:
-            self.assertEqual(cff.reconciled_bank_lines([]), (set(), set(), set()))
+            self.assertEqual(cff.reconciled_bank_lines([]), (set(), set(), set(), set()))
         frappe.db.sql.assert_not_called()
+
+    def test_a_bank_line_a_journal_entry_reconciles_to_is_left_to_the_contra_account_source(self):
+        # the same payment is in both sources: its Journal Entry's contra account is the recurring line, counted once
+        lines = [bank_line("BT-1", D(2026, 7, 5), 40.0, "Subscr Invented Card 1001"),
+                 bank_line("BT-2", D(2026, 8, 5), 40.0, "Subscr Invented Card 1002"),
+                 bank_line("BT-3", D(2026, 9, 5), 40.0, "Subscr Invented Card 1003")]
+        with self.patched(lines, journal=["BT-2"]):
+            kept, left_out = cff.bank_outflows("Test Company", AS_OF, [])
+        self.assertEqual([name for _key, _day, _amount, name in kept], ["BT-1", "BT-3"])
+        self.assertEqual(left_out, {"journal entry, counted by its contra account": 1})
+
+    def test_a_journal_entry_paid_to_a_bill_is_not_a_recurring_cost(self):
+        # the entry is reconciled against a purchase invoice: the bill carries it
+        with mock.patch.object(cff, "frappe", mock.Mock()) as frappe:
+            frappe.db.sql.side_effect = [[("JE-1",)]]
+            billed = cff.billed_journal_entries("Test Company", ["JE-1", "JE-2"])
+        self.assertEqual(billed, {"JE-1"})
+        self.assertIn("against_voucher_type = 'Purchase Invoice'", frappe.db.sql.call_args.args[0])
+
+    def test_no_journal_entries_no_billed_query(self):
+        with mock.patch.object(cff, "frappe", mock.Mock()) as frappe:
+            self.assertEqual(cff.billed_journal_entries("Test Company", []), set())
+        frappe.db.sql.assert_not_called()
+
+
+def journal_row(number, day, debit, entry, account_type="Expense", name=None):
+    # (account number, account type, account name, posting date, debit, journal entry), as journal_outflows reads it
+    return (number, account_type, name or "Invented Account " + number, day, float(debit), entry)
+
+
+class JournalSources(unittest.TestCase):
+    def contra_sources(self, rows, billed=()):
+        # journal_outflows, then billed_journal_entries: the two reads of the books, in that order
+        with mock.patch.object(cff, "frappe", mock.Mock()) as frappe:
+            frappe.db.sql.side_effect = [rows, [(entry,) for entry in billed]]
+            return cff.contra_sources("Test Company", AS_OF)
+
+    def monthly(self, number, amount, account_type="Expense", name=None, months=(1, 2, 3, 4, 5, 6, 7, 8, 9)):
+        return [journal_row(number, D(2026, month, 8), amount, "JE-%s-%d" % (number, month), account_type, name)
+                for month in months]
+
+    def test_a_monthly_card_settlement_is_a_recurring_cost_labelled_by_its_account(self):
+        rows = self.monthly("2010", 800.0, name="2010 Invented Card Settlement - TC")
+        items, left_out = self.contra_sources(rows)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["supplier"], "2010")
+        self.assertEqual(items[0]["period"], "monthly")
+        self.assertEqual(items[0]["amount"], 800.0)
+        self.assertEqual(items[0]["count"], 9)
+        self.assertEqual(items[0]["label"], "2010 Invented Card Settlement - TC")
+        self.assertEqual(left_out, {})
+
+    def test_a_payroll_clearing_is_left_out(self):
+        items, left_out = self.contra_sources(self.monthly("1091", 900.0))
+        self.assertEqual(items, [])
+        self.assertEqual(left_out, {"carried by another line": 9})
+
+    def test_a_salary_entry_and_an_insurer_entry_are_left_out(self):
+        rows = self.monthly("5820", 300.0) + self.monthly("2271", 250.0)
+        items, left_out = self.contra_sources(rows)
+        self.assertEqual(items, [])
+        self.assertEqual(left_out, {"carried by another line": 18})
+
+    def test_a_vat_settlement_is_left_out(self):
+        rows = self.monthly("1172", 650.0) + self.monthly("2200", 120.0)
+        items, left_out = self.contra_sources(rows)
+        self.assertEqual(items, [])
+        self.assertEqual(left_out, {"carried by another line": 18})
+
+    def test_a_transfer_to_a_bank_account_is_left_out(self):
+        rows = self.monthly("1020", 500.0, account_type="Bank")
+        items, left_out = self.contra_sources(rows)
+        self.assertEqual(items, [])
+        self.assertEqual(left_out, {"transfer between own bank accounts": 9})
+
+    def test_an_entry_reconciled_to_a_purchase_invoice_is_left_out(self):
+        rows = self.monthly("6570", 200.0)
+        items, left_out = self.contra_sources(rows, billed=["JE-6570-%d" % month for month in range(1, 10)])
+        self.assertEqual(items, [])
+        self.assertEqual(left_out, {"reconciled to a purchase invoice": 9})
+
+    def test_two_entries_to_one_account_on_one_day_with_one_amount_count_once(self):
+        rows = self.monthly("6940", 15.0, months=(7, 8, 9)) + [journal_row("6940", D(2026, 9, 8), 15.0, "JE-dup")]
+        items, _left_out = self.contra_sources(rows)
+        self.assertEqual(items[0]["count"], 3)
+
+    def test_the_contra_source_has_its_own_query_for_bank_credits(self):
+        with mock.patch.object(cff, "frappe", mock.Mock()) as frappe:
+            frappe.db.sql.side_effect = [[], []]
+            cff.journal_outflows("Test Company", AS_OF)
+        self.assertIn("bank.credit > 0", frappe.db.sql.call_args.args[0])
+        self.assertIn("'Bank', 'Cash'", frappe.db.sql.call_args.args[0])
 
 
 class InsurerSuppliers(unittest.TestCase):
@@ -113,7 +208,7 @@ class NewSalesRunRate(unittest.TestCase):
         # every read of the books stubbed to nothing but the opening cash and the new sales receipts
         stubs = {
             "opening_cash": 1000.0, "open_documents": {}, "paid_history": {},
-            "recurring_sources": {"bills": [], "bank": []}, "personnel_postings": [], "vat_balances": {},
+            "recurring_sources": {"bills": [], "bank": [], "contra": []}, "personnel_postings": [], "vat_balances": {},
             "vat_paid_since": 0.0, "sales_paid_in_windows": payments, "purchase_paid_in_windows": [],
             "insurer_suppliers": set(),
         }
@@ -190,7 +285,7 @@ class NewSalesRunRate(unittest.TestCase):
         _columns, rows, message, _chart, _summary = self.execute(
             {"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0, "include_new_purchases": 0})
         self.assertEqual([row["new_sales"] for row in rows], [0.0] * 13)
-        self.assertIsNone(message)
+        self.assertNotIn("New sales are in the forecast", message)
 
     def test_the_lines_report_lists_the_run_rate_as_an_inflow_and_the_filter_leaves_it_out(self):
         from bi_finance.bi_finance.report.cash_flow_forecast_lines import cash_flow_forecast_lines as lines_report
@@ -424,6 +519,48 @@ class OpenDocuments(LedgerFixture):
             stack.enter_context(mock.patch.object(cf, "recurring_dates", return_value=recurring))
             stack.enter_context(mock.patch.object(cff, "_", lambda text: text))
             return cff.compute("Test Company", AS_OF, include_run_rate=False, include_new_purchases=False)
+
+
+class OwnerAccounts(unittest.TestCase):
+    def compute(self, include):
+        # a card settlement and an owner's current account, each a monthly journal entry series, in the contra source
+        def contra(number, label, amount):
+            return {"supplier": number, "period": "monthly", "amount": amount, "count": 9,
+                    "last_date": D(2026, 9, 5), "last_bill": "JE-" + number, "label": label}
+
+        sources = {"bills": [], "bank": [], "contra": [
+            contra("2010", "2010 Invented Card Settlement - TC", 800.0),
+            contra("2100", "2100 Invented Owner Account - TC", 500.0)]}
+        stubs = {
+            "opening_cash": 1000.0, "open_documents": {}, "paid_history": {}, "recurring_sources": sources,
+            "personnel_postings": [], "vat_balances": {}, "vat_paid_since": 0.0, "sales_paid_in_windows": [],
+        }
+        with contextlib.ExitStack() as stack:
+            for name, value in stubs.items():
+                stack.enter_context(mock.patch.object(cff, name, return_value=value))
+            stack.enter_context(mock.patch.object(cff, "_", lambda text: text))  # no site, so no translations
+            return cff.compute("Test Company", AS_OF, include_run_rate=False, include_owner_accounts=include)
+
+    def recurring(self, result):
+        return sorted({(line["party"], line["amount"]) for line in result["lines"] if line["kind"] == "recurring"})
+
+    def test_an_owner_account_is_labelled_as_average_and_discretionary(self):
+        result = self.compute(include=True)
+        self.assertEqual(self.recurring(result), [
+            ("2010 Invented Card Settlement - TC", 800.0),
+            ("2100 Invented Owner Account - TC (average, discretionary)", 500.0)])
+        owner = [line for line in result["lines"] if line["party"].startswith("2100")]
+        self.assertEqual(owner[0]["doctype"], "Journal Entry")
+        self.assertEqual(owner[0]["name"], "JE-2100")
+
+    def test_the_filter_off_leaves_the_owner_account_out_and_keeps_the_others(self):
+        result = self.compute(include=False)
+        self.assertEqual(self.recurring(result), [("2010 Invented Card Settlement - TC", 800.0)])
+
+    def test_the_contra_source_lines_are_monthly_from_the_last_entry(self):
+        dates = sorted(line["day"] for line in self.compute(include=True)["lines"]
+                       if line["party"] == "2010 Invented Card Settlement - TC")
+        self.assertEqual(dates, [D(2026, 11, 5), D(2026, 12, 5), D(2027, 1, 5)])
 
 
 if __name__ == "__main__":

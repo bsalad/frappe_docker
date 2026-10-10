@@ -5,6 +5,7 @@ Invented dates, suppliers and amounts only; no site, no network, no frappe. Run 
     python3 -m unittest -v bi_finance.test_cash_forecast
 """
 
+import collections
 import datetime
 import unittest
 
@@ -397,6 +398,38 @@ class PurchaseRunRate(unittest.TestCase):
         day = AS_OF - datetime.timedelta(days=80)
         weekly, _, excluded = cf.purchase_run_rate([("Test Supplier A", day, AS_OF - datetime.timedelta(days=20), 1300.0)], AS_OF, {"Test Insurer"})
         self.assertEqual((weekly, excluded), (25.0, 0))
+
+
+class JournalOccurrences(unittest.TestCase):
+    def test_the_accounts_another_line_carries_are_left_out(self):
+        for number in ("5820", "1091", "2270", "2279", "1170", "1172", "2200", "2202", "2000"):
+            self.assertTrue(cf.carried_elsewhere(number), number)
+
+    def test_the_other_accounts_are_recurring_candidates(self):
+        for number in ("2010", "2100", "2121", "6570", "6940", "2280", "1169", "2203"):
+            self.assertFalse(cf.carried_elsewhere(number), number)
+
+    def test_a_monthly_card_settlement_is_one_occurrence_a_month(self):
+        rows = [("2010", "Expense", D(2026, month, 8), 800.0, "JE-%d" % month) for month in (1, 2, 3)]
+        occurrences, left_out = cf.journal_occurrences(rows, billed=set())
+        self.assertEqual([day for _number, day, _amount, _entry in occurrences], [D(2026, 1, 8), D(2026, 2, 8), D(2026, 3, 8)])
+        self.assertEqual(left_out, collections.Counter())
+
+    def test_one_occurrence_per_account_date_and_amount(self):
+        rows = [("6940", "Expense", D(2026, 1, 8), 15.0, "JE-1"), ("6940", "Expense", D(2026, 1, 8), 15.0, "JE-2"),
+                ("6940", "Expense", D(2026, 1, 8), 20.0, "JE-3")]
+        occurrences, _left_out = cf.journal_occurrences(rows, billed=set())
+        self.assertEqual([(amount, entry) for _number, _day, amount, entry in occurrences], [(15.0, "JE-1"), (20.0, "JE-3")])
+
+    def test_the_rules_say_what_they_left_out(self):
+        rows = [("1020", "Bank", D(2026, 1, 8), 500.0, "JE-1"),
+                ("1091", "Payable", D(2026, 1, 8), 900.0, "JE-2"),
+                ("6570", "Expense", D(2026, 1, 8), 200.0, "JE-3"),
+                ("2010", "Payable", D(2026, 1, 8), 700.0, "JE-4")]
+        occurrences, left_out = cf.journal_occurrences(rows, billed={"JE-3"})
+        self.assertEqual([number for number, _day, _amount, _entry in occurrences], ["2010"])
+        self.assertEqual(left_out, collections.Counter({
+            "transfer between own bank accounts": 1, "carried by another line": 1, "reconciled to a purchase invoice": 1}))
 
 
 if __name__ == "__main__":

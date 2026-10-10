@@ -28,6 +28,13 @@ frappe.query_reports["Cash Flow Forecast"] = {
 			fieldtype: "Check",
 			default: 1,
 		},
+		{
+			// off: the recurring costs of the owners' current accounts (2100, 2121) are left out
+			fieldname: "include_owner_accounts",
+			label: __("Include owner accounts"),
+			fieldtype: "Check",
+			default: 1,
+		},
 	],
 	formatter(value, row, column, data, default_formatter) {
 		value = default_formatter(value, row, column, data);

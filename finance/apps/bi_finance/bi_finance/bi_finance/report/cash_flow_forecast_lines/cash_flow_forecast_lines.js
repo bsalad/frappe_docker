@@ -27,5 +27,11 @@ frappe.query_reports["Cash Flow Forecast Lines"] = {
 			fieldtype: "Check",
 			default: 1,
 		},
+		{
+			fieldname: "include_owner_accounts",
+			label: __("Include owner accounts"),
+			fieldtype: "Check",
+			default: 1,
+		},
 	],
 };

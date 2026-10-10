@@ -13,6 +13,7 @@ Only receipts and new sales come in; the others go out. A refund is a vat line w
 """
 
 import calendar
+import collections
 import datetime
 import re
 import statistics
@@ -47,6 +48,14 @@ SALARY_ACCOUNTS = ("5000", "5099")
 # The VAT accounts by number: the liabilities (Umsatzsteuer, the transitory tax) and the input tax.
 VAT_LIABILITY_ACCOUNTS = ("2200", "2202")
 VAT_INPUT_ACCOUNTS = ("1170", "1171", "1172")
+# The insurers' payables, inclusive: their contributions reach the forecast through the insurers' bills.
+INSURER_PAYABLE_ACCOUNTS = ("2270", "2279")
+# The salary clearing account (the net pay the bank moves) and the suppliers' payable (the bills' own account).
+SALARY_CLEARING_ACCOUNT = "1091"
+BILL_PAYABLE_ACCOUNT = "2000"
+# The owners' current accounts: what they draw is average and discretionary, not a commitment.
+OWNER_ACCOUNTS = ("2100", "2121")
+BANK_ACCOUNT_TYPES = ("Bank", "Cash")
 # A bank line's description is grouped by its first words: the payee's name. Digits, dates, punctuation and
 # month names are dropped, so an invoice number or the month in the text does not split the group. Three words
 # tell apart two services of one bank or telco, and stop short of the invoice reference that follows a name.
@@ -135,6 +144,35 @@ def paid_by_a_bill(day, amount, bills):
     BILL_MATCH_DAYS of the bank line on day: that line is the bill's payment, and the bill source has it."""
     return any(abs((bill_day - day).days) <= BILL_MATCH_DAYS and abs(bill_amount - amount) < 0.005
                for bill_day, bill_amount in bills)
+
+
+def carried_elsewhere(number):
+    """True when a bank outflow to this contra account already reaches the forecast through another line: the payroll
+    (5xxx and 1091), the insurers' bills (2270 to 2279), VAT (1170 to 1172, 2200 and 2202), or the bills (2000)."""
+    return (number.startswith("5") or number == SALARY_CLEARING_ACCOUNT or number == BILL_PAYABLE_ACCOUNT
+            or INSURER_PAYABLE_ACCOUNTS[0] <= number <= INSURER_PAYABLE_ACCOUNTS[1]
+            or number in VAT_INPUT_ACCOUNTS or number in VAT_LIABILITY_ACCOUNTS)
+
+
+def journal_occurrences(rows, billed):
+    """rows: (contra account number, account type, posting date, amount, journal entry) of the debit lines of the Journal
+    Entries that credit a bank or cash account. billed: the journal entries reconciled to a purchase invoice, which are
+    bill payments. One occurrence per (account, posting date, amount), as (account number, date, amount, journal
+    entry). Returns the occurrences and a Counter of the rows each rule left out."""
+    left_out = collections.Counter()
+    seen = set()
+    occurrences = []
+    for number, account_type, day, amount, entry in rows:
+        if account_type in BANK_ACCOUNT_TYPES:
+            left_out["transfer between own bank accounts"] += 1
+        elif carried_elsewhere(number):
+            left_out["carried by another line"] += 1
+        elif entry in billed:
+            left_out["reconciled to a purchase invoice"] += 1
+        elif (number, day, amount) not in seen:
+            seen.add((number, day, amount))
+            occurrences.append((number, day, amount, entry))
+    return occurrences, left_out
 
 
 def mostly_regular(dates, period):
