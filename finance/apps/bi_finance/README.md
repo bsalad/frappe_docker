@@ -74,8 +74,8 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   the trailing mean stays (the basis of erp-q1w8, not changed here). The dated manual lines (in or out, a label, an optional
   account) are their own source "manual" in the forecast when their date is after the as-of date and up to the horizon end,
   one line each; a line on the as-of date is in the opening balance already, as a salary run on that day is. The per-source
-  back-test does not cover them: they have no history, and a back-test for a past as-of date reads the settings as they
-  stand, so it runs with them empty. The next step is a payroll level read from HRMS (Salary Structure
+  back-test does not cover them: they have no history, and a report run for a past as-of date reads the settings as they
+  stand, so a back-test is only comparable with the settings empty. The next step is a payroll level read from HRMS (Salary Structure
   Assignments or the last submitted slips), once payroll has run on the live site.
 - `bi_finance/test_cash_forecast.py`: offline tests of `cash_forecast.py` with invented data:
   `python3 -m unittest bi_finance.test_cash_forecast` from this directory.
