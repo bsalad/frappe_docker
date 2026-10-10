@@ -78,7 +78,7 @@ roles Accounts User, Sales User, Purchase User and Stock User.
 
 ## Remotes
 
-- `origin`: `github.com/bsalad/frappe_docker` (our fork, base `main`).
+- `origin`: `github.com/svc-bi-concepts/frappe_docker` (our fork, base `main`).
 - `upstream`: `github.com/frappe/frappe_docker`.
 - To pull upstream changes:
 
