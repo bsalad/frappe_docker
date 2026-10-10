@@ -5,6 +5,11 @@
 set -e
 # The finance stack's compose files must parse together.
 docker compose -f pwd.yml -f finance-local.yml config -q
+# The bi_finance layout and stamp guard, stdlib only (no frappe), so it runs on the host.
+# A synced JSON changed without a newer 'modified' fails here; see test_layout.py.
+(cd finance/apps/bi_finance && python3 -m unittest bi_finance.test_layout)
+# The bexio importers' unit tests, stdlib only, about half a second.
+(cd finance/bexio && python3 -m unittest discover -s . -p "test_*.py")
 # Upstream's own lint, when pre-commit is installed (optional for now).
 if command -v pre-commit >/dev/null; then
   pre-commit run --all-files
