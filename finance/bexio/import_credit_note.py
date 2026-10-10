@@ -19,7 +19,6 @@ import argparse
 import json
 import os
 import sys
-from decimal import Decimal
 
 import import_master as im
 import import_sales as isl
