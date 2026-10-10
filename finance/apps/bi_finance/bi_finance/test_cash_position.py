@@ -11,7 +11,7 @@ it in the image, as test_qrbill.py does (finance/docs/erpnext-setup.md):
 import datetime
 import unittest
 
-from bi_finance.report.cash_position import cash_position as cp
+from bi_finance.bi_finance.report.cash_position import cash_position as cp
 
 D = datetime.date
 CHF_ACCOUNT = "1000 - Test Bank CHF"

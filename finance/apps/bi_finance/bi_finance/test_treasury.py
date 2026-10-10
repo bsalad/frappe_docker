@@ -16,9 +16,10 @@ from unittest import mock
 import frappe
 
 from bi_finance import hooks
-from bi_finance.report.cash_position import cash_position
+from bi_finance.bi_finance.report.cash_position import cash_position
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# The module folder: the Treasury files Frappe syncs (see test_layout.py).
+HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bi_finance")
 FRAPPE_DOCTYPES = os.path.join(os.path.dirname(frappe.__file__), "desk", "doctype")
 # Meta fields every exported document carries, next to the doctype's own fields.
 META = {"doctype", "name", "owner", "creation", "modified", "modified_by", "docstatus", "idx"}

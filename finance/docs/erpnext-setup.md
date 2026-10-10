@@ -180,10 +180,10 @@ hand; the command does not set it). It refuses to move a freeze back. Not run
 yet: the history import comes first.
 
 **Treasury.** The workspace "Treasury" is a file of bi_finance, as are its number cards
-(`number_card/`: the total in CHF, and one card per Bank or Cash account by its chart
-number) and the month-end chart (`dashboard_chart/`). The image's migrate syncs them, so
+(`bi_finance/bi_finance/number_card/`: the total in CHF, and one card per Bank or Cash account by its
+chart number) and the month-end chart (`bi_finance/bi_finance/dashboard_chart/`). The image's migrate syncs them, so
 nothing is made by hand on the site. A new bank account gets its card as a new file. The
-cards read the report "Cash Position" (`report/cash_position`), which reads the GL, not Bank
+cards read the report "Cash Position" (`bi_finance/bi_finance/report/cash_position`), which reads the GL, not Bank
 Transactions. A foreign-currency balance is turned into CHF at the Currency Exchange rate of
 the as-of date, or the latest one before it. ERPNext fills that table from its rate source
 (Currency Exchange Settings, frankfurter.dev); the report never fetches a rate. A missing

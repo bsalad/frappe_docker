@@ -22,13 +22,15 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   reported against the bank GL account (OPBD: before the date, CLBD: up to it), never blocking.
 - `bi_finance/test_camt.py`: offline tests of both, with invented files: `python3 -m unittest bi_finance.test_camt`
   from this directory, or in the image as in `finance/docs/erpnext-setup.md`.
-- `bi_finance/report/cash_position`: the "Cash Position" report (Bank and Cash accounts, their
+- `bi_finance/bi_finance/` is the module folder "BI Finance": the doctypes, reports, workspaces, number
+  cards and charts that migrate syncs live there, and nowhere else (`bi_finance/test_layout.py` checks it).
+- `bi_finance/bi_finance/report/cash_position`: the "Cash Position" report (Bank and Cash accounts, their
   balances in original currency and in CHF, month-end history). Read-only. The Treasury
-  workspace (`workspace/treasury`), its number cards (`number_card/`) and the chart
+  workspace (`bi_finance/bi_finance/workspace/treasury`), its number cards (`number_card/`) and the chart
   (`dashboard_chart/`) show it; migrate syncs them.
 - `bi_finance/test_cash_position.py`, `bi_finance/test_treasury.py`: offline tests, run in the image
   (see `finance/docs/erpnext-setup.md`).
-- Wise sync (read-only API): `bi_finance/doctype/wise_settings` (the token, the profile, hourly on/off),
+- Wise sync (read-only API): `bi_finance/bi_finance/doctype/wise_settings` (the token, the profile, hourly on/off),
   `bi_finance/wise_client.py` (the three GET calls and the statement rows), `bi_finance/bank_feed.py` (the
   shared feed: rows written once by transaction id, deduplicated against imported lines by account, date and
   amount; PayPal reuses it), `bi_finance/wise.py` (balances as Bank Accounts, the sync, the hourly job).
