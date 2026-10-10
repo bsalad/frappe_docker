@@ -45,18 +45,24 @@ def record(base, **changes):
 
 
 class FakeErp:
-    """The reads the importer makes: the Bank Accounts that have a bexio_id, the GL rows and the vouchers given to it."""
+    """The reads the importer makes: the Bank Accounts that have a bexio_id, the GL rows, the vouchers and the Bank Transactions given to it."""
 
-    def __init__(self, gl=None, vouchers=None):
+    def __init__(self, gl=None, vouchers=None, transactions=None):
         self.gl = gl or []
         self.vouchers = vouchers or {}
+        self.transactions = transactions or {}
 
     def list(self, doctype, filters=None, fields=("name",)):
         if doctype == "Bank Account":
             return [{"name": "Hauptkonto - Testbank AG", "bexio_id": "11", "account": "1020 - Testbank - X"}]
         if doctype == "GL Entry":
             return self.gl
+        if doctype == "Bank Transaction":
+            return [{"name": name, "bexio_id": doc["bexio_id"]} for name, doc in self.transactions.items()]
         return self.vouchers.get(doctype, [])
+
+    def get(self, doctype, name):
+        return self.transactions[name]
 
 
 class MappingTest(unittest.TestCase):
@@ -110,6 +116,14 @@ class PlanTest(unittest.TestCase):
     def test_booked_follows_bexio_status(self):
         results = ib.plan([CHF_IN, CHF_OUT, EUR_OUT, record(CHF_IN, id=9010, status="ignored")], LOOKUPS)
         self.assertEqual([r["booked"] for r in results], [True, False, True, False])
+
+    def test_candidates_are_the_booked_and_the_unreconciled_but_not_the_ignored(self):
+        results = ib.plan([CHF_IN, CHF_OUT, EUR_OUT, record(CHF_IN, id=9010, status="ignored")], LOOKUPS)
+        self.assertEqual([r["candidate"] for r in results], [True, True, True, False])
+
+    def test_the_book_date_is_kept_for_the_date_window(self):
+        results = ib.plan([record(CHF_IN, book_date="2026-04-01T00:00:00+02:00")], LOOKUPS)
+        self.assertEqual(results[0]["book_date"], "2026-04-01")
 
     def test_fields_the_doctype_lacks_are_named(self):
         meta = {"doctype", "company", "bexio_id", "date", "bank_account", "currency", "deposit", "withdrawal",
@@ -212,65 +226,67 @@ class MainTest(unittest.TestCase):
 ACCOUNT = "1020 - Testbank - X"
 
 
-def tx(bexio_id, amount, date="2026-03-31", booked=True):
+def tx(bexio_id, amount, date="2026-03-31", candidate=True, book_date=None, text=""):
     """A mapped transaction as match takes it; the amount is in minus out."""
-    return {"bexio_id": bexio_id, "account": ACCOUNT, "date": date, "amount": Decimal(amount), "booked": booked}
+    return {"bexio_id": bexio_id, "account": ACCOUNT, "date": date, "book_date": book_date, "amount": Decimal(amount),
+            "text": text, "candidate": candidate, "booked": candidate}
 
 
-def voucher(name, amount, doctype="Payment Entry", date="2026-03-31", account=ACCOUNT, bexio_id="b"):
+def voucher(name, amount, doctype="Payment Entry", date="2026-03-31", account=ACCOUNT, bexio_id="b", text=()):
     """A voucher's bank-side line, as read_vouchers gives it; the amount is money in positive."""
-    return {"doctype": doctype, "name": name, "bexio_id": bexio_id, "account": account, "date": date, "amount": Decimal(amount)}
+    return {"doctype": doctype, "name": name, "bexio_id": bexio_id, "account": account, "date": date, "amount": Decimal(amount),
+            "text": list(text)}
 
 
 class MatchTest(unittest.TestCase):
     def test_one_voucher_of_the_same_account_date_and_amount_is_a_pass_one_match(self):
         matches = ib.match([tx("1", "1500.00")], [voucher("PE-1", "1500.00")])
-        self.assertEqual(matches["1"], (1, [voucher("PE-1", "1500.00")], ""))
+        self.assertEqual(matches["1"], (ib.PASS_ONE, [voucher("PE-1", "1500.00")], ""))
 
-    def test_an_unbooked_transaction_is_not_matched_at_all(self):
-        self.assertEqual(ib.match([tx("1", "1500.00", booked=False)], [voucher("PE-1", "1500.00")]), {})
+    def test_an_ignored_transaction_is_not_matched_at_all(self):
+        self.assertEqual(ib.match([tx("1", "1500.00", candidate=False)], [voucher("PE-1", "1500.00")]), {})
 
-    def test_the_voucher_must_be_on_the_same_day_and_account(self):
-        matches = ib.match([tx("1", "1500.00", date="2026-03-30")], [voucher("PE-1", "1500.00")])
-        self.assertEqual(matches["1"], (None, [], "no candidate"))
+    def test_the_voucher_must_be_on_the_account_and_near_the_date(self):
+        matches = ib.match([tx("1", "1500.00", date="2026-03-20")], [voucher("PE-1", "1500.00")])
+        self.assertEqual(matches["1"], (None, [], "amount only on other dates, none within 5 days"))
         matches = ib.match([tx("1", "1500.00")], [voucher("PE-1", "1500.00", account="1021 - Zweitbank - X")])
-        self.assertEqual(matches["1"], (None, [], "no candidate"))
+        self.assertEqual(matches["1"], (None, [], "no voucher of that amount on the account"))
 
     def test_the_sign_is_part_of_the_amount(self):
         matches = ib.match([tx("1", "-1500.00")], [voucher("PE-1", "1500.00")])
-        self.assertEqual(matches["1"], (None, [], "no candidate"))
+        self.assertEqual(matches["1"], (None, [], "no voucher of that amount on the account"))
 
-    def test_two_vouchers_with_the_same_key_leave_the_transaction_unmatched(self):
+    def test_two_vouchers_with_the_same_key_and_no_name_in_the_text_leave_the_transaction_unmatched(self):
         matches = ib.match([tx("1", "1500.00")], [voucher("PE-1", "1500.00"), voucher("JE-1", "1500.00", doctype="Journal Entry")])
-        self.assertEqual(matches["1"], (None, [], "2 candidates"))
+        self.assertEqual(matches["1"], (None, [], "2 candidates, none or several named in its text"))
 
-    def test_a_combined_transfer_of_the_days_payments_is_a_pass_two_match_when_unique(self):
+    def test_a_combined_transfer_of_the_days_payments_is_a_combined_match_when_unique(self):
         pays = [voucher("PE-700", "700.00"), voucher("PE-800", "800.00"), voucher("PE-50", "50.00")]
         matches = ib.match([tx("1", "1500.00")], pays)
-        self.assertEqual(matches["1"], (2, [pays[0], pays[1]], ""))
+        self.assertEqual(matches["1"], (ib.PASS_COMBINED, [pays[0], pays[1]], ""))
 
     def test_several_combinations_of_the_days_payments_leave_it_unmatched(self):
         pays = [voucher("PE-500a", "500.00"), voucher("PE-1000a", "1000.00"),
                 voucher("PE-500b", "500.00"), voucher("PE-1000b", "1000.00")]
         matches = ib.match([tx("1", "1500.00")], pays)
-        self.assertEqual(matches["1"], (None, [], "4 combinations of the day's payments"))
+        self.assertEqual(matches["1"], (None, [], "4 combinations of the payments near its date"))
 
-    def test_only_payment_entries_are_combined(self):
+    def test_a_journal_entry_takes_part_in_a_combined_transfer(self):
         pays = [voucher("PE-700", "700.00"), voucher("PE-900", "900.00"),
                 voucher("JE-300", "300.00", doctype="Journal Entry")]
         matches = ib.match([tx("1", "1000.00")], pays)
-        self.assertEqual(matches["1"], (None, [], "no candidate"))
+        self.assertEqual(matches["1"], (ib.PASS_COMBINED, [pays[0], pays[2]], ""))
 
     def test_a_voucher_matched_alone_is_not_used_in_a_combination(self):
         pays = [voucher("PE-300", "300.00"), voucher("PE-700", "700.00")]
         matches = ib.match([tx("1", "300.00"), tx("2", "1000.00")], pays)
-        self.assertEqual(matches["1"][0], 1)
-        self.assertEqual(matches["2"], (None, [], "no candidate"))
+        self.assertEqual(matches["1"][0], ib.PASS_ONE)
+        self.assertEqual(matches["2"], (None, [], "no voucher of that amount on the account"))
 
     def test_a_day_with_too_many_payments_is_not_searched(self):
         pays = [voucher("PE-{}".format(n), "1.00") for n in range(ib.COMBINE_LIMIT + 1)]
         matches = ib.match([tx("1", "2.00")], pays)
-        self.assertEqual(matches["1"], (None, [], "{} payments that day: too many to combine".format(ib.COMBINE_LIMIT + 1)))
+        self.assertEqual(matches["1"], (None, [], "{} payments near its date: too many to combine".format(ib.COMBINE_LIMIT + 1)))
 
     def test_a_voucher_that_two_transactions_claim_takes_neither(self):
         matches = ib.match([tx("1", "1500.00"), tx("2", "1500.00")], [voucher("PE-1", "1500.00")])
@@ -282,6 +298,64 @@ class MatchTest(unittest.TestCase):
         forward = ib.match([tx("1", "1500.00"), tx("2", "850.00")], pays)
         backward = ib.match([tx("2", "850.00"), tx("1", "1500.00")], pays)
         self.assertEqual(forward, backward)
+
+    def test_pass_window_matches_a_single_voucher_within_five_days_of_the_value_date(self):
+        matches = ib.match([tx("1", "1500.00")], [voucher("PE-1", "1500.00", date="2026-03-27")])
+        self.assertEqual(matches["1"], (ib.PASS_WINDOW, [voucher("PE-1", "1500.00", date="2026-03-27")], ""))
+
+    def test_pass_window_also_takes_the_book_date(self):
+        # the value date is eleven days before the voucher; the book date is the same day as the voucher
+        matches = ib.match([tx("1", "1500.00", date="2026-03-20", book_date="2026-03-31")], [voucher("PE-1", "1500.00")])
+        self.assertEqual(matches["1"][0], ib.PASS_WINDOW)
+
+    def test_pass_window_stays_open_when_two_vouchers_are_in_the_window(self):
+        pays = [voucher("PE-1", "1500.00", date="2026-03-28"), voucher("PE-2", "1500.00", date="2026-04-02")]
+        matches = ib.match([tx("1", "1500.00", date="2026-03-31")], pays)
+        self.assertIsNone(matches["1"][0])
+        self.assertEqual(matches["1"][2], "2 candidates within 5 days")
+
+    def test_pass_text_takes_the_one_voucher_named_in_the_bank_title(self):
+        pays = [voucher("PE-1", "1500.00", text=["1001", "Muster AG"]),
+                voucher("PE-2", "1500.00", text=["2002", "Beispiel GmbH"])]
+        matches = ib.match([tx("1", "1500.00", text="Zahlung Rechnung 1001")], pays)
+        self.assertEqual(matches["1"], (ib.PASS_TEXT, [pays[0]], ""))
+
+    def test_pass_text_stays_open_when_the_title_names_two_vouchers(self):
+        pays = [voucher("PE-1", "1500.00", text=["1001"]), voucher("PE-2", "1500.00", text=["1001"])]
+        matches = ib.match([tx("1", "1500.00", text="Zahlung 1001")], pays)
+        self.assertEqual(matches["1"], (None, [], "2 candidates, none or several named in its text"))
+
+    def test_pass_text_ignores_names_shorter_than_four_characters_and_partial_words(self):
+        pays = [voucher("PE-1", "1500.00", text=["12"]), voucher("PE-2", "1500.00", text=["1001"])]
+        matches = ib.match([tx("1", "1500.00", text="Zahlung 11001 und 12")], pays)
+        self.assertEqual(matches["1"], (None, [], "2 candidates, none or several named in its text"))
+
+    def test_pass_combined_takes_journal_entries_and_payments_within_the_window(self):
+        pays = [voucher("PE-700", "700.00", date="2026-03-29"), voucher("JE-300", "300.00", doctype="Journal Entry", date="2026-04-02")]
+        matches = ib.match([tx("1", "1000.00")], pays)
+        self.assertEqual(matches["1"], (ib.PASS_COMBINED, pays, ""))
+
+    def test_a_voucher_allocated_in_erpnext_to_another_transaction_is_no_candidate(self):
+        allocated = {("Payment Entry", "PE-1"): "7"}
+        self.assertEqual(ib.match([tx("1", "1500.00")], [voucher("PE-1", "1500.00")], allocated)["1"][2], "no voucher of that amount on the account")
+
+    def test_a_voucher_allocated_in_erpnext_to_the_transaction_itself_is_kept(self):
+        allocated = {("Payment Entry", "PE-1"): "1"}
+        matches = ib.match([tx("1", "1500.00")], [voucher("PE-1", "1500.00")], allocated)
+        self.assertEqual(matches["1"], (ib.PASS_ONE, [voucher("PE-1", "1500.00")], ""))
+
+    def test_an_allocated_voucher_does_not_make_an_open_line_ambiguous(self):
+        # the reconciled line keeps PE-1; the open line on the same key gets PE-2 alone
+        allocated = {("Payment Entry", "PE-1"): "7"}
+        pays = [voucher("PE-1", "1500.00"), voucher("PE-2", "1500.00", date="2026-04-01")]
+        matches = ib.match([tx("1", "1500.00")], pays, allocated)
+        self.assertEqual(matches["1"], (ib.PASS_WINDOW, [pays[1]], ""))
+
+    def test_kept_allocations_lists_the_reconciled_lines_whose_match_names_other_vouchers(self):
+        allocated = {("Payment Entry", "PE-1"): "1", ("Payment Entry", "PE-9"): "2"}
+        matches = {"1": (ib.PASS_ONE, [voucher("PE-1", "1500.00")], ""),
+                   "2": (ib.PASS_ONE, [voucher("PE-2", "900.00")], "")}
+        self.assertEqual(ib.kept_allocations(matches, allocated), ["2"])
 
 
 class VoucherTest(unittest.TestCase):
@@ -306,11 +380,25 @@ class VoucherTest(unittest.TestCase):
     def test_the_gl_account_name_gives_its_number(self):
         self.assertEqual(ib.account_number("1020 - UBS Kontokorrent - bic"), "1020")
 
-    def test_match_transactions_takes_the_gl_account_and_the_signed_amount(self):
+    def test_match_transactions_takes_the_gl_account_the_signed_amount_and_the_text(self):
         results = ib.plan([CHF_IN, CHF_OUT], LOOKUPS)
         mapped = ib.match_transactions(results, LOOKUPS)
-        self.assertEqual([(t["bexio_id"], t["account"], str(t["amount"]), t["booked"]) for t in mapped],
-                         [("9001", "1020 - Testbank - X", "1500.00", True), ("9002", "1020 - Testbank - X", "-250.50", False)])
+        self.assertEqual([(t["bexio_id"], t["account"], str(t["amount"]), t["candidate"], t["text"]) for t in mapped],
+                         [("9001", "1020 - Testbank - X", "1500.00", True, "Zahlung Rechnung 1001"),
+                          ("9002", "1020 - Testbank - X", "-250.50", True, "Miete")])
+
+    def test_read_vouchers_keeps_the_text_that_names_a_voucher(self):
+        gl = [{"voucher_type": "Payment Entry", "voucher_no": "PE-1", "account": ACCOUNT, "posting_date": "2026-03-31",
+               "debit": 1500.0, "credit": 0.0}]
+        vouchers = {"Payment Entry": [{"name": "PE-1", "bexio_id": "pay-1", "reference_no": "1001", "party_name": "Muster AG",
+                                       "remarks": ""}]}
+        found = ib.read_vouchers(FakeErp(gl=gl, vouchers=vouchers), [ACCOUNT])
+        self.assertEqual(found[0]["text"], ["1001", "Muster AG"])
+
+    def test_read_allocated_names_the_bank_transaction_each_voucher_is_allocated_to(self):
+        transactions = {"BTN-1": {"bexio_id": "1", "payment_entries": [{"payment_document": "Payment Entry", "payment_entry": "PE-1"}]},
+                        "BTN-2": {"bexio_id": "2", "payment_entries": []}}
+        self.assertEqual(ib.read_allocated(FakeErp(transactions=transactions)), {("Payment Entry", "PE-1"): "1"})
 
 
 class BalanceTest(unittest.TestCase):
@@ -349,11 +437,12 @@ class BalanceTest(unittest.TestCase):
 
 
 class ReconcileOutputTest(unittest.TestCase):
-    def test_only_matched_transactions_are_reconciled_and_only_booked_ones_are_listed_as_unmatched(self):
-        results = ib.plan([CHF_IN, CHF_OUT], LOOKUPS)
-        matches = {"9001": (None, [], "no candidate")}
+    def test_only_matched_transactions_are_reconciled_and_the_unmatched_candidates_are_listed(self):
+        results = ib.plan([CHF_IN, CHF_OUT, record(CHF_IN, id=9010, status="ignored")], LOOKUPS)
+        matches = {"9001": (None, [], "no candidate within 5 days"), "9002": (None, [], "2 candidates within 5 days")}
         self.assertEqual(ib.reconcile_lines(matches), [])
-        self.assertEqual(ib.unmatched_lines(results, matches), ["Bank Transaction 9001: no candidate"])
+        self.assertEqual(ib.unmatched_lines(results, matches),
+                         ["Bank Transaction 9001: no candidate within 5 days", "Bank Transaction 9002: 2 candidates within 5 days"])
 
     def test_reconcile_lines_name_each_voucher_by_doctype_and_name(self):
         pays = [voucher("PE-700", "700.00"), voucher("PE-800", "800.00")]
@@ -378,8 +467,17 @@ class ReconcileOutputTest(unittest.TestCase):
         matches = ib.match(ib.match_transactions(results, LOOKUPS), [voucher("PE-1500", "1500.00")])
         text = ib.match_summary(results, matches)
         rows = [line.split() for line in text.splitlines()[1:] if line.split()[0] == "11"]
-        self.assertEqual(rows, [["11", "2026", "1", "0", "0", "1"]])
+        self.assertEqual(rows, [["11", "2026", "bexio", "booked", "0", "1", "0", "0", "0", "0"],
+                                ["11", "2026", "bexio", "unreconciled", "0", "0", "0", "0", "0", "1"]])
+        self.assertIn("open, no voucher of that amount on the account: 1", text)
         self.assertNotIn("PE-1500", text)
+
+    def test_the_match_summary_counts_the_reconciled_already_apart_from_the_passes(self):
+        results = ib.plan([CHF_IN, CHF_OUT], LOOKUPS)
+        matches = ib.match(ib.match_transactions(results, LOOKUPS), [voucher("PE-1500", "1500.00")])
+        text = ib.match_summary(results, matches, done={"9001"})
+        rows = [line.split() for line in text.splitlines()[1:] if line.split()[0] == "11"]
+        self.assertEqual(rows[0], ["11", "2026", "bexio", "booked", "1", "0", "0", "0", "0", "0"])
 
 
 class LiveCheckTest(unittest.TestCase):
@@ -391,7 +489,7 @@ class LiveCheckTest(unittest.TestCase):
 
     def test_a_right_document_is_no_difference_and_a_wrong_status_is_listed_by_bexio_id(self):
         results = ib.plan([CHF_IN, CHF_OUT], LOOKUPS)
-        matches = {"9001": (1, [voucher("PE-1", "1500.00")], "")}
+        matches = {"9001": (ib.PASS_ONE, [voucher("PE-1", "1500.00")], ""), "9002": (None, [], "no candidate within 5 days")}
         rows = [self._row("9001"), self._row("9002", date="2026-04-02", deposit=0.0, withdrawal=250.5)]
         lines, differences = ib.live_check(rows, results, matches, LOOKUPS)
         self.assertEqual(differences, ["Bank Transaction 9002: differs (status Reconciled, submitted True)"])
@@ -399,7 +497,7 @@ class LiveCheckTest(unittest.TestCase):
 
     def test_the_table_shows_count_reconciled_and_sums_as_dry_run_over_erpnext(self):
         results = ib.plan([CHF_IN, CHF_OUT], LOOKUPS)
-        matches = {"9001": (1, [voucher("PE-1", "1500.00")], "")}
+        matches = {"9001": (ib.PASS_ONE, [voucher("PE-1", "1500.00")], ""), "9002": (None, [], "no candidate within 5 days")}
         rows = [self._row("9001"), self._row("9002", date="2026-04-02", deposit=0.0, withdrawal=250.5, status="Unreconciled")]
         lines, _ = ib.live_check(rows, results, matches, LOOKUPS)
         self.assertEqual([line.split() for line in lines[1:-1]],
