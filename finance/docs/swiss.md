@@ -153,11 +153,15 @@ Build result: see the bead note.
    the slip to a page of its own, at its foot. Offline, with wkhtmltopdf and invented
    rows, the foot lands 1.5 to 1.8 mm from the page edge for 1, 2 and 3 pages.
    **On the live site (bi5, 2026-10-10, erp-a6eq):** the short sample is 1 page with the
-   slip at the foot (`private/qr-sample.pdf`). The long sample (40 rows) is 3 pages:
-   the slip is at the foot of page 2, but page 3 is blank. **Open:** the blank last page
-   is not explained by the offline tests (the real format has more content after the
-   slip than the invented HTML); the template was not changed on the site. Decide
-   whether to fix it in the template or the spacer (`private/qr-sample-long.pdf`).
+   slip at the foot (`private/qr-sample.pdf`). The long sample (40 rows) is 3 pages: the
+   slip is at the foot of page 2, and page 3 is blank (`private/qr-sample-long.pdf`).
+   **Cause of the blank page (2026-10-10, replayed offline on bi5 from the live print HTML):**
+   the template's `.print-format` rule sets a 1 mm bottom margin. wkhtmltopdf reads it as the
+   page margin, and the printview page also applies it as CSS to Frappe's `.print-format`
+   wrapper, so the 1 mm follows the slip. The slip's bottom sits 0.4 to 0.65 mm above the
+   content edge, so for some body heights the margin overflows and wkhtmltopdf adds a blank
+   last page. **Fix:** erp-hp26 (template override `.print-format-gutter .print-format
+   { margin-bottom: 0; }`). The live samples on bi6 are erp-6ycq.
    **PDF host, fixed (2026-10-10):** `host_name` is the tailnet URL, set by the
    `host` step. The backend and queue containers reach it; a stock format renders.
    Mails and prints link to that URL.
