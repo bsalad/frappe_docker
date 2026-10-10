@@ -14,7 +14,7 @@ app itself: `swiss.md`.
 | Backup before the bi9 switch | `20261010_122454` (`bench --site frontend backup --with-files`, 12:24) |
 | Backup before the bi8 switch | `20261010_114102` (`bench --site frontend backup --with-files`, 11:41; bi8 carries the Treasury workspace on the module folder) |
 | Backup before the bi7 switch | `20261010_113546` (`bench --site frontend backup --with-files`, 11:35) |
-| Apps | frappe 16.50.0, erpnext 16.50.0, erpnextswiss 1.34.1, bi_finance 0.0.1; hrms v16.50.0 and bi_payroll 0.0.1 are in the image, installed on the site only once the install step of the deploy bead has run (Decision 2026-10-10, `hrms.md`) |
+| Apps | frappe 16.50.0, erpnext 16.50.0, erpnextswiss 1.34.1, bi_finance 0.0.1, hrms 16.50.0, bi_payroll 0.0.1 (hrms and bi_payroll installed on the live site on 2026-10-10, after the bi11 switch: `install-app` each, `migrate` twice, the second migrate a no-op; Decision 2026-10-10, `hrms.md`) |
 | Accounts, company BI Concepts | 179 (KMU chart, 9 roots, numbers in the names) |
 | Sales Taxes and Charges Templates | 15 (bexio codes) |
 | Purchase Taxes and Charges Templates | 27 (bexio codes) |
