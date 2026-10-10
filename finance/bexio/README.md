@@ -359,3 +359,35 @@ carry-forward lines and account 9100 are left out on bexio's side, and the vouch
 It prints totals only: years, accounts and rows compared, rows with a difference (more than half
 a rappen), and the band of the largest one. The rows go to `<private>/bexio-trial-balance-<date>.csv`.
 Exit status 1 means at least one difference.
+
+## Import chain and the rerun
+
+The history goes into ERPNext in this order. Each loader is keyed by `bexio_id` and is meant to insert nothing on a
+second run; the dry run of each step is the rerun check (it reads ERPNext and writes nothing).
+
+1. Master data: `import_master.py` (see the master-data pipeline above).
+2. Documents: `import_sales.py --apply` (invoices as drafts), `import_credit_note.py --write FILE` (the one
+   credit voucher), `import_purchase.py --apply` (bills as drafts). Then submit the drafts:
+   `finance/scripts/bexio-drafts.sh FILE submit`. Orders and offers are not part of the history and are not applied
+   (see the sales section).
+3. Payments: `import_payments_in.py --write FILE` and `import_payments_out.py --write FILE`, then submit. The
+   VAT moved on payment is a Journal Entry per bexio journal line, in the same plan.
+4. VAT on the transitory accounts: `import_vat_fix.py --write FILE`, then submit (see its section).
+5. Bank: `import_bank.py --write FILE`, then submit (the loader reconciles each transaction with its vouchers once),
+   then `import_bank.py --check`.
+6. Manual entries: `import_manual_entries.py --write FILE`, then submit; `import_manual_fix.py --write FILE`, then submit.
+7. Payroll journal lines: `import_payroll.py --write FILE`, then submit, then `import_payroll.py --check`.
+8. Opening entry: `import_opening.py --dry-run` (no entry is needed when the first business year has no opening lines).
+9. Files: `import_files.py --apply` (attaches the bexio files to the imported documents).
+
+For the rerun, run every step's dry run (or `--write` into a private file, and check that the plan is empty
+or only holds documents the loader skips by `bexio_id`), and compare the counts of Sales Invoice, Purchase
+Invoice, Payment Entry, Journal Entry, Bank Transaction and File before and after.
+
+Then the check against bexio's journal, read only:
+
+    python3 finance/bexio/check_trial_balance.py [--export DIR] [--out CSV]
+
+A difference is listed in the CSV under `<private>/`, not in the repository. Differences that are accepted, and
+not fixed, are listed in the note of the bead that owns them (rounding under one franc per account, and the open
+customer item of the chain).
