@@ -14,7 +14,12 @@ Funnel (see finance/bexio/README.md):
   scopes. It never shows a token, and nothing is logged.
 
 Each login has its own one-time state, valid for oauth.LOGIN_TIMEOUT seconds. A
-state is used once: a second callback with it is refused.
+state is used once: a second callback with it is refused, and a new /login replaces
+the pending state, so one login is waiting at a time.
+
+`tailscale serve` passes the caller's identity in the Tailscale-User-Login header.
+Every request is refused unless that header is the configured tailnet login (--tailnet-user),
+so the page is bound to one person even inside the tailnet.
 
 The redirect URI must be registered on the bexio OAuth app and passed with
 --redirect-uri, exactly as registered. The localhost one stays the fallback
@@ -38,6 +43,10 @@ DEFAULT_PORT = 8794  # loopback only; tailscale serve forwards the tailnet https
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.headers.get("Tailscale-User-Login", "") != self.server.tailnet_user:
+            # Refused before any state is made or any code is read.
+            self._page(403, "not the bexio login's owner on this tailnet")
+            return
         url = urllib.parse.urlsplit(self.path)
         params = urllib.parse.parse_qs(url.query)
         if url.path == "/login":
@@ -55,8 +64,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         export_scope = scope_name == "export"
         verifier = secrets.token_urlsafe(64)  # PKCE: 43 to 128 characters
         state = secrets.token_urlsafe(32)
-        self.server.forget_expired()
-        self.server.pending[state] = {"verifier": verifier, "export_scope": export_scope, "started": time.monotonic()}
+        self.server.pending.clear()  # one login at a time: a new one replaces the waiting one
+        self.server.pending[state] ={"verifier": verifier, "export_scope": export_scope, "started": time.monotonic()}
         scope = oauth.EXPORT_SCOPE if export_scope else oauth.SCOPE
         url = oauth.authorize_url(state, oauth._challenge(verifier), scope, self.server.redirect_uri)
         self.send_response(302)
@@ -109,30 +118,28 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 class _Server(http.server.HTTPServer):
-    def __init__(self, address, redirect_uri):
+    def __init__(self, address, redirect_uri, tailnet_user):
         super().__init__(address, _Handler)
         self.redirect_uri = redirect_uri
+        self.tailnet_user = tailnet_user  # the one tailnet login allowed to log in
         self.pending = {}  # state -> the login's verifier, scope and start time
 
-    def forget_expired(self):
-        now = time.monotonic()
-        for state in [s for s, login in self.pending.items() if now - login["started"] > oauth.LOGIN_TIMEOUT]:
-            del self.pending[state]
 
-
-def make_server(redirect_uri, port=DEFAULT_PORT):
+def make_server(redirect_uri, tailnet_user, port=DEFAULT_PORT):
     """The login server on 127.0.0.1:port (0 for any free port). Its callback is redirect_uri."""
-    return _Server((oauth.CALLBACK_HOST, port), redirect_uri)
+    return _Server((oauth.CALLBACK_HOST, port), redirect_uri, tailnet_user)
 
 
 def main(argv):
     parser = argparse.ArgumentParser(description="Serve the bexio login page on 127.0.0.1 for tailscale serve.")
     parser.add_argument("--redirect-uri", required=True,
                         help="the tailnet callback registered at bexio, e.g. https://<mac>.<tailnet>.ts.net:<port>/callback")
+    parser.add_argument("--tailnet-user", required=True,
+                        help="the tailnet login allowed to log in, as tailscale shows it (the only identity the page accepts)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="loopback port (default %(default)s)")
     args = parser.parse_args(argv)
     oauth._client_credentials()  # stops here, with the varlock hint, when the client id or secret is not injected
-    server = make_server(args.redirect_uri, args.port)
+    server = make_server(args.redirect_uri, args.tailnet_user, args.port)
     print("bexio login page on 127.0.0.1:{}, callback {}".format(server.server_port, args.redirect_uri), flush=True)
     try:
         server.serve_forever()

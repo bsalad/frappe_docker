@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- LaunchAgent template for the tailnet bexio login page (finance/bexio/login_helper.py).
      Install into ~/Library/LaunchAgents on the Mac mini, see finance/bexio/README.md.
-     Replace REDIRECT_URI_PLACEHOLDER with the callback URL registered at bexio. No secret here:
+     Replace REDIRECT_URI_PLACEHOLDER with the callback URL registered at bexio, and
+     TAILNET_USER_PLACEHOLDER with Benchi's tailnet login (as tailscale shows it). No secret here:
      varlock injects the client id and secret from the keychain at start. -->
 <plist version="1.0">
 <dict>
@@ -20,6 +21,8 @@
         <string>8794</string>
         <string>--redirect-uri</string>
         <string>REDIRECT_URI_PLACEHOLDER</string>
+        <string>--tailnet-user</string>
+        <string>TAILNET_USER_PLACEHOLDER</string>
     </array>
     <!-- The main checkout, so the helper runs the code that has landed. -->
     <key>WorkingDirectory</key>

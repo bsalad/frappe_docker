@@ -19,6 +19,7 @@ import login_helper
 import oauth
 
 REDIRECT = "https://login.example.test:8461/callback"
+TAILNET_USER = "owner@tailnet.example.test"  # invented; tailscale serve sends the real one in the header
 FAKE_TOKEN = "fake-refresh-token-123"
 FAKE_ENV = {"BEXIO_CLIENT_ID": "fake-client-id", "BEXIO_CLIENT_SECRET": "fake-client-secret"}
 
@@ -27,7 +28,7 @@ class LoginHelperTest(unittest.TestCase):
     def setUp(self):
         self.env = mock.patch.dict(os.environ, FAKE_ENV)
         self.env.start()
-        self.server = login_helper.make_server(REDIRECT, port=0)
+        self.server = login_helper.make_server(REDIRECT, TAILNET_USER, port=0)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -42,9 +43,11 @@ class LoginHelperTest(unittest.TestCase):
         self.thread.join(5)
         self.env.stop()
 
-    def _get(self, path):
+    def _get(self, path, user=TAILNET_USER):
+        # user is the Tailscale-User-Login header tailscale serve adds; None sends none.
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
-        conn.request("GET", path)
+        headers = {"Tailscale-User-Login": user} if user is not None else {}
+        conn.request("GET", path, headers=headers)
         resp = conn.getresponse()
         body = resp.read().decode("utf-8")
         headers = dict(resp.getheaders())
@@ -168,6 +171,31 @@ class LoginHelperTest(unittest.TestCase):
         status, _, _ = self._get("/")
         self.assertEqual(status, 404)
         self.assertEqual(self.server.pending, {})
+
+    def test_a_request_without_the_tailnet_identity_is_refused_and_starts_nothing(self):
+        status, _, body = self._get("/login", user=None)
+        self.assertEqual(status, 403)
+        self.assertNotIn("bexio.com", body)
+        self.assertEqual(self.server.pending, {})
+
+    def test_another_tailnet_user_cannot_finish_the_login(self):
+        state = self._state_of(self._start_login())
+        status, _, _ = self._get("/callback?state={}&code=fake-code".format(state), user="someone-else@tailnet.example.test")
+        self.assertEqual(status, 403)
+        self.exchange.assert_not_called()
+        self.write.assert_not_called()
+        status, _, body = self._get("/callback?state={}&code=fake-code".format(state))
+        self.assertEqual(status, 200)
+        self.assertIn("logged in", body)
+
+    def test_a_new_login_replaces_the_waiting_one(self):
+        first = self._state_of(self._start_login())
+        second = self._state_of(self._start_login())
+        status, _, _ = self._get("/callback?state={}&code=fake-code".format(first))
+        self.assertEqual(status, 400)
+        self.exchange.assert_not_called()
+        status, _, _ = self._get("/callback?state={}&code=fake-code".format(second))
+        self.assertEqual(status, 200)
 
     def test_the_server_binds_loopback_only(self):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")

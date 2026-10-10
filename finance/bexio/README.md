@@ -26,17 +26,23 @@ never from a file. `tailscale serve` puts it on the tailnet over https. Never Fu
 the page starts logins and must not be public.
 
 - `/login` redirects the browser to bexio with the read-only scopes; `/login?scope=export`
-  is the export login. Each login has a one-time state.
+  is the export login. Each login has a one-time state, valid 300 seconds. A new `/login`
+  replaces a waiting one.
 - `/callback` exchanges the code and saves the rotated refresh token in the same keychain
   item as `oauth.py login`. The page shows `logged in, scopes: ...`, never a token.
+- Only Benchi's tailnet login gets in: every request must carry the `Tailscale-User-Login`
+  header that `tailscale serve` adds, and it must equal `--tailnet-user`. Anything else is 403.
+  Nothing is logged; the page and the terminal print only the outcome.
 
 Install on the Mac mini (once):
 
-1. Register the callback on the bexio OAuth app, exactly as below (it is added in the
-   bexio developer portal next to `http://localhost:8765/callback`, which stays as the fallback):
+1. Register the callback on the bexio OAuth app, exactly as below. It is added in the
+   bexio developer portal next to `http://localhost:8765/callback`, which stays as the fallback.
+   The URL is https, not http:
    `https://<mac-mini>.<tailnet>.ts.net:<https-port>/callback`
 2. Copy `finance/bexio/ch.bi-concepts.bexio-login.plist` to `~/Library/LaunchAgents/`, with
-   `REDIRECT_URI_PLACEHOLDER` replaced by that URL, then load it in Benchi's session:
+   `REDIRECT_URI_PLACEHOLDER` replaced by that URL and `TAILNET_USER_PLACEHOLDER` by Benchi's
+   tailnet login, then load it in Benchi's session:
    `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ch.bi-concepts.bexio-login.plist`
 3. Expose it on the tailnet only, with the Homebrew tailscale (the `~/.local/bin/tailscale`
    wrapper points at a Tailscale.app that is not installed):
