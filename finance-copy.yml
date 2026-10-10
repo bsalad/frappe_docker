@@ -1,0 +1,24 @@
+# Finance copy site: a separate stack for trying HRMS on a copy of the live books (finance/docs/hrms.md,
+# 'Copy site'). Run it only as its own compose project, never with -p frappe-finance:
+#   docker compose -p frappe-finance-copy -f pwd.yml -f finance-copy.yml up -d
+# It gets its own volumes and network, on 127.0.0.1:8081 only. The live stack keeps finance-local.yml.
+# No secrets here: the copy's admin password is set on the site and kept in private/.
+services:
+  frontend:
+    image: frappe-finance-custom:v16.50.0-swiss-hrms1
+    ports: !override
+      - "127.0.0.1:8081:8080"
+  backend:
+    image: frappe-finance-custom:v16.50.0-swiss-hrms1
+  configurator:
+    image: frappe-finance-custom:v16.50.0-swiss-hrms1
+  create-site:
+    image: frappe-finance-custom:v16.50.0-swiss-hrms1
+  queue-long:
+    image: frappe-finance-custom:v16.50.0-swiss-hrms1
+  queue-short:
+    image: frappe-finance-custom:v16.50.0-swiss-hrms1
+  scheduler:
+    image: frappe-finance-custom:v16.50.0-swiss-hrms1
+  websocket:
+    image: frappe-finance-custom:v16.50.0-swiss-hrms1

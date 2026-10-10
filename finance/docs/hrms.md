@@ -3,8 +3,8 @@
 Decision document for running Swiss payroll in ERPNext v16 (ERPNext `v16.50.0`),
 the way `swiss.md` decides the Swiss accounting. Benchi decided on 2026-10-10: full
 HRMS in ERPNext, with the payroll history from bexio included. This document says how,
-and what is still open. **Nothing is installed.** The running stack is unchanged, and
-the HRMS app is not in `finance/apps.json`.
+and what is still open. HRMS is in `finance/apps.json` and installed on a copy site only
+(see [Copy site](#copy-site)). The live stack is unchanged: it runs `bi9`, without HRMS.
 
 Public facts only: no company data, no employee data, no amounts from the company.
 Those stay in `private/`.
@@ -192,6 +192,73 @@ calculated.
    HRMS? Or pay salaries by hand?
 8. **Install order.** OK to install HRMS on a copy site first, and to deploy the live site
    only after the copy passes and in a slot ledgerdemain gives?
+
+## Copy site
+
+A copy of the live books with HRMS installed, to try the payroll work on before live. It is
+a separate compose project, `frappe-finance-copy`, with its own volumes and network. It
+listens on `127.0.0.1:8081` and on the tailnet only, on port 8462
+(`https://<machine>.<tailnet>.ts.net:8462`), never Funnel. It holds the full books, so it
+stays on this machine and the tailnet. The live stack is not touched by any of this.
+
+- Image: `frappe-finance-custom:v16.50.0-swiss-hrms1` (ERPNext and HRMS 16.50.0, erpnextswiss
+  1.34.1, bi_finance), built on `v16.50.0-swiss-hrms1-base`.
+  Live stays on `v16.50.0-swiss-bi9`. A later app (bi_payroll) gets its own layer on top.
+- Safety settings on the copy's site, set after every restore, do not turn them off:
+  `pause_scheduler` 1 and `mute_emails` 1 (no scheduled jobs, no mail), no enabled Webhook,
+  no outgoing Email Account, `host_name` the copy's own URL, and the app name starts with
+  `COPY`, so it cannot be mistaken for live.
+- The copy's Administrator password is in `private/.erpnext-admin-copy` (mode 600), never in
+  the repo. The compose override `finance-copy.yml` holds no secrets.
+
+Every command below names the project `frappe-finance-copy` and the override file. Never
+`-p frappe-finance` here: that is the live stack.
+
+**Start**
+
+```sh
+docker compose -p frappe-finance-copy -f pwd.yml -f finance-copy.yml up -d --scale scheduler=0
+/opt/homebrew/bin/tailscale serve --bg --https=8462 http://127.0.0.1:8081
+```
+
+`--scale scheduler=0` keeps the scheduler off. The first start creates a new site named
+`frontend` (a few minutes). It is replaced by the restore below.
+
+**Stop** (keeps the volumes)
+
+```sh
+/opt/homebrew/bin/tailscale serve --https=8462 off
+docker compose -p frappe-finance-copy -f pwd.yml -f finance-copy.yml down
+```
+
+**Refresh from a new backup**
+
+1. A fresh backup of the live site. It only reads the books:
+   `docker exec frappe-finance-backend-1 bench --site frontend backup --with-files`.
+   Note the timestamp prefix of the four files it writes.
+2. Copy the four files (`*-database.sql.gz`, `*-site_config_backup.json`, `*-files.tar`,
+   `*-private-files.tar`) out of `frappe-finance-backend-1:/home/frappe/frappe-bench/sites/frontend/private/backups/`
+   with `docker cp` into `private/copy-restore/` (mode 700), then into the same folder in
+   `frappe-finance-copy-backend-1`.
+3. Restore into the copy, with the container paths:
+   `docker exec frappe-finance-copy-backend-1 bench --site frontend restore <database.sql.gz> --with-public-files <files.tar> --with-private-files <private-files.tar> --db-root-password admin --force`
+4. The restore replaces the copy's database with the live one, including the live password
+   hash. Check `bench --site frontend list-apps`: if `hrms` is missing, run
+   `bench --site frontend install-app hrms`, then `bench --site frontend migrate`. Then set the
+   safety settings again, and the copy's own password:
+   `bench --site frontend set-admin-password "$(cat private/.erpnext-admin-copy)"`.
+
+The `admin` database root password is the upstream default in `pwd.yml`, for the copy's own
+MariaDB, which only this stack reaches.
+
+**Remove** (deletes the copy's books on this machine)
+
+```sh
+/opt/homebrew/bin/tailscale serve --https=8462 off
+docker compose -p frappe-finance-copy -f pwd.yml -f finance-copy.yml down -v
+```
+
+Then delete `private/copy-restore/` and `private/.erpnext-admin-copy`.
 
 ## Sources
 
