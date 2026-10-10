@@ -158,6 +158,25 @@ class NewSalesRunRate(unittest.TestCase):
         self.assertEqual([row["new_sales"] for row in rows], [25.0] * 13)
         self.assertIn("New sales are in the forecast at 25.00 CHF a week", message)
 
+    def test_the_report_has_the_new_purchases_column_and_a_basis_note_with_the_excluded_count_and_no_names(self):
+        day = AS_OF - datetime.timedelta(days=80)
+        paid = AS_OF - datetime.timedelta(days=20)
+        with contextlib.ExitStack() as stack:
+            self.patch_readers(stack, [])
+            stack.enter_context(mock.patch.object(cff, "purchase_paid_in_windows", return_value=[
+                ("Test Supplier", day, paid, 1300.0), ("Test Insurer", day, paid, 400.0)]))
+            stack.enter_context(mock.patch.object(cff, "insurer_suppliers", return_value={"Test Insurer"}))
+            stack.enter_context(mock.patch.object(cff, "_", lambda text: text))
+            stack.enter_context(mock.patch.object(cff.frappe, "get_cached_value", return_value="CHF"))
+            stack.enter_context(mock.patch.object(cff, "fmt_money", return_value="25.00 CHF"))
+            columns, rows, message, _chart, _summary = cff.execute(
+                {"company": "Test Company", "as_of_date": AS_OF, "include_run_rate": 0})
+        self.assertIn(("New purchases", "new_purchases"), [(c["label"], c["fieldname"]) for c in columns])
+        self.assertEqual([row["new_purchases"] for row in rows], [25.0] * 13)
+        self.assertIn("New purchases are in the forecast at 25.00 CHF a week", message)
+        self.assertIn("1 suppliers left out", message)
+        self.assertNotIn("Test Insurer", message)
+
     def test_the_receipts_are_payment_entries_against_sales_invoices_over_the_four_windows(self):
         with mock.patch.object(cff, "frappe") as frappe:
             frappe.db.sql.return_value = [(AS_OF - datetime.timedelta(days=80), AS_OF - datetime.timedelta(days=20), 1300.0)]
