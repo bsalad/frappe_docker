@@ -1,0 +1,72 @@
+{
+ "actions": [],
+ "creation": "2026-10-10 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "client_id",
+  "client_secret",
+  "sync_enabled",
+  "backfill_from",
+  "last_sync"
+ ],
+ "fields": [
+  {
+   "description": "The client id of the PayPal REST app (live, with Transaction Search on).",
+   "fieldname": "client_id",
+   "fieldtype": "Data",
+   "label": "Client id"
+  },
+  {
+   "description": "The secret of the same REST app. Stored as a Password field; the code reads it with get_password.",
+   "fieldname": "client_secret",
+   "fieldtype": "Password",
+   "label": "Client secret"
+  },
+  {
+   "default": "0",
+   "description": "Sync every hour. Off until the credentials are entered and a dry run was reviewed.",
+   "fieldname": "sync_enabled",
+   "fieldtype": "Check",
+   "label": "Sync hourly"
+  },
+  {
+   "default": "2015-01-01",
+   "description": "The first day transactions are read from on the first sync. PayPal keeps three years at most, so an older day starts three years back.",
+   "fieldname": "backfill_from",
+   "fieldtype": "Date",
+   "label": "Backfill from"
+  },
+  {
+   "fieldname": "last_sync",
+   "fieldtype": "Datetime",
+   "label": "Last sync",
+   "read_only": 1
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-10 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "BI Finance",
+ "name": "PayPal Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 0,
+   "role": "System Manager",
+   "share": 0,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

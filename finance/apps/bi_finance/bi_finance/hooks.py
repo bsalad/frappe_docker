@@ -27,7 +27,7 @@ jinja = {
     ]
 }
 
-# Wise sync: a live run each hour when Wise Settings has sync on (wise.sync_scheduled checks it)
+# Bank API syncs: a live run each hour when the settings have sync on (each sync_scheduled checks it)
 scheduler_events = {
-    "hourly": ["bi_finance.wise.sync_scheduled"],
+    "hourly": ["bi_finance.wise.sync_scheduled", "bi_finance.paypal.sync_scheduled"],
 }

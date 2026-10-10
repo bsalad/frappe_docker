@@ -1,4 +1,4 @@
-"""The bank feed shared by the bank APIs (Wise now, PayPal later): feed rows written as submitted Bank Transactions.
+"""The bank feed shared by the bank APIs (Wise and PayPal): feed rows written as submitted Bank Transactions.
 
 A row is the dict wise_client.statement_rows gives: transaction_id, date, deposit, withdrawal, currency, description,
 reference_number. Its transaction_id is the external id. A Bank Transaction with that id is left alone on every later
@@ -65,7 +65,12 @@ def new_rows(rows, fed_ids, imported):
 
 
 def plan(bank_account, rows):
-    """What a run would write to bank_account for these rows: (create, summary). Reads ERPNext, writes nothing."""
+    """What a run would write to bank_account for these rows: (create, summary). Reads ERPNext, writes nothing.
+
+    An account that does not exist yet has no transactions, so every row is new.
+    """
+    if not frappe.db.exists("Bank Account", bank_account):
+        return rows, {"rows": len(rows), "already_fed": 0, "already_imported": 0, "create": len(rows)}
     existing = frappe.get_all(
         "Bank Transaction",
         filters={"bank_account": bank_account, "docstatus": ["<", 2]},
@@ -74,6 +79,56 @@ def plan(bank_account, rows):
     fed_ids = {r["transaction_id"] for r in existing if r["transaction_id"]}
     imported = collections.Counter(_key(r) for r in existing if not r["transaction_id"])
     return new_rows(rows, fed_ids, imported)
+
+
+def bank_account_name(prefix, currency, bank):
+    """The name ERPNext gives a bank's Bank Account of a currency: "<prefix> <currency> - <bank>"."""
+    return "{} {} - {}".format(prefix, currency, bank)
+
+
+def open_bank_account(prefix, bank, currency, parent, company, numbers):
+    """The Bank Account of a currency at a bank, with its GL account under parent, made when missing.
+
+    The GL account is "<prefix> Kontokorrent" (with the currency after it unless CHF) and takes the first number in numbers
+    that no account of the company has. An existing Bank Account is left as it is. Returns its name.
+    """
+    name = bank_account_name(prefix, currency, bank)
+    if frappe.db.exists("Bank Account", name):
+        return name
+    if not frappe.db.exists("Bank", bank):
+        frappe.get_doc({"doctype": "Bank", "bank_name": bank}).insert()
+    gl_name = "{} Kontokorrent".format(prefix) + ("" if currency == "CHF" else " " + currency)
+    account = frappe.get_doc(
+        {
+            "doctype": "Account",
+            "account_number": _free_number(company, numbers),
+            "account_name": gl_name,
+            "parent_account": parent,
+            "company": company,
+            "account_currency": currency,
+            "account_type": "Bank",
+            "is_group": 0,
+        }
+    ).insert()
+    frappe.get_doc(
+        {
+            "doctype": "Bank Account",
+            "account_name": "{} {}".format(prefix, currency),
+            "bank": bank,
+            "account": account.name,
+            "company": company,
+            "is_company_account": 1,
+        }
+    ).insert()
+    return name
+
+
+def _free_number(company, numbers):
+    used = {str(n) for n in frappe.get_all("Account", filters={"company": company}, pluck="account_number") if n}
+    for number in numbers:
+        if str(number) not in used:
+            return str(number)
+    frappe.throw(_("No free account number in {0} to {1} for a new bank account.").format(numbers[0], numbers[-1]))
 
 
 def write(bank_account, rows):

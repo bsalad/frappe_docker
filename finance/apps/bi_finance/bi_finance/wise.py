@@ -87,7 +87,7 @@ def run(dry_run):
         if currency != "CHF":
             # the rate of every day this account's amounts fall on, so the conversion below needs no lookup per day
             rates.update(bank_feed.load_rates(currency, _first_day(start, rows, bank_account), now.date(), dry_run))
-        create, summary = bank_feed.plan(bank_account, rows) if frappe.db.exists("Bank Account", bank_account) else _unseen(rows)
+        create, summary = bank_feed.plan(bank_account, rows)
         if not dry_run:
             ensure_bank_account(currency)
             bank_feed.write(bank_account, create)
@@ -201,48 +201,13 @@ def ensure_bank_account(currency):
     name = _bank_account_name(currency)
     if frappe.db.exists("Bank Account", name):
         return name
-    company = _company()
     chf = frappe.db.get_value("Bank Account", "Wise CHF - " + BANK, ["account", "company"], as_dict=True)
     parent = frappe.db.get_value("Account", chf["account"], "parent_account")
-    account = frappe.get_doc(
-        {
-            "doctype": "Account",
-            "account_number": _free_number(),
-            "account_name": "Wise Kontokorrent" if currency == "CHF" else "Wise Kontokorrent " + currency,
-            "parent_account": parent,
-            "company": company,
-            "account_currency": currency,
-            "account_type": "Bank",
-            "is_group": 0,
-        }
-    ).insert()
-    frappe.get_doc(
-        {
-            "doctype": "Bank Account",
-            "account_name": "Wise " + currency,
-            "bank": BANK,
-            "account": account.name,
-            "company": company,
-            "is_company_account": 1,
-        }
-    ).insert()
-    return name
+    return bank_feed.open_bank_account("Wise", BANK, currency, parent, chf["company"], ACCOUNT_NUMBERS)
 
 
 def _bank_account_name(currency):
-    return "Wise {} - {}".format(currency, BANK)
-
-
-def _company():
-    return frappe.db.get_value("Bank Account", "Wise CHF - " + BANK, "company")
-
-
-def _free_number():
-    used = {str(n) for n in frappe.get_all("Account", filters={"company": _company()}, pluck="account_number") if n}
-    for number in ACCOUNT_NUMBERS:
-        if str(number) not in used:
-            return str(number)
-    frappe.throw(_("No free account number in 1022 to 1028 for a Wise balance."))
+    return bank_feed.bank_account_name("Wise", currency, BANK)
 
 
 def _start(settings, now):
@@ -276,8 +241,3 @@ def _erp_net_by_day(bank_account):
         bank_account,
     )
     return {str(day): float(net) for day, net in days}
-
-
-def _unseen(rows):
-    """The plan for an account that does not exist yet: every row is new, none is imported."""
-    return rows, {"rows": len(rows), "already_fed": 0, "already_imported": 0, "create": len(rows)}
