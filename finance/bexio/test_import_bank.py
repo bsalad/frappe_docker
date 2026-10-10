@@ -335,6 +335,33 @@ class MatchTest(unittest.TestCase):
         matches = ib.match([tx("1", "1000.00")], pays)
         self.assertEqual(matches["1"], (ib.PASS_COMBINED, pays, ""))
 
+    def test_pass_window_stays_open_when_the_voucher_lies_within_the_window_of_two_open_lines(self):
+        # an invented voucher between two open lines of the same amount: neither line may take it
+        pays = [voucher("PE-1", "1500.00", date="2026-04-01")]
+        matches = ib.match([tx("1", "1500.00", date="2026-03-31"), tx("2", "1500.00", date="2026-04-03")], pays)
+        self.assertEqual(matches["1"], (None, [], "2 lines within the window of that voucher"))
+        self.assertEqual(matches["2"], (None, [], "2 lines within the window of that voucher"))
+
+    def test_pass_window_keeps_a_voucher_erpnext_already_holds_for_its_line_despite_an_open_line_near_it(self):
+        # the reconciled line 1 keeps PE-1; the open line 2 of the same amount cannot take it
+        allocated = {("Payment Entry", "PE-1"): "1"}
+        pays = [voucher("PE-1", "1500.00", date="2026-03-28")]
+        matches = ib.match([tx("1", "1500.00", date="2026-03-31"), tx("2", "1500.00", date="2026-04-03")], pays, allocated)
+        self.assertEqual(matches["1"], (ib.PASS_WINDOW, pays, ""))
+        self.assertEqual(matches["2"], (None, [], "no voucher of that amount on the account"))
+
+    def test_pass_window_takes_the_voucher_when_the_other_open_line_is_far_from_it(self):
+        pays = [voucher("PE-1", "1500.00", date="2026-03-28")]
+        matches = ib.match([tx("1", "1500.00", date="2026-03-31"), tx("2", "1500.00", date="2026-05-20")], pays)
+        self.assertEqual(matches["1"], (ib.PASS_WINDOW, pays, ""))
+        self.assertEqual(matches["2"], (None, [], "amount only on other dates, none within 5 days"))
+
+    def test_pass_combined_stays_open_when_a_payment_of_the_combination_lies_near_another_open_line(self):
+        # the line of 250.00 on 29 March is open and near both payments of the 1000.00 combination
+        pays = [voucher("PE-700", "700.00"), voucher("PE-300", "300.00")]
+        matches = ib.match([tx("1", "1000.00"), tx("2", "250.00", date="2026-03-29")], pays)
+        self.assertEqual(matches["1"], (None, [], "a payment of its only combination lies within the window of another open line"))
+
     def test_a_voucher_allocated_in_erpnext_to_another_transaction_is_no_candidate(self):
         allocated = {("Payment Entry", "PE-1"): "7"}
         self.assertEqual(ib.match([tx("1", "1500.00")], [voucher("PE-1", "1500.00")], allocated)["1"][2], "no voucher of that amount on the account")

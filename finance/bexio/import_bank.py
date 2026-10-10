@@ -248,10 +248,11 @@ def match(transactions, vouchers, allocated=None):
     A voucher allocated in ERPNext to another transaction is no candidate (allocated: {(doctype, name): bexio_id}); the
     transaction it is allocated to keeps it. The passes, each only on a unique match, in this order:
     one voucher of the transaction's GL account, date and amount; then the only voucher of the account and amount within
-    WINDOW_DAYS of its value or book date; then, among several of the same day, the only one whose name appears in the
-    bank line's title; then the only combination of the vouchers in that window (Payment Entries and Journal Entries)
-    whose sum is its amount, a transfer that pays several bills. A transaction with no such match keeps pass None and the
-    reason. A voucher that two transactions claim takes neither of them.
+    WINDOW_DAYS of its value or book date, and near no other open transaction of that account and amount; then, among
+    several of the same day, the only one whose name appears in the bank line's title; then the only combination of the
+    vouchers in that window (Payment Entries and Journal Entries) whose sum is its amount, a transfer that pays several
+    bills, and whose vouchers are near no other open transaction of that account and direction. A transaction with no
+    such match keeps pass None and the reason. A voucher that two transactions claim takes neither of them.
     """
     allocated = allocated or {}
 
@@ -272,6 +273,13 @@ def match(transactions, vouchers, allocated=None):
         else:
             pending.append(t)
 
+    def rivals(voucher, same):
+        """The open transactions that same selects and the voucher lies near, the one asking included; none for a voucher
+        ERPNext already holds for its line, since no other line can take it."""
+        if _key(voucher) in allocated:
+            return []
+        return [s for s in pending if same(s) and _near(voucher, s)]
+
     for t in pending:
         pool = [v for v in vouchers if _key(v) not in single and free(v, t["bexio_id"])]
         window = [v for v in pool if v["account"] == t["account"] and v["amount"] == t["amount"] and _near(v, t)]
@@ -283,10 +291,20 @@ def match(transactions, vouchers, allocated=None):
             combos = [c for n in range(2, len(day) + 1) for c in itertools.combinations(day, n)
                       if sum((v["amount"] for v in c), ZERO) == t["amount"]]
         named = [v for v in same_day if _named(v, t["text"])]
-        if len(window) == 1:
+        # a voucher that lies within the window of another open line of its account and amount is not this line's alone
+        window_rivals = len(rivals(window[0], lambda s: s["account"] == t["account"] and s["amount"] == t["amount"])) if len(window) == 1 else 0
+        # the same for the payments of a combination: no other open line of their account and direction lies near them
+        combo_shared = len(combos) == 1 and any(
+            len(rivals(v, lambda s: s["account"] == t["account"] and (s["amount"] > ZERO) == (v["amount"] > ZERO))) > 1
+            for v in combos[0])
+        if len(window) == 1 and window_rivals > 1:
+            result[t["bexio_id"]] = (None, [], "{} lines within the window of that voucher".format(window_rivals))
+        elif len(window) == 1:
             result[t["bexio_id"]] = (PASS_WINDOW, window, "")
         elif len(same_day) > 1 and len(named) == 1:
             result[t["bexio_id"]] = (PASS_TEXT, named, "")
+        elif len(combos) == 1 and combo_shared:
+            result[t["bexio_id"]] = (None, [], "a payment of its only combination lies within the window of another open line")
         elif len(combos) == 1:
             result[t["bexio_id"]] = (PASS_COMBINED, list(combos[0]), "")
         elif len(combos) > 1:
