@@ -51,7 +51,7 @@ Install on the Mac mini (once):
 Then open `https://<mac-mini>.<tailnet>.ts.net:<https-port>/login` on the MacBook
 and approve the login at bexio. The page must say `logged in`.
 
-The desktop-Terminal login below stays the fallback.
+The desktop-Terminal login above (`oauth.py login`) stays the fallback.
 
 ## What the scopes allow
 

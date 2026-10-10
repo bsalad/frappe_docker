@@ -65,7 +65,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         verifier = secrets.token_urlsafe(64)  # PKCE: 43 to 128 characters
         state = secrets.token_urlsafe(32)
         self.server.pending.clear()  # one login at a time: a new one replaces the waiting one
-        self.server.pending[state] ={"verifier": verifier, "export_scope": export_scope, "started": time.monotonic()}
+        self.server.pending[state] = {"verifier": verifier, "export_scope": export_scope, "started": time.monotonic()}
         scope = oauth.EXPORT_SCOPE if export_scope else oauth.SCOPE
         url = oauth.authorize_url(state, oauth._challenge(verifier), scope, self.server.redirect_uri)
         self.send_response(302)
@@ -127,6 +127,9 @@ class _Server(http.server.HTTPServer):
 
 def make_server(redirect_uri, tailnet_user, port=DEFAULT_PORT):
     """The login server on 127.0.0.1:port (0 for any free port). Its callback is redirect_uri."""
+    if not tailnet_user:
+        # An empty owner would match a request that carries no identity header at all.
+        raise ValueError("tailnet_user must name the one tailnet login allowed to log in")
     return _Server((oauth.CALLBACK_HOST, port), redirect_uri, tailnet_user)
 
 

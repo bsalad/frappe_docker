@@ -188,6 +188,11 @@ class LoginHelperTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("logged in", body)
 
+    def test_an_empty_owner_is_refused_at_start(self):
+        # Else a request without the identity header would equal the owner.
+        with self.assertRaises(ValueError):
+            login_helper.make_server(REDIRECT, "", port=0)
+
     def test_a_new_login_replaces_the_waiting_one(self):
         first = self._state_of(self._start_login())
         second = self._state_of(self._start_login())
