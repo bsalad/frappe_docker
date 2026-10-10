@@ -236,6 +236,46 @@ class SalesOrderAndQuotation(unittest.TestCase):
         self.assertNotIn("customer", doc)
 
 
+class OptionalAndEmpty(unittest.TestCase):
+    def test_an_optional_position_is_an_alternative_row_and_counts_in_no_total(self):
+        offer = record(INVOICE, id=900, positions=[
+            {"type": "KbPositionArticle", "article_id": 7, "amount": "2", "unit_price": "50.00",
+             "account_id": 30, "tax_id": 28, "text": "Beratung"},
+            {"type": "KbPositionCustom", "amount": "1", "unit_price": "50.00", "account_id": 30, "tax_id": 29,
+             "text": "Zusatz", "is_optional": True},
+        ], taxs=[{"percentage": "8.1", "value": "8.10"}], total_net="100.00", total_taxes="8.10",
+            total_gross="108.10", total="108.10")
+        doc, differences, _, _ = isl._document("Quotation", offer, LOOKUPS)
+        self.assertEqual(differences, [])
+        self.assertNotIn("is_alternative", doc["items"][0])
+        self.assertEqual((doc["items"][1]["description"], doc["items"][1]["is_alternative"]), ("Zusatz", 1))
+        self.assertEqual([t["tax_amount"] for t in doc["taxes"]], [8.1])
+
+    def test_an_offer_with_only_optional_positions_has_a_zero_total_as_bexio_has(self):
+        offer = record(INVOICE, id=901, positions=[
+            {"type": "KbPositionCustom", "amount": "1", "unit_price": "50.00", "account_id": 30, "tax_id": 29,
+             "text": "Zusatz", "is_optional": True},
+        ], taxs=[], total_net="0", total_taxes="0", total_gross="0", total="0")
+        doc, differences, totals, _ = isl._document("Quotation", offer, LOOKUPS)
+        self.assertEqual(doc["taxes"], [])
+        self.assertEqual(differences, [])
+        self.assertEqual(totals, (Decimal("0"), Decimal("0"), Decimal("0")))
+
+    def test_an_optional_position_outside_a_quotation_is_unmapped(self):
+        order = record(INVOICE, id=902, positions=[
+            {"type": "KbPositionCustom", "amount": "1", "unit_price": "50.00", "account_id": 30, "tax_id": 29,
+             "text": "Zusatz", "is_optional": True},
+        ], total="0", total_net="0", total_taxes="0", total_gross="0", taxs=[])
+        with self.assertRaisesRegex(isl.Unmapped, "optional position outside a quotation"):
+            isl.sales_order(order, LOOKUPS)
+
+    def test_an_offer_without_positions_is_unmapped_not_an_empty_quotation(self):
+        offer = record(INVOICE, id=903, positions=[], taxs=[], total_net="0", total_taxes="0",
+                       total_gross="0", total="0")
+        with self.assertRaisesRegex(isl.Unmapped, "no positions"):
+            isl.quotation(offer, LOOKUPS)
+
+
 class DeliveryNote(unittest.TestCase):
     def test_delivery_is_a_delivery_note_dated_by_its_day(self):
         delivery = record(INVOICE, id=800, document_nr="LI-1", is_valid_from="2024-03-05")

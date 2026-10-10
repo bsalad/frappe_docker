@@ -225,7 +225,12 @@ def _rows(record, lookups):
         if pos.get("tax_id") is not None:
             _tax(pos["tax_id"], lookups)
             key = str(pos["tax_id"])
-        amounts[key] = amounts.get(key, ZERO) + _cents(qty * rate)
+        # bexio leaves an optional position out of its total; ERPNext's quotation row for it is an alternative,
+        # which it leaves out of the totals too, so the row keeps what was offered and the total stays bexio's
+        if pos.get("is_optional"):
+            row["is_alternative"] = 1
+        else:
+            amounts[key] = amounts.get(key, ZERO) + _cents(qty * rate)
     return rows, amounts, discount_row
 
 
@@ -250,6 +255,11 @@ def _document(doctype, record, lookups, credit=False):
         original = record
         record = _in_chf(record, rate)
     rows, amounts, discount_row = _rows(record, lookups)
+    # an empty document cannot be saved in ERPNext (its totals fail on no items): it is left out, not planned
+    if not rows:
+        raise Unmapped("no positions")
+    if doctype != "Quotation" and any(row.get("is_alternative") for row in rows):
+        raise Unmapped("an optional position outside a quotation")
     # bexio gives a delivery a header total of zero though its positions carry prices: the draft keeps the
     # quantities at zero rate, so it agrees with bexio's total; the prices stay in the private export
     zero_rated = doctype == "Delivery Note" and record.get("total") is not None and _dec(record["total"]) == ZERO and any(amounts.values())
