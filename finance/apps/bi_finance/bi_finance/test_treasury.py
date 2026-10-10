@@ -74,6 +74,17 @@ class Workspace(unittest.TestCase):
         self.assertEqual([r["number_card_name"] for r in self.ws["number_cards"]], cards)
         self.assertEqual([r["chart_name"] for r in self.ws["charts"]], [self.chart["name"]])
 
+    def test_the_forecast_reports_are_shortcuts_and_each_is_a_report_folder(self):
+        blocks = json.loads(self.ws["content"])
+        shortcuts = [b["data"]["shortcut_name"] for b in blocks if b["type"] == "shortcut"]
+        self.assertEqual(shortcuts, [r["label"] for r in self.ws["shortcuts"]])
+        self.assertEqual(sorted(shortcuts), ["Cash Flow Forecast", "Cash Flow Forecast Lines"])
+        for row in self.ws["shortcuts"]:
+            self.assertEqual(row["type"], "Report")
+            self.assertEqual(row["link_to"], row["label"])
+            folder = row["link_to"].lower().replace(" ", "_")
+            self.assertTrue(os.path.isdir(os.path.join(HERE, "report", folder)), folder)
+
     def test_every_card_and_chart_is_a_file_of_this_app(self):
         for row in self.ws["number_cards"]:
             self.assertIn(row["number_card_name"], self.cards)

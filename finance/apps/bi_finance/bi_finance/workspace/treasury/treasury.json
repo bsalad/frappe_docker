@@ -8,7 +8,7 @@
  "is_hidden": 0,
  "standard": 1,
  "icon": "wallet",
- "content": "[{\"id\": \"44559c07eb\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Cash Position Total\", \"col\": 4}}, {\"id\": \"84d6ad5962\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Cash Position 1000\", \"col\": 4}}, {\"id\": \"aa2ecadc9b\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Cash Position 1010\", \"col\": 4}}, {\"id\": \"609f9111a2\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Cash Position 1020\", \"col\": 4}}, {\"id\": \"6c0b18e0fd\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Cash Position 1021\", \"col\": 4}}, {\"id\": \"de64bbef1e\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Cash Position History\", \"col\": 12}}]",
+ "content": "[{\"id\": \"f1c3a7d902\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Cash Flow Forecast\", \"col\": 3}}, {\"id\": \"b7e4d18c25\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Cash Flow Forecast Lines\", \"col\": 3}}, {\"id\": \"44559c07eb\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Cash Position Total\", \"col\": 4}}, {\"id\": \"84d6ad5962\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Cash Position 1000\", \"col\": 4}}, {\"id\": \"aa2ecadc9b\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Cash Position 1010\", \"col\": 4}}, {\"id\": \"609f9111a2\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Cash Position 1020\", \"col\": 4}}, {\"id\": \"6c0b18e0fd\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Cash Position 1021\", \"col\": 4}}, {\"id\": \"de64bbef1e\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Cash Position History\", \"col\": 12}}]",
  "number_cards": [
   {
    "number_card_name": "Cash Position Total",
@@ -37,7 +37,22 @@
    "label": "Cash Position History"
   }
  ],
- "shortcuts": [],
+ "shortcuts": [
+  {
+   "label": "Cash Flow Forecast",
+   "type": "Report",
+   "link_to": "Cash Flow Forecast",
+   "doc_view": "",
+   "stats_filter": ""
+  },
+  {
+   "label": "Cash Flow Forecast Lines",
+   "type": "Report",
+   "link_to": "Cash Flow Forecast Lines",
+   "doc_view": "",
+   "stats_filter": ""
+  }
+ ],
  "links": [],
  "quick_lists": [],
  "roles": [],

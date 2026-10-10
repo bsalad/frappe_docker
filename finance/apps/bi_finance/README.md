@@ -47,6 +47,7 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   quarter end), the running balance and the lowest week. Pure Python.
 - `bi_finance/report/cash_flow_forecast/`: the "Cash Flow Forecast" report (weeks, chart, lowest point) and
   `report/cash_flow_forecast_lines/`: the "Cash Flow Forecast Lines" report, each line with its source document.
-  Both read the books through the Payment Ledger and the GL and call `cash_forecast.py`.
+  Both read the books through the Payment Ledger and the GL and call `cash_forecast.py`. Both are shortcuts
+  on the Treasury workspace (`workspace/treasury`); `test_treasury.py` checks them.
 - `bi_finance/test_cash_forecast.py`: offline tests of `cash_forecast.py` with invented data:
   `python3 -m unittest bi_finance.test_cash_forecast` from this directory.
