@@ -179,6 +179,18 @@ the date would cover, and the role allowed to post into frozen periods (set by
 hand; the command does not set it). It refuses to move a freeze back. Not run
 yet: the history import comes first.
 
+**treasury.** `swiss-setup.sh treasury` is a dry run unless `--apply` is given. It creates
+or updates the "Treasury" workspace: a total card (CHF), one card per Bank or Cash account
+(named after the account, so a new account needs a re-run), and the month-end chart. They
+all read the report "Cash Position" of bi_finance (`bi_finance/report/cash_position`),
+which the migrate of the image syncs. The report reads the GL, not Bank Transactions. A
+foreign-currency balance is turned into CHF at the Currency Exchange rate of the as-of date,
+or the latest one before it. ERPNext fills that table from its rate source (Currency
+Exchange Settings, frankfurter.dev); the report never fetches a rate. A missing rate leaves
+that account's CHF value out, and the report says so. The step is not in the no-argument
+run, so it writes only when asked. Order: migrate the image, `treasury`, then
+`treasury --apply`. A second `--apply` changes nothing.
+
 ## Switching the stack to a new image
 
 Recreating `backend` or the queue containers gives them new IPs. nginx in
@@ -225,6 +237,10 @@ docker run --rm -v "$PWD/finance/apps/bi_finance:/home/frappe/bi_finance_src:ro"
     frappe-finance-custom:v16.50.0-swiss-bi6 \
     sh -c 'cd /home/frappe/bi_finance_src && ../frappe-bench/env/bin/python -m unittest bi_finance.test_qrbill'
 ```
+
+The Cash Position report has its own offline tests, in the same way (`bi_finance.test_cash_position`).
+The setup script's pure parts are tested without a container:
+`python3 -m unittest discover -s finance/scripts -p 'test_*.py'`.
 
 On a site with transactions the `coa` step refuses; run `vat fiscal fields`
 only.

@@ -9,6 +9,8 @@
 #   finance/scripts/swiss-setup.sh vat --check <export dir>   # VAT codes against the export's taxes.json
 #   finance/scripts/swiss-setup.sh freeze 2025-12-31          # dry run: what a freeze would set
 #   finance/scripts/swiss-setup.sh freeze 2025-12-31 --apply  # sets accounts frozen till that date
+#   finance/scripts/swiss-setup.sh treasury                   # dry run: the Treasury workspace
+#   finance/scripts/swiss-setup.sh treasury --apply           # creates or updates it
 #
 # host sets the site's host_name from HOST_NAME (the URL the backend can reach, e.g.
 # https://<machine>.<tailnet>.ts.net:8448); it is skipped when HOST_NAME is empty.

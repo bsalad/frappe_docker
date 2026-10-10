@@ -22,3 +22,7 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   reported against the bank GL account (OPBD: before the date, CLBD: up to it), never blocking.
 - `bi_finance/test_camt.py`: offline tests of both, with invented files: `python3 -m unittest bi_finance.test_camt`
   from this directory, or in the image as in `finance/docs/erpnext-setup.md`.
+- `bi_finance/report/cash_position`: the "Cash Position" report (Bank and Cash accounts, their
+  balances in original currency and in CHF, month-end history). Read-only. The Treasury
+  workspace that shows it is set up by `finance/scripts/swiss-setup.sh treasury`.
+- `bi_finance/test_cash_position.py`: offline tests, run in the image (see `finance/docs/erpnext-setup.md`).
