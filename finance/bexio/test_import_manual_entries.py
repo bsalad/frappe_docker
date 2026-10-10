@@ -24,7 +24,7 @@ DEFAULT_BY_NUMBER = {
 }
 
 
-def lookups(taxes=None, by_number=None, currencies=None, depreciation=None, party=None):
+def lookups(taxes=None, by_number=None, currencies=None, depreciation=None, party=None, receivable=None):
     return ime.Lookups(
         currencies=currencies,
         accounts={
@@ -41,7 +41,7 @@ def lookups(taxes=None, by_number=None, currencies=None, depreciation=None, part
         taxes={"35": "Test MWST bexio 35", "22": "Test MWST bexio 22", "16": "Test MWST bexio 16", "38": "Test MWST bexio 38"}
         if taxes is None else dict(taxes),
         by_number=DEFAULT_BY_NUMBER if by_number is None else dict(by_number),
-        depreciation=depreciation, party=party,
+        depreciation=depreciation, party=party, receivable=receivable,
     )
 
 
@@ -372,6 +372,72 @@ class DryRunTest(unittest.TestCase):
         self.assertIn("nothing was written", text)
         self.assertNotIn("Testaufwand", text)
         self.assertNotIn("m-1", text)
+
+
+class PartyOverrideTest(unittest.TestCase):
+    """D10: an entry on a receivable account books to the Customer its party override names (invented names)."""
+    RECEIVABLE = "1100 - Debitoren Test - bic"
+
+    def known(self):
+        return lookups(party={self.RECEIVABLE}, receivable={self.RECEIVABLE})
+
+    def test_receivable_row_is_booked_to_the_override_customer(self):
+        doc = ime.map_entry(entry("m-1", lines=[line(12, 21, 100)]), self.known(), CURRENCIES, "Kunde Test")
+        receivable = [r for r in doc["accounts"] if r["account"] == self.RECEIVABLE]
+        self.assertEqual([(r.get("party_type"), r.get("party")) for r in receivable], [("Customer", "Kunde Test")])
+        self.assertEqual([r.get("party_type") for r in doc["accounts"] if r["account"] != self.RECEIVABLE], [None])
+
+    def test_receivable_row_without_an_override_is_still_refused(self):
+        with self.assertRaisesRegex(ip.MappingError, "needs a party"):
+            ime.map_entry(entry("m-1", lines=[line(12, 21, 100)]), self.known(), CURRENCIES)
+
+    def test_override_is_refused_on_a_party_account_that_is_not_receivable(self):
+        # a payable account (here 1100 typed as one) takes no Customer: the override covers receivables only
+        known = lookups(party={self.RECEIVABLE})
+        with self.assertRaisesRegex(ip.MappingError, "needs a party"):
+            ime.map_entry(entry("m-1", lines=[line(12, 21, 100)]), known, CURRENCIES, "Kunde Test")
+
+    def test_dry_run_plans_the_customer_ahead_of_its_entry(self):
+        totals = ime.dry_run([entry("m-1", lines=[line(12, 21, 100)])], self.known(), CURRENCIES, {"m-1": "Unbekannt Test"})
+        self.assertEqual([d["doctype"] for d in totals.documents], ["Customer", "Journal Entry"])
+        customer = totals.documents[0]
+        self.assertEqual((customer["name"], customer["bexio_id"]), ("Unbekannt Test", "manual-party-m-1"))
+        self.assertEqual(customer["values"]["customer_name"], "Unbekannt Test")
+        self.assertEqual(customer["values"]["territory"], "Rest Of The World")
+        self.assertEqual(totals.documents[1]["bexio_id"], "manual-m-1")
+        self.assertEqual(totals.rows[2025]["mapped"], 1)
+
+    def test_dry_run_without_an_override_plans_no_customer(self):
+        totals = ime.dry_run([entry("m-1")], self.known(), CURRENCIES, {"m-2": "Unbekannt Test"})
+        self.assertEqual([d["doctype"] for d in totals.documents], ["Journal Entry"])
+
+    def test_journal_check_compares_an_overridden_entry_instead_of_leaving_it_unmapped(self):
+        known = self.known()
+        record = entry("m-1", lines=[line(12, 21, 100)])
+        totals = ime.dry_run([record], known, CURRENCIES, {"m-1": "Unbekannt Test"})
+        problems, _, compared, won, unmapped = ime.journal_check([record], totals, [journal_line(1, 12, 21, 100)], known)
+        self.assertEqual((problems, compared, won, unmapped), ([], 1, 0, 0))
+
+
+class LoadPartiesTest(unittest.TestCase):
+    def write(self, text):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8", delete=False)
+        handle.write(text)
+        handle.close()
+        self.addCleanup(os.remove, handle.name)
+        return handle.name
+
+    def test_missing_file_lists_no_overrides(self):
+        self.assertEqual(ime.load_parties("/nonexistent/bexio-manual-parties.txt"), {})
+
+    def test_each_line_is_an_entry_id_and_its_customer_name(self):
+        path = self.write("# invented\n\n1151 Unbekannt Test (bexio 1151)\n")
+        self.assertEqual(ime.load_parties(path), {"1151": "Unbekannt Test (bexio 1151)"})
+
+    def test_line_without_a_name_is_refused(self):
+        path = self.write("1151\n")
+        with self.assertRaisesRegex(ValueError, "no Customer name"):
+            ime.load_parties(path)
 
 
 def journal_line(line_id, debit, credit, amount, description="Testbuchung", ref_class="ManualEntry", date="2025-06-30"):

@@ -46,7 +46,11 @@ entry (the bills book 1172 and 2202). An entry with no type is booked as a singl
 
 An entry on a depreciation account is a Depreciation Entry, as ERPNext requires
 for those accounts; an entry on a receivable or payable account needs a party,
-which a bexio manual entry does not carry, so it is reported, not written.
+which a bexio manual entry does not carry, so it is reported, not written. The
+one exception is the party override in the private file PARTIES_FILE (D10): an
+entry listed there books its receivable rows to the Customer the line names,
+and that Customer is planned ahead of the entry, created by the loader if it is
+missing.
 
 Standard library only, apart from import_master and import_purchase.
 """
@@ -69,6 +73,10 @@ PROBLEMS_FILE = "bexio-manual-entries-dry-run.txt"
 JOURNAL_CHECK_FILE = "bexio-manual-entries-journal-check.txt"
 # the entries bexio books differently on purpose (D11): their expected side is bexio's journal, see load_journal_wins
 JOURNAL_WINS_FILE = "bexio-manual-journal-wins.txt"
+# the party override (D10): an entry on a receivable account names the Customer it is booked to, as one bexio id and the
+# Customer's name per line, see load_parties. The Customer is created by the loader when it is missing
+PARTIES_FILE = "bexio-manual-parties.txt"
+CUSTOMER = "Customer"
 JOURNAL = "Journal Entry"
 # the bexio journal lines of documents (invoices, bills, credit vouchers, payments): the rest are bank and manual lines
 DOCUMENT_CLASSES = ("KbInvoice", "KbBill", "KbCreditVoucher", "KbClientAccountEntry")
@@ -104,13 +112,14 @@ class Lookups:
     """What the mapping reads from ERPNext: Accounts by bexio_id with their root type, Accounts by number (the reverse-charge
     accounts), the currency of each Account, Item Tax Templates by bexio_id, and the names of the depreciation and party accounts."""
 
-    def __init__(self, accounts, taxes, by_number=None, currencies=None, depreciation=None, party=None):
+    def __init__(self, accounts, taxes, by_number=None, currencies=None, depreciation=None, party=None, receivable=None):
         self.accounts = accounts      # bexio account id -> (Account name, root type)
         self.taxes = taxes            # bexio tax id -> Item Tax Template name
         self.by_number = by_number or {}  # account number -> (Account name, root type)
         self.currencies = currencies or {}  # Account name -> the account's currency
         self.depreciation = set(depreciation or ())  # Account names of the depreciation types
         self.party = set(party or ())  # Account names of the receivable and payable types
+        self.receivable = set(receivable or ())  # Account names of the receivable type: the ones a Customer can be the party of
 
     def currency_of(self, account):
         return self.currencies.get(account)
@@ -129,6 +138,7 @@ class Lookups:
             currencies={r["name"]: r["account_currency"] for r in rows + by_number},
             depreciation={r["name"] for r in rows + by_number if r["account_type"] in DEPRECIATION_TYPES},
             party={r["name"] for r in rows + by_number if r["account_type"] in PARTY_TYPES},
+            receivable={r["name"] for r in rows + by_number if r["account_type"] == "Receivable"},
         )
 
 
@@ -271,10 +281,11 @@ def _line_parts(line, lookups, currencies):
     return sorted(parts, key=lambda part: part[1] != "debit"), factor
 
 
-def map_entry(entry, lookups, currencies):
+def map_entry(entry, lookups, currencies, customer=None):
     """The Journal Entry dict for one bexio manual entry; raises MappingError when a part has no home.
 
-    currencies maps bexio currency ids to ERPNext currency codes (currencies.json).
+    currencies maps bexio currency ids to ERPNext currency codes (currencies.json). customer is the party override of the
+    entry (load_parties): its receivable rows are booked to that Customer. Without one, a party account is refused.
     """
     kind = entry.get("type")
     # an untyped entry (type None) has the shape of a single one and is booked as one
@@ -294,14 +305,17 @@ def map_entry(entry, lookups, currencies):
         parts, factor = _line_parts(line, lookups, currencies)
         code = currencies[str(line.get("currency_id"))]
         for account, side, value, chf in parts:
-            if account in lookups.party:
+            if account in lookups.party and (customer is None or account not in lookups.receivable):
                 raise ip.MappingError("account {} needs a party, and a manual entry has none".format(account))
             if side == "debit":
                 debit += chf
             else:
                 credit += chf
             value, row_factor = _account_amount(lookups, account, code, value, chf, factor)
-            rows.append(_row(account, side, value, chf, row_factor, line.get("description") or ""))
+            row = _row(account, side, value, chf, row_factor, line.get("description") or "")
+            if account in lookups.party:
+                row.update(party_type=CUSTOMER, party=customer)
+            rows.append(row)
     if debit != credit:
         raise ip.MappingError("debit {} and credit {} differ".format(debit, credit))
     day = _day(entry).isoformat()
@@ -360,9 +374,28 @@ class Totals:
         return self.rows.setdefault(year, {"entries": 0, "mapped": 0, "banking": 0, "unmapped": 0, "debit": ZERO, "banking_debit": ZERO})
 
 
-def dry_run(entries, lookups, currencies):
-    """Map every entry and total it; writes nothing. Returns the Totals."""
+def customer_document(entry_id, name):
+    """The plan's document for the Customer of an entry's party override: created when missing, named as the override says
+    (the Journal Entry row refers to it by that name), with the import's default territory for a contact of no known country.
+    Keyed by bexio_id, so a rerun finds it and changes nothing."""
+    key = party_key(entry_id)
+    return {"doctype": CUSTOMER, "name": name, "bexio_id": key,
+            "values": {"customer_name": name, "customer_type": "Company", "territory": "Rest Of The World", "bexio_id": key}}
+
+
+def party_key(entry_id):
+    """The bexio_id of the Customer an entry's party override creates. Prefixed like manual_key, so no other bexio id meets it."""
+    return "manual-party-{}".format(entry_id)
+
+
+def dry_run(entries, lookups, currencies, parties=None):
+    """Map every entry and total it; writes nothing. Returns the Totals.
+
+    parties are the party overrides (load_parties): an entry on the list maps to its Customer, and its Customer is planned
+    as a document ahead of the Journal Entry, so the loader finds the party the row names.
+    """
     totals = Totals()
+    parties = parties or {}
     for entry in entries:
         try:
             year = _day(entry).year
@@ -370,8 +403,9 @@ def dry_run(entries, lookups, currencies):
             year = None
         row = totals.row(year)
         row["entries"] += 1
+        customer = parties.get(str(entry.get("id")))
         try:
-            doc = map_entry(entry, lookups, currencies)
+            doc = map_entry(entry, lookups, currencies, customer)
         except ip.MappingError as err:
             row["unmapped"] += 1
             totals.problems.append("manual entry {}: unmapped, {}".format(entry.get("id"), err))
@@ -382,6 +416,8 @@ def dry_run(entries, lookups, currencies):
         if entry.get("type") == BANKING:
             row["banking"] += 1
             row["banking_debit"] += debit
+        if customer is not None:
+            totals.documents.append(customer_document(entry["id"], customer))
         totals.documents.append({"doctype": JOURNAL, "name": None, "bexio_id": doc["bexio_id"], "values": doc})
     return totals
 
@@ -454,6 +490,24 @@ def load_journal_wins(path):
                 raise ValueError("a line of {} has no reason after its bexio id".format(path))
             reasons[bexio_id] = reason.strip()
     return reasons
+
+
+def load_parties(path):
+    """The party overrides of the manual entries, from the private file: one bexio id and the Customer's name per line.
+    {str(bexio id): Customer name}. Blank lines and lines starting with # are skipped; a missing file lists none."""
+    if not os.path.exists(path):
+        return {}
+    parties = {}
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            text = raw.strip()
+            if not text or text.startswith("#"):
+                continue
+            entry_id, _, name = text.partition(" ")
+            if not name.strip():
+                raise ValueError("a line of {} has no Customer name after its bexio id".format(path))
+            parties[entry_id] = name.strip()
+    return parties
 
 
 def journal_check(entries, totals, journal, lookups, wins=None):
@@ -565,7 +619,8 @@ def main(argv):
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2
-    totals = dry_run(entries, lookups, currencies)
+    parties = load_parties(os.path.join(im.PRIVATE, PARTIES_FILE))
+    totals = dry_run(entries, lookups, currencies, parties)
     print(report(totals, export_dir))
     with open(os.path.join(export_dir, JOURNAL_FILE), encoding="utf-8") as f:
         journal = json.load(f)
