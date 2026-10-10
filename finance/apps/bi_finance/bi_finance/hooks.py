@@ -27,10 +27,10 @@ jinja = {
     ]
 }
 
-# Bank lines in Desk: the Booking Date field, its place in the Bank Transaction list (sorted by it, newest first)
-# and the list's columns. Frappe applies the files in fixtures/ on migrate.
+# Bank lines in Desk: the Booking Date and Value Date fields, their place in the Bank Transaction list (sorted by
+# Booking Date, newest first) and the list's columns. Frappe applies the files in fixtures/ on migrate.
 fixtures = [
-    {"dt": "Custom Field", "filters": [["dt", "=", "Bank Transaction"], ["fieldname", "=", "booking_date"]]},
+    {"dt": "Custom Field", "filters": [["dt", "=", "Bank Transaction"], ["fieldname", "in", ["booking_date", "value_date"]]]},
     {"dt": "Property Setter", "filters": [["doc_type", "=", "Bank Transaction"], ["property", "in", ["sort_field", "sort_order"]]]},
     {"dt": "List View Settings", "filters": [["name", "=", "Bank Transaction"]]},
 ]

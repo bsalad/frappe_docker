@@ -3,6 +3,6 @@
   "docstatus": 0,
   "doctype": "List View Settings",
   "name": "Bank Transaction",
-  "fields": "[{\"fieldname\": \"booking_date\", \"label\": \"Booking Date\"}, {\"fieldname\": \"bank_account\", \"label\": \"Bank Account\"}, {\"fieldname\": \"description\", \"label\": \"Description\"}, {\"fieldname\": \"deposit\", \"label\": \"Deposit\"}, {\"fieldname\": \"withdrawal\", \"label\": \"Withdrawal\"}, {\"fieldname\": \"status\", \"label\": \"Status\"}, {\"fieldname\": \"unallocated_amount\", \"label\": \"Unallocated Amount\"}]"
+  "fields": "[{\"fieldname\": \"booking_date\", \"label\": \"Booking Date\"}, {\"fieldname\": \"value_date\", \"label\": \"Value Date\"}, {\"fieldname\": \"bank_account\", \"label\": \"Bank Account\"}, {\"fieldname\": \"description\", \"label\": \"Description\"}, {\"fieldname\": \"deposit\", \"label\": \"Deposit\"}, {\"fieldname\": \"withdrawal\", \"label\": \"Withdrawal\"}, {\"fieldname\": \"status\", \"label\": \"Status\"}, {\"fieldname\": \"unallocated_amount\", \"label\": \"Unallocated Amount\"}]"
  }
 ]

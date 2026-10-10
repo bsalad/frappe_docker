@@ -15,7 +15,7 @@ from unittest import mock
 
 import frappe
 
-from bi_finance import bank_feed, camt_import, hooks
+from bi_finance import bank_feed, bank_list, camt_import, hooks
 
 PACKAGE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.join(PACKAGE, "fixtures")
@@ -26,7 +26,7 @@ BANK_TRANSACTION = os.path.join(APPS, "erpnext", "erpnext", "accounts", "doctype
 BANK_RECONCILIATION_TOOL = os.path.join(APPS, "erpnext", "erpnext", "accounts", "doctype", "bank_reconciliation_tool", "bank_reconciliation_tool.json")
 
 # the list's columns, in the order Benchi reads them
-COLUMNS = ["booking_date", "bank_account", "description", "deposit", "withdrawal", "status", "unallocated_amount"]
+COLUMNS = ["booking_date", "value_date", "bank_account", "description", "deposit", "withdrawal", "status", "unallocated_amount"]
 
 
 def load(path):
@@ -39,7 +39,7 @@ def fixture(name):
 
 
 def bank_transaction_fields():
-    # ERPNext's fields, plus Booking Date, which the custom field adds
+    # ERPNext's fields, plus Booking Date and Value Date, which the custom fields add
     return {f["fieldname"]: f for f in load(BANK_TRANSACTION)["fields"]}
 
 
@@ -61,17 +61,29 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(FIXTURES)), ["custom_field.json", "list_view_settings.json", "property_setter.json"])
         self.assertEqual(sorted(f["dt"] for f in hooks.fixtures), ["Custom Field", "List View Settings", "Property Setter"])
 
-    def test_the_custom_field_is_booking_date_on_bank_transaction(self):
-        [field] = fixture("custom_field.json")
+    def test_the_custom_fields_are_booking_date_and_value_date_on_bank_transaction(self):
+        fields = {f["fieldname"]: f for f in fixture("custom_field.json")}
+        self.assertEqual(sorted(fields), ["booking_date", "value_date"])
+        field = fields["booking_date"]
         self.assertEqual(field["doctype"], "Custom Field")
         self.assertEqual(field["name"], "Bank Transaction-booking_date")
         self.assertEqual(field["dt"], "Bank Transaction")
-        self.assertEqual(field["fieldname"], "booking_date")
         self.assertEqual(field["fieldtype"], "Date")
         self.assertEqual(field["insert_after"], "date")
         self.assertEqual(field["module"], "BI Finance")
         # the standard filter Benchi asked for
         self.assertEqual(field["in_standard_filter"], 1)
+
+    def test_the_value_date_is_a_date_column_after_booking_date_in_the_list_and_the_filters(self):
+        field = {f["fieldname"]: f for f in fixture("custom_field.json")}["value_date"]
+        self.assertEqual(field["doctype"], "Custom Field")
+        self.assertEqual(field["name"], "Bank Transaction-value_date")
+        self.assertEqual(field["dt"], "Bank Transaction")
+        self.assertEqual(field["label"], "Value Date")
+        self.assertEqual(field["fieldtype"], "Date")
+        self.assertEqual(field["insert_after"], "booking_date")
+        self.assertEqual(field["module"], "BI Finance")
+        self.assertEqual((field["in_list_view"], field["in_standard_filter"]), (1, 1))
 
     def test_the_list_sorts_by_booking_date_newest_first(self):
         settings = {p["property"]: p for p in fixture("property_setter.json")}
@@ -90,14 +102,13 @@ class Fixtures(unittest.TestCase):
         columns = json.loads(settings["fields"])
         self.assertEqual([c["fieldname"] for c in columns], COLUMNS)
         self.assertTrue(all(c["label"] for c in columns))
-        fields = set(bank_transaction_fields()) | {"booking_date"}
+        fields = set(bank_transaction_fields()) | {"booking_date", "value_date"}
         self.assertTrue(set(COLUMNS) <= fields, set(COLUMNS) - fields)
 
-    def test_the_standard_filters_are_bank_account_status_and_booking_date(self):
+    def test_the_standard_filters_are_bank_account_status_and_both_dates(self):
         standard = {name for name, f in bank_transaction_fields().items() if f.get("in_standard_filter")}
         self.assertTrue({"bank_account", "status"} <= standard)
-        [field] = fixture("custom_field.json")
-        self.assertEqual(field["in_standard_filter"], 1)
+        self.assertEqual({f["fieldname"] for f in fixture("custom_field.json") if f["in_standard_filter"]}, {"booking_date", "value_date"})
 
 
 class Feeds(unittest.TestCase):
@@ -112,6 +123,7 @@ class Feeds(unittest.TestCase):
             self.assertEqual(bank_feed.write("Wise CHF Test", [row]), 1)
         values = get_doc.call_args.args[0]
         self.assertEqual(values["booking_date"], "2026-03-04")
+        self.assertEqual(values["value_date"], "2026-03-04")
         self.assertEqual(values["date"], "2026-03-04")
 
     def test_a_camt_line_is_booked_on_its_booking_date(self):
@@ -124,6 +136,48 @@ class Feeds(unittest.TestCase):
         values = get_doc.call_args.args[0]
         self.assertEqual(values["booking_date"], "2026-03-05")
         self.assertEqual(values["date"], "2026-03-05")
+        # the statement's ValDt is the value date, its BookgDt the booking date
+        self.assertEqual(values["value_date"], "2026-03-04")
+
+    def test_a_camt_line_without_a_value_date_takes_its_booking_date(self):
+        tx = {"rule": "new", "reference": "camt-ref-2", "booking_date": "2026-03-05", "value_date": None,
+              "deposit": Decimal("0"), "withdrawal": Decimal("3.00"), "reference_number": "", "description": "Test",
+              "bank_party_name": "", "bank_party_iban": ""}
+        account = {"name": "UBS Test", "company": "Testfirma AG", "currency": "CHF"}
+        with mock.patch.object(camt_import.frappe, "get_doc", return_value=mock.Mock()) as get_doc:
+            self.assertEqual(camt_import._write(account, [tx]), 1)
+        self.assertEqual(get_doc.call_args.args[0]["value_date"], "2026-03-05")
+
+
+class BankDates(unittest.TestCase):
+    """The whitelisted method the backfill calls: fills an empty Booking Date or Value Date, never a set one."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        self.patches = [mock.patch.object(bank_list.frappe, "db", self.db), mock.patch.object(bank_list.frappe, "only_for")]
+        for patch in self.patches:
+            patch.start()
+
+    def tearDown(self):
+        for patch in self.patches:
+            patch.stop()
+
+    def test_the_booking_date_is_the_default_field(self):
+        self.db.get_value.return_value = None
+        self.assertEqual(bank_list.set_booking_dates({"BT-1": "2026-03-31"}), 1)
+        self.db.set_value.assert_called_once_with("Bank Transaction", "BT-1", "booking_date", mock.ANY, update_modified=False)
+
+    def test_a_value_date_fills_only_the_lines_whose_value_date_is_empty(self):
+        self.db.get_value.side_effect = lambda doctype, name, field: "2026-03-30" if name == "BT-1" else None
+        self.assertEqual(bank_list.set_booking_dates({"BT-1": "2026-03-30", "BT-2": "2026-04-02"}, field="value_date"), 1)
+        self.db.get_value.assert_any_call("Bank Transaction", "BT-1", "value_date")
+        self.db.set_value.assert_called_once_with("Bank Transaction", "BT-2", "value_date", mock.ANY, update_modified=False)
+
+    def test_another_field_of_the_line_is_refused(self):
+        with mock.patch.object(bank_list.frappe, "throw", side_effect=ValueError("refused")):
+            with self.assertRaises(ValueError):
+                bank_list.set_booking_dates({"BT-1": "2026-03-30"}, field="docstatus")
+        self.db.set_value.assert_not_called()
 
 
 class Treasury(unittest.TestCase):

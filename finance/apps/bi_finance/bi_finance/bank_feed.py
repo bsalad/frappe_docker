@@ -145,8 +145,9 @@ def write(bank_account, rows):
                 "company": company,
                 "bank_account": bank_account,
                 "date": row["date"],
-                # Wise and PayPal give one date per row, so it is the booking date too
+                # Wise and PayPal give one date per row, so it is the booking and the value date too
                 "booking_date": row["date"],
+                "value_date": row["date"],
                 "deposit": row["deposit"],
                 "withdrawal": row["withdrawal"],
                 "currency": row["currency"],

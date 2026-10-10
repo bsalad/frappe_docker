@@ -139,6 +139,8 @@ def _write(account, decisions, upload=None):
                 "doctype": "Bank Transaction", "status": "Unreconciled", "company": account["company"],
                 "bank_account": account["name"], "currency": account["currency"], "date": tx["booking_date"],
                 "booking_date": tx["booking_date"],
+                # the statement's ValDt; without one, the booking date (the line must have a value date)
+                "value_date": tx["value_date"] or tx["booking_date"],
                 "deposit": float(tx["deposit"]), "withdrawal": float(tx["withdrawal"]),
                 "transaction_id": tx["reference"], "reference_number": tx["reference_number"] or "",
                 "description": tx["description"] or "", "bank_party_name": tx["bank_party_name"] or "",
