@@ -23,13 +23,17 @@ from frappe.utils import escape_html, flt, getdate, nowdate
 from bi_finance import cash_forecast as cf
 
 LOOKBACK_DAYS = 365
-KIND_LABELS = {
-    cf.RECEIPT: _("Customer receipt"),
-    "bill": _("Supplier bill"),
-    "recurring": _("Recurring cost"),
-    "payroll": _("Payroll"),
-    "vat": _("VAT"),
-}
+
+
+def kind_label(kind):
+    """The line kind's label, translated when asked for (a module-level _() would run before any language is set)."""
+    return {
+        cf.RECEIPT: _("Customer receipt"),
+        "bill": _("Supplier bill"),
+        "recurring": _("Recurring cost"),
+        "payroll": _("Payroll"),
+        "vat": _("VAT"),
+    }[kind]
 
 
 def open_documents(company, as_of, doctype):

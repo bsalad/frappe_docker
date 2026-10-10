@@ -9,7 +9,7 @@ from frappe import _
 from frappe.utils import getdate, nowdate
 
 from bi_finance import cash_forecast as cf
-from bi_finance.report.cash_flow_forecast.cash_flow_forecast import KIND_LABELS, compute
+from bi_finance.bi_finance.report.cash_flow_forecast.cash_flow_forecast import compute, kind_label
 
 
 def execute(filters=None):
@@ -24,7 +24,7 @@ def execute(filters=None):
         rows.append({
             "week": line["week"],
             "expected": line["day"],
-            "type": KIND_LABELS[line["kind"]],
+            "type": kind_label(line["kind"]),
             "party": line["party"],
             "document_type": line["doctype"],
             "document": line["name"],
