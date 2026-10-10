@@ -3,9 +3,10 @@
 Decision document for running Swiss payroll in ERPNext v16 (ERPNext `v16.50.0`),
 the way `swiss.md` decides the Swiss accounting. Benchi decided on 2026-10-10: full
 HRMS in ERPNext, with the payroll history from bexio included. This document says how,
-and what is still open. HRMS is in `finance/apps-copy.json` and installed on a copy site only
-(see [Copy site](#copy-site)). The live stack is unchanged: it runs the tag in
-`finance-local.yml`, without HRMS.
+and what is still open. HRMS is in `finance/apps.json` (live) and `finance/apps-copy.json` (the copy
+site, see [Copy site](#copy-site)). Payroll runs on the live site too (Decision 2026-10-10, below):
+the live stack takes the HRMS image in the deploy bead; until then `finance-local.yml` names the
+image without HRMS.
 
 Public facts only: no company data, no employee data, no amounts from the company.
 Those stay in `private/`.
@@ -36,7 +37,12 @@ Benchi decided on 2026-10-10:
   hand-over export is their input: the report `Payroll hand-over` in `bi_payroll`, per employee
   and year, or per employee and month. It lists gross, each Swiss deduction by component
   (AHV/IV/EO, ALV, BVG, UVG/NBU, KTG, FAK, Quellensteuer), net, the employer shares and the
-  AHV number, and exports as Excel or CSV. It runs on the HRMS copy only.
+  AHV number, and exports as Excel or CSV. It runs on the live site and on the HRMS copy.
+
+**Decision 2026-10-10: payroll runs on the live site.** The live ERPNext is a test environment,
+so HRMS `v16.50.0` and `bi_payroll` are installed on the live site `frontend`, not only the copy.
+This replaces the rule "live = base + bi_finance, HRMS on the copy only". `apps.json` lists hrms,
+and `build-image.sh` builds `bi_payroll` on top of `bi_finance`. The copy site stays as a sandbox.
 
 **Open:** certified ELM transmitter: inquiry later.
 
@@ -150,7 +156,7 @@ slot that ledgerdemain gives (`erpnext-setup.md`).
 3. **Swiss salary components and structure.** Components with the formulas above, as
    fixtures of the new app `bi_payroll` (`finance/apps/bi_payroll/`), not `bi_finance`: HRMS is not
    on the live site, and a fixture that names an HRMS doctype would break the live migrate. The app
-   requires `hrms` and is installed on the copy only. The rates are the doctype Payroll Swiss
+   requires `hrms` and is installed on the live site and the copy (Decision 2026-10-10). The rates are the doctype Payroll Swiss
    Settings, not constants in code, so a 2027 change is a settings edit; each Salary Slip keeps
    the rates it was computed with. Invented-data tests for each formula, with the ALV ceiling and
    the BVG threshold (`python3 -m unittest bi_payroll.test_swiss_payroll` in the app folder).
@@ -266,7 +272,7 @@ stays on this machine and the tailnet. The live stack is not touched by any of t
 
 - Image: `frappe-finance-custom:v16.50.0-swiss-hrms1` (ERPNext and HRMS 16.50.0, erpnextswiss
   1.34.1, bi_finance), built on `v16.50.0-swiss-hrms1-base`.
-  Live stays on the tag in `finance-local.yml`. A later app (bi_payroll) gets its own layer on top.
+  Live runs the image in `finance-local.yml`. bi_payroll is a layer on top of bi_finance on both images.
 - Build: from `finance/apps-copy.json`, under a tag that does not exist yet (the script
   refuses an existing one, so the live tags cannot be overwritten):
 
@@ -274,7 +280,7 @@ stays on this machine and the tailnet. The live stack is not touched by any of t
   finance/scripts/build-image.sh copy <new-tag>
   ```
 
-  The live image is built the other way round, from `finance/apps.json` (no HRMS):
+  The live image is built the same way, from `finance/apps.json` (with HRMS):
   `finance/scripts/build-image.sh live <new-tag>`. See `swiss.md`, Build.
 - Safety settings on the copy's site, set after every restore, do not turn them off:
   `pause_scheduler` 1 and `mute_emails` 1 (no scheduled jobs, no mail), no enabled Webhook,

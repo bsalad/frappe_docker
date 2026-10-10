@@ -24,17 +24,17 @@ def is_hrms(app):
 
 
 class AppLists(unittest.TestCase):
-    def test_live_list_has_no_hrms(self):
-        self.assertFalse([app for app in load("apps.json") if is_hrms(app)])
+    def test_live_list_has_hrms_at_pinned_tag(self):
+        # Payroll runs on the live site (finance/docs/hrms.md, Decision 2026-10-10).
+        hrms = [app for app in load("apps.json") if is_hrms(app)]
+        self.assertEqual(hrms, [{"url": "https://github.com/frappe/hrms", "branch": "v16.50.0"}])
 
     def test_copy_list_has_hrms_at_pinned_tag(self):
         hrms = [app for app in load("apps-copy.json") if is_hrms(app)]
         self.assertEqual(hrms, [{"url": "https://github.com/frappe/hrms", "branch": "v16.50.0"}])
 
-    def test_copy_list_is_live_list_plus_hrms(self):
-        live = load("apps.json")
-        copy = load("apps-copy.json")
-        self.assertEqual([app for app in copy if not is_hrms(app)], live)
+    def test_copy_list_is_live_list(self):
+        self.assertEqual(load("apps-copy.json"), load("apps.json"))
 
 
 class BuildImageModes(unittest.TestCase):
@@ -62,7 +62,8 @@ class BuildImageModes(unittest.TestCase):
                     '#!/bin/sh\necho "$@" >> "%s"\n'
                     'if [ "$1 $2" = "image inspect" ]; then\n'
                     '  case " %s " in *" $3 "*) exit 0 ;; esac\n'
-                    "  exit 1\nfi\nexit 1\n" % (log, " ".join(existing_images))
+                    "  exit 1\nfi\n"
+                    'if [ "$1" = build ]; then exit 0; fi\nexit 1\n' % (log, " ".join(existing_images))
                 )
             os.chmod(stub, 0o755)
             env = {"PATH": os.path.join(tmp, "bin") + os.pathsep + os.environ["PATH"]}
@@ -76,11 +77,26 @@ class BuildImageModes(unittest.TestCase):
                     calls = f.read()
             return run.returncode, run.stderr, calls
 
-    def test_live_refuses_a_list_with_hrms(self):
+    def test_live_builds_base_then_bi_finance_then_bi_payroll(self):
+        # Each layer sits on the one before it; the live tag is the last layer.
         hrms = [{"url": "https://github.com/frappe/hrms", "branch": "v16.50.0"}]
-        code, err, calls = self.run_in_layout({"apps.json": hrms})
-        self.assertNotEqual(code, 0)
-        self.assertIn("lists hrms", err)
+        code, err, calls = self.run_in_layout({"apps.json": hrms}, tag="t1")
+        self.assertEqual(code, 0, err)
+        builds = [line for line in calls.splitlines() if line.startswith("build ")]
+        self.assertEqual(len(builds), 3, calls)
+        self.assertIn("--tag frappe-finance-custom:t1-base ", builds[0])
+        self.assertIn("--build-arg BASE=frappe-finance-custom:t1-base --tag frappe-finance-custom:t1-finance ", builds[1])
+        self.assertIn("--file finance/images/bi_finance.Containerfile", builds[1])
+        self.assertIn("--build-arg BASE=frappe-finance-custom:t1-finance --tag frappe-finance-custom:t1 ", builds[2])
+        self.assertIn("--file finance/images/bi_payroll.Containerfile", builds[2])
+
+    def test_refuses_an_existing_finance_layer_tag(self):
+        erpnext = [{"url": "https://github.com/frappe/erpnext", "branch": "v16.50.0"}]
+        code, err, calls = self.run_in_layout(
+            {"apps.json": erpnext}, tag="t1", existing_images=["frappe-finance-custom:t1-finance"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("already exists", err)
         self.assertNotIn("build", calls)
 
     def test_copy_refuses_a_list_without_hrms(self):

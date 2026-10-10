@@ -149,19 +149,19 @@ MWST. This is a decision for Benchi.
 
 ## Build
 
-Two app lists: `finance/apps.json` (ERPNext and erpnextswiss, the live image) and
-`finance/apps-copy.json` (the same plus HRMS at its pinned tag, the copy image, see
-`hrms.md`). The build uses `images/custom/Containerfile`, which is the upstream full-image
-build. It takes the apps through `bench init --apps_path`, with the list as a BuildKit secret.
+Two app lists: `finance/apps.json` (ERPNext, erpnextswiss and HRMS at its pinned tag, the live
+image) and `finance/apps-copy.json` (the same, the copy site's list, see `hrms.md`). The build uses
+`images/custom/Containerfile`, which is the upstream full-image build. It takes the apps through
+`bench init --apps_path`, with the list as a BuildKit secret.
 
 ```sh
-finance/scripts/build-image.sh live <tag>     # finance/apps.json, no hrms
+finance/scripts/build-image.sh live <tag>     # finance/apps.json, with hrms
 finance/scripts/build-image.sh copy <tag>     # finance/apps-copy.json, with hrms
 ```
 
 The script:
 
-1. Refuses a `live` build if its list has `hrms`, and a `copy` build if it has none.
+1. Refuses a `copy` build if its list has no `hrms`.
 2. Refuses if `frappe-finance-custom:<tag>` (or its `-base`) already exists, so a copy
    build never overwrites a live tag. Pick a new tag.
 3. Checks that the `v16` branch of erpnextswiss still points at the commit in the list

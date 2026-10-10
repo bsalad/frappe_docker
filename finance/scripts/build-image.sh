@@ -1,15 +1,15 @@
 #!/bin/sh
 # Build a finance image from one of two app lists, as a base layer (ERPNext and the
-# apps) plus the bi_finance layer. Builds only; it does not touch the running stack.
-# Switching a stack to the image is a later step, after a backup.
+# apps) plus the bi_finance layer and the bi_payroll layer. Builds only; it does not
+# touch the running stack. Switching a stack to the image is a later step, after a backup.
 #
 # usage: finance/scripts/build-image.sh live|copy <tag>
-#   live  finance/apps.json: ERPNext and erpnextswiss, never HRMS. The live image is
-#         base + bi_finance; the live site does not install HRMS.
-#   copy  finance/apps-copy.json: the live list plus frappe/hrms at its pinned tag.
-#         For the HRMS copy site only (finance/docs/hrms.md).
-# result: frappe-finance-custom:<tag>, refused if that tag already exists, so a copy
-#         build can never overwrite a live tag.
+#   live  finance/apps.json: ERPNext, erpnextswiss and hrms (payroll runs on the live
+#         site, finance/docs/hrms.md, Decision 2026-10-10).
+#   copy  finance/apps-copy.json: the same list; kept as the HRMS copy site's own list
+#         (finance/docs/hrms.md).
+# result: frappe-finance-custom:<tag>, refused if that tag (or its -base or -finance
+#         layer) already exists, so a build can never overwrite a tag in use.
 #
 # Needs Docker with the buildx plugin (BuildKit secrets). The app list goes in as a
 # secret, not a build arg, so nothing from it ends up in image metadata.
@@ -17,7 +17,7 @@ set -eu
 
 usage() {
   echo "usage: finance/scripts/build-image.sh live|copy <tag>"
-  echo "  live  finance/apps.json (no hrms)"
+  echo "  live  finance/apps.json (with hrms)"
   echo "  copy  finance/apps-copy.json (with hrms)"
 }
 
@@ -38,23 +38,21 @@ FRAPPE_TAG=v16.50.0
 # Compose files live at the repo root, two levels up from this script.
 cd "$(dirname "$0")/../.."
 
-# HRMS is installed on the copy site only. A live base built from a list with hrms
-# would carry it into the live image, so refuse before anything is built.
+# The copy image is built from a list with hrms; a list without it is a mistake.
 python3 - "$APPS" "$MODE" <<'PY'
 import json, sys
 
 apps_path, mode = sys.argv[1], sys.argv[2]
 names = [app["url"].rstrip("/").rsplit("/", 1)[-1] for app in json.load(open(apps_path))]
-if mode == "live" and "hrms" in names:
-    sys.exit(f"refused: {apps_path} lists hrms; the live image must not carry it (finance/docs/hrms.md)")
 if mode == "copy" and "hrms" not in names:
     sys.exit(f"refused: {apps_path} has no hrms; the copy image is built from it")
 PY
 
 # Refuse to overwrite a tag that exists: a live tag stays what it was built as.
 if docker image inspect "frappe-finance-custom:$TAG" >/dev/null 2>&1 \
-  || docker image inspect "frappe-finance-custom:$TAG-base" >/dev/null 2>&1; then
-  echo "refused: frappe-finance-custom:$TAG (or its -base) already exists; pick a new tag" >&2
+  || docker image inspect "frappe-finance-custom:$TAG-base" >/dev/null 2>&1 \
+  || docker image inspect "frappe-finance-custom:$TAG-finance" >/dev/null 2>&1; then
+  echo "refused: frappe-finance-custom:$TAG (or its -base or -finance) already exists; pick a new tag" >&2
   exit 1
 fi
 
@@ -89,10 +87,16 @@ docker build \
   --tag "frappe-finance-custom:$TAG-base" \
   --file images/custom/Containerfile .
 
-# bi_finance is this repo's own app, not in the app lists: a layer on the base image.
+# bi_finance and bi_payroll are this repo's own apps, not in the app lists: a layer each
+# on the base image. bi_payroll requires hrms, which the base carries.
 docker build \
   --build-arg BASE="frappe-finance-custom:$TAG-base" \
-  --tag "frappe-finance-custom:$TAG" \
+  --tag "frappe-finance-custom:$TAG-finance" \
   --file finance/images/bi_finance.Containerfile .
+
+docker build \
+  --build-arg BASE="frappe-finance-custom:$TAG-finance" \
+  --tag "frappe-finance-custom:$TAG" \
+  --file finance/images/bi_payroll.Containerfile .
 
 echo "built frappe-finance-custom:$TAG from $APPS"

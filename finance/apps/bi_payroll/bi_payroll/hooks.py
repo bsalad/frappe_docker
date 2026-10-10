@@ -4,8 +4,8 @@ app_publisher = "BI Concepts"
 app_description = "Swiss payroll components for HRMS (AHV, ALV, BVG, UVG/NBU, KTG, FAK)"
 app_license = "Proprietary"
 
-# HRMS is needed for the payroll doctypes. This app is installed on the HRMS copy only: bi_finance
-# deploys to the live site, where HRMS is not installed, so nothing here may go into bi_finance.
+# HRMS is needed for the payroll doctypes. This app is installed on the live site and the HRMS copy
+# (Decision 2026-10-10). Keep it out of bi_finance: bi_finance must migrate where HRMS is not installed.
 required_apps = ["erpnext", "hrms", "bi_finance"]
 
 # The rates are settings, not constants: each slip takes a copy when it is validated, because the

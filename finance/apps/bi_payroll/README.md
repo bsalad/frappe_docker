@@ -1,7 +1,8 @@
 # bi_payroll
 
-Frappe app for BI Concepts' Swiss payroll on the HRMS copy (`finance/docs/hrms.md`). It is installed on the
-copy only: it requires `hrms`, which the live site does not have, so nothing here goes into `bi_finance`.
+Frappe app for BI Concepts' Swiss payroll (`finance/docs/hrms.md`). It is installed on the live site and the
+HRMS copy (Decision 2026-10-10). It requires `hrms`, so nothing here goes into `bi_finance`, which must
+migrate on any site.
 
 - `bi_payroll/fixtures/salary_component.json`: the Salary Components with their formulas (AHV/IV/EO, ALV with
   the ceiling, BVG on a fixed yearly insured salary with the age bands, NBU, UVG, KTG, FAK). The abbreviations
@@ -54,4 +55,5 @@ copy only: it requires `hrms`, which the live site does not have, so nothing her
   change has empty formulas and computes 0 for every component; the live structure (erp-2s3c) was one of them.
 - `bi_payroll/test_layout.py`: the layout and stamp guard, copied from `bi_finance`:
   `python3 -m unittest bi_payroll.test_layout`.
-- `finance/images/bi_payroll.Containerfile`: the layer on the HRMS copy image.
+- `finance/images/bi_payroll.Containerfile`: the layer on the image with bi_finance (live and copy), built by
+  `finance/scripts/build-image.sh`.

@@ -20,10 +20,11 @@ Benchi decided the ELM route on 2026-10-10:
   our data. Vendor inquiry: not now.
 - **Own certification:** no. We do not build our own Swissdec certification (the budget is
   not acceptable). The options below stay on record, not as a plan.
-- **Live payroll:** in ERPNext as soon as the HRMS copy passes, still in 2026.
+- **Live payroll:** in ERPNext on the live site (Decision 2026-10-10: payroll runs on the live site),
+  still in 2026.
 - **2026 wage reports:** done by the company's trustee / payroll service. They file the 2026
   ELM from the payroll hand-over export (the report `Payroll hand-over` in `bi_payroll`, on the
-  HRMS copy only). The export is sent to the trustee by Benchi, never committed.
+  live site and the HRMS copy). The export is sent to the trustee by Benchi, never committed.
 - **Receivers:** no inquiry to the receivers (AHV/FAK, UVG, BVG, KTG, tax offices, statistics)
   now.
 

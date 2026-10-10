@@ -250,8 +250,9 @@ docker build --build-arg BASE=frappe-finance-custom:<tag>-base \
 
 ## Redo on a fresh site
 
-The live image is built from `finance/apps.json` (no HRMS), under a new tag that does not
-exist yet (the script refuses an existing one). `finance-local.yml` names the tag in use:
+The live image is built from `finance/apps.json` (with HRMS, and `bi_payroll` on top of
+`bi_finance`), under a new tag that does not exist yet (the script refuses an existing one).
+`finance-local.yml` names the tag in use:
 
 ```sh
 finance/scripts/build-image.sh live <new-tag>
