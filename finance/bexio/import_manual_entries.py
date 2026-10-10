@@ -14,7 +14,9 @@ Run it as:
 --export defaults to the newest directory under <private>/bexio-export/. The
 entries are read from manual_entries.json in it. While that file is not
 there (the export is still pending, HTTP 403) the command says "not exported
-yet" and stops. The totals are printed only; the bexio ids of the entries
+yet" and stops. --extra FILE adds entries that are not in the export, in
+bexio's shape as a list (a correction, say); the file stays private, as the
+amounts in it do. The totals are printed only; the bexio ids of the entries
 it cannot map go to <private>/bexio-manual-entries-dry-run.txt, never to the
 screen or the repository. An entry that cannot map is left out of the plan
 and listed there, so the plan never holds half an entry.
@@ -38,6 +40,10 @@ itself, the id rows take it as their missing side. A reverse-charge code
 (import_purchase's BEZUG) is net, and its tax goes on the Vorsteuer account and
 is taken back on the Bezugsteuer liability, as the bills do. An entry with no
 type is booked as a single one.
+
+An entry on a depreciation account is a Depreciation Entry, as ERPNext requires
+for those accounts; an entry on a receivable or payable account needs a party,
+which a bexio manual entry does not carry, so it is reported, not written.
 
 Standard library only, apart from import_master and import_purchase.
 """
@@ -63,34 +69,45 @@ TYPES = (SINGLE, COMPOUND, GROUP)
 # the side a VAT account carries: Vorsteuer (assets) is debited, Umsatzsteuer (liabilities) credited
 SIDE_OF_ROOT = {"Asset": "debit", "Expense": "debit", "Liability": "credit", "Income": "credit", "Equity": "credit"}
 PROFIT_AND_LOSS = ("Income", "Expense")
+# the bexio codes with a rate of 0 % in BEXIO_TAXES (swiss-setup), with the purchase importer's: no VAT split on an entry
+MANUAL_ZERO_RATE_IDS = ip.ZERO_RATE_IDS + (3, 4, 5, 6, 13, 14, 48)
+# the account types ERPNext wants a voucher of its own for (Depreciation Entry), and the ones that need a party
+DEPRECIATION_TYPES = ("Depreciation", "Accumulated Depreciation")
+DEPRECIATION_ENTRY = "Depreciation Entry"
+PARTY_TYPES = ("Receivable", "Payable")
 CENT = Decimal("0.01")
 ZERO = Decimal("0")
 
 
 class Lookups:
     """What the mapping reads from ERPNext: Accounts by bexio_id with their root type, Accounts by number (the reverse-charge
-    accounts), the currency of each Account, and Item Tax Templates by bexio_id."""
+    accounts), the currency of each Account, Item Tax Templates by bexio_id, and the names of the depreciation and party accounts."""
 
-    def __init__(self, accounts, taxes, by_number=None, currencies=None):
+    def __init__(self, accounts, taxes, by_number=None, currencies=None, depreciation=None, party=None):
         self.accounts = accounts      # bexio account id -> (Account name, root type)
         self.taxes = taxes            # bexio tax id -> Item Tax Template name
         self.by_number = by_number or {}  # account number -> (Account name, root type)
         self.currencies = currencies or {}  # Account name -> the account's currency
+        self.depreciation = set(depreciation or ())  # Account names of the depreciation types
+        self.party = set(party or ())  # Account names of the receivable and payable types
 
     def currency_of(self, account):
         return self.currencies.get(account)
 
     @classmethod
     def from_erp(cls, erp):
-        rows = erp.list("Account", [["company", "=", im.COMPANY], ["bexio_id", "is", "set"]], ["name", "bexio_id", "root_type", "account_currency"])
+        rows = erp.list("Account", [["company", "=", im.COMPANY], ["bexio_id", "is", "set"]],
+                        ["name", "bexio_id", "root_type", "account_currency", "account_type"])
         numbers = sorted({account for account, _ in ip.BEZUG.values()} | {ip.BEZUGSTEUER})
         by_number = erp.list("Account", [["company", "=", im.COMPANY], ["account_number", "in", numbers]],
-                             ["name", "account_number", "root_type", "account_currency"])
+                             ["name", "account_number", "root_type", "account_currency", "account_type"])
         return cls(
             accounts={r["bexio_id"]: (r["name"], r["root_type"]) for r in rows},
             taxes={r["bexio_id"]: r["name"] for r in erp.list("Item Tax Template", [["company", "=", im.COMPANY], ["bexio_id", "is", "set"]], ["name", "bexio_id"])},
             by_number={r["account_number"]: (r["name"], r["root_type"]) for r in by_number},
             currencies={r["name"]: r["account_currency"] for r in rows + by_number},
+            depreciation={r["name"] for r in rows + by_number if r["account_type"] in DEPRECIATION_TYPES},
+            party={r["name"] for r in rows + by_number if r["account_type"] in PARTY_TYPES},
         )
 
 
@@ -119,7 +136,7 @@ def _account(lookups, bexio_id):
 def _vat(line, lookups):
     """(rate, tax account name, side of the tax account) of a line, or None when the line carries no VAT."""
     tax_id = line.get("tax_id")
-    if not tax_id or tax_id in ip.ZERO_RATE_IDS:
+    if not tax_id or tax_id in MANUAL_ZERO_RATE_IDS:
         return None
     if tax_id not in im.VAT_OF_TAX_ID:
         raise ip.MappingError("unknown VAT code {}".format(tax_id))
@@ -236,6 +253,8 @@ def map_entry(entry, lookups, currencies):
         parts, factor = _line_parts(line, lookups, currencies)
         code = currencies[str(line.get("currency_id"))]
         for account, side, value, chf in parts:
+            if account in lookups.party:
+                raise ip.MappingError("account {} needs a party, and a manual entry has none".format(account))
             if side == "debit":
                 debit += chf
             else:
@@ -245,8 +264,10 @@ def map_entry(entry, lookups, currencies):
     if debit != credit:
         raise ip.MappingError("debit {} and credit {} differ".format(debit, credit))
     day = _day(entry).isoformat()
+    depreciation = any(row["account"] in lookups.depreciation for row in rows)
     return {
-        "doctype": JOURNAL, "company": im.COMPANY, "voucher_type": "Journal Entry",
+        "doctype": JOURNAL, "company": im.COMPANY,
+        "voucher_type": DEPRECIATION_ENTRY if depreciation else "Journal Entry",
         # ERPNext wants a reference date with a reference number: bexio's entry has none, so it is the entry's date
         "posting_date": day, "cheque_no": reference, "cheque_date": day if reference else None, "user_remark": reference,
         "multi_currency": int(any(row["exchange_rate"] != 1 for row in rows)),
@@ -346,11 +367,18 @@ def load_entries(export_dir):
     return entries, currencies
 
 
+def load_extra(path):
+    """The entries of a private file that the export does not hold: a list in bexio's shape, as manual_entries.json."""
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="Map the bexio manual entries to ERPNext Journal Entries (dry run).")
     parser.add_argument("--export", default=None, help="export directory (default: the newest under <private>/bexio-export/)")
     parser.add_argument("--dry-run", action="store_true", help="read ERPNext, write nothing, print the totals")
     parser.add_argument("--write", metavar="FILE", default=None, help="write the loader plan to a private file (bexio-drafts.sh FILE submit does the live run)")
+    parser.add_argument("--extra", metavar="FILE", default=None, help="entries that are not in the export, in bexio's shape, as a private list")
     parser.add_argument("--token-file", default=im.TOKEN_FILE)
     args = parser.parse_args(argv)
     if sum(bool(x) for x in (args.dry_run, args.write is not None)) != 1:
@@ -361,6 +389,8 @@ def main(argv):
         print("manual entries: not exported yet ({} is not in {})".format(ENTRIES_FILE, export_dir))
         return 0
     entries, currencies = loaded
+    if args.extra:
+        entries = entries + load_extra(args.extra)
     try:
         lookups = Lookups.from_erp(im.Erp.from_file(args.token_file))
     except im.ErpError as err:

@@ -18,7 +18,7 @@ import import_purchase as ip
 CURRENCIES = {"1": "CHF", "2": "EUR"}
 
 
-def lookups(taxes=None, by_number=None, currencies=None):
+def lookups(taxes=None, by_number=None, currencies=None, depreciation=None, party=None):
     return ime.Lookups(
         currencies=currencies,
         accounts={
@@ -29,11 +29,13 @@ def lookups(taxes=None, by_number=None, currencies=None):
             "31": ("2200 - Umsatzsteuer Test - bic", "Liability"),
             "32": ("3000 - Testertrag - bic", "Income"),
             "41": ("9100 - Eroeffnung Test - bic", "Equity"),
+            "61": ("6820 - Abschreibung Test - bic", "Expense"),
             "99": ("9999 - Ohne Wurzel - bic", "Stock"),
         },
         taxes={"35": "Test MWST bexio 35", "22": "Test MWST bexio 22"} if taxes is None else dict(taxes),
         by_number={"1172": ("1170 - Vorsteuer Test - bic", "Asset"), "2202": ("2200 - Bezugsteuer Test - bic", "Liability")}
         if by_number is None else dict(by_number),
+        depreciation=depreciation, party=party,
     )
 
 
@@ -77,6 +79,19 @@ class MapEntryTest(unittest.TestCase):
 
     def test_bexio_key_is_prefixed_so_it_cannot_meet_a_journal_line_id(self):
         self.assertEqual(ime.manual_key(153), "manual-153")
+
+    def test_entry_on_a_depreciation_account_is_a_depreciation_entry(self):
+        doc = ime.map_entry(entry(lines=[line(61, 11, 100)]), lookups(depreciation={"6820 - Abschreibung Test - bic"}), CURRENCIES)
+        self.assertEqual(doc["voucher_type"], "Depreciation Entry")
+        self.assertEqual(doc["doctype"], "Journal Entry")
+
+    def test_entry_without_a_depreciation_account_is_a_journal_entry(self):
+        self.assertEqual(ime.map_entry(entry(), lookups(depreciation={"6820 - Abschreibung Test - bic"}), CURRENCIES)["voucher_type"], "Journal Entry")
+
+    def test_zero_rate_code_of_the_sales_table_has_no_split(self):
+        doc = ime.map_entry(entry(lines=[line(11, 32, 100, tax_id=3, tax_account_id=31)]), lookups(), CURRENCIES)
+        self.assertEqual(rows_of(doc), [("1020 - Bank Test - bic", 100.0, 0.0), ("3000 - Testertrag - bic", 0.0, 100.0)])
+        self.assertIn(3, ime.MANUAL_ZERO_RATE_IDS)
 
     def test_reference_goes_to_cheque_number_and_remark(self):
         doc = ime.map_entry(entry(reference_nr="BU-77"), lookups(), CURRENCIES)
@@ -258,6 +273,10 @@ class MapEntryErrorTest(unittest.TestCase):
     def test_vat_account_of_an_unknown_root_is_reported(self):
         self.assertUnmapped(entry(lines=[line(21, 11, 10, tax_id=35, tax_account_id=99)]), "has root type Stock")
 
+    def test_entry_on_a_party_account_is_reported_not_written(self):
+        self.assertUnmapped(entry(lines=[line(12, 21, 100)]), "account 1100 - Debitoren Test - bic needs a party",
+                            lookups(party={"1100 - Debitoren Test - bic"}))
+
     def test_unknown_currency_is_reported(self):
         self.assertUnmapped(entry(lines=[line(21, 11, 10, currency_id=9)]), "unknown currency 9")
 
@@ -333,7 +352,9 @@ class MainTest(unittest.TestCase):
             with open(os.path.join(tmp, ime.CURRENCIES_FILE), "w", encoding="utf-8") as f:
                 json.dump([{"id": 1, "name": "CHF"}], f)
             out_file = os.path.join(tmp, "plan.json")
-            with mock.patch.object(ime.Lookups, "from_erp", return_value=lookups()), \
+            # the problem list goes to <private>: a temp dir here, so a test run never writes the real one
+            with mock.patch.object(ime.im, "PRIVATE", tmp), \
+                    mock.patch.object(ime.Lookups, "from_erp", return_value=lookups()), \
                     mock.patch.object(ime.im.Erp, "from_file", return_value=None), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 ime.main(["--write", out_file, "--export", tmp])
@@ -341,6 +362,26 @@ class MainTest(unittest.TestCase):
                 plan = json.load(f)
         self.assertEqual([d["bexio_id"] for d in plan["documents"]], ["manual-m-1"])
         self.assertEqual(plan["exchange_rates"], [])
+
+    def test_extra_entries_join_the_plan_after_the_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, ime.ENTRIES_FILE), "w", encoding="utf-8") as f:
+                json.dump([entry("m-1")], f)
+            with open(os.path.join(tmp, ime.CURRENCIES_FILE), "w", encoding="utf-8") as f:
+                json.dump([{"id": 1, "name": "CHF"}], f)
+            extra = os.path.join(tmp, "extra.json")
+            with open(extra, "w", encoding="utf-8") as f:
+                json.dump([entry("1099-correction", date="2024-10-29", lines=[line(11, 21, 165.66)])], f)
+            out_file = os.path.join(tmp, "plan.json")
+            with mock.patch.object(ime.im, "PRIVATE", tmp), \
+                    mock.patch.object(ime.Lookups, "from_erp", return_value=lookups()), \
+                    mock.patch.object(ime.im.Erp, "from_file", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                ime.main(["--write", out_file, "--export", tmp, "--extra", extra])
+            with open(out_file, encoding="utf-8") as f:
+                plan = json.load(f)
+        self.assertEqual([d["bexio_id"] for d in plan["documents"]], ["manual-m-1", "manual-1099-correction"])
+        self.assertEqual(plan["documents"][1]["values"]["posting_date"], "2024-10-29")
 
     def test_pending_export_says_not_exported_yet(self):
         with tempfile.TemporaryDirectory() as tmp:
