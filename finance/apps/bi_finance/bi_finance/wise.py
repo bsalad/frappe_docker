@@ -84,6 +84,9 @@ def run(dry_run):
         for window_start, window_end in wise_client.windows(start, now):
             body = wise_client.statement(token, settings.profile_id, balance["id"], currency, window_start, window_end)
             rows += wise_client.statement_rows(body, balance["id"], currency)
+        if currency != "CHF":
+            # the rate of every day this account's amounts fall on, so the conversion below needs no lookup per day
+            rates.update(bank_feed.load_rates(currency, _first_day(start, rows, bank_account), now.date(), dry_run))
         create, summary = bank_feed.plan(bank_account, rows) if frappe.db.exists("Bank Account", bank_account) else _unseen(rows)
         if not dry_run:
             ensure_bank_account(currency)
@@ -250,6 +253,17 @@ def _start(settings, now):
 
 def _amount(balance):
     return float((balance.get("amount") or {}).get("value") or 0)
+
+
+def _first_day(start, rows, bank_account):
+    """The earliest day an amount of this account falls on: the sync start, a statement row, or a Bank Transaction there."""
+    days = [start.date()] + [datetime.date.fromisoformat(row["date"]) for row in rows if row["date"]]
+    earliest = frappe.db.sql(
+        "select min(date) from `tabBank Transaction` where bank_account = %s and docstatus < 2", bank_account
+    )[0][0]
+    if earliest:
+        days.append(earliest)
+    return min(days)
 
 
 def _erp_net_by_day(bank_account):

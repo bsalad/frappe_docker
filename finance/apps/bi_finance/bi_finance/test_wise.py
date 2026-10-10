@@ -222,5 +222,61 @@ class Chf(unittest.TestCase):
         )
 
 
+class Rates(unittest.TestCase):
+    # invented rates; the source's answer is a list of {date, base, quote, rate}, as the v2 range endpoint gives it
+    def answer(self, *items):
+        return list(items)
+
+    def test_rate_days_keeps_only_the_pair_and_no_zero_rate(self):
+        payload = self.answer(
+            {"date": "2026-03-04", "base": "EUR", "quote": "CHF", "rate": 0.5},
+            {"date": "2026-03-05", "base": "USD", "quote": "CHF", "rate": 0.7},
+            {"date": "2026-03-06", "base": "EUR", "quote": "USD", "rate": 1.1},
+            {"date": "2026-03-07", "base": "EUR", "quote": "CHF", "rate": 0},
+        )
+        self.assertEqual(bank_feed.rate_days(payload, "EUR"), {"2026-03-04": 0.5})
+
+    def test_rate_days_refuses_an_answer_that_is_not_a_list(self):
+        with self.assertRaises(bank_feed.RateError):
+            bank_feed.rate_days({"rates": {}}, "EUR")
+
+    def test_fetch_rates_is_one_request_for_the_range_and_pair(self):
+        opener = FakeOpener(answer=self.answer({"date": "2026-03-04", "base": "EUR", "quote": "CHF", "rate": 0.5}))
+        days = bank_feed.fetch_rates("EUR", datetime.date(2026, 3, 2), datetime.date(2026, 3, 6), opener=opener)
+        self.assertEqual(days, {"2026-03-04": 0.5})
+        self.assertEqual(len(opener.requests), 1)
+        url = opener.requests[0].full_url
+        self.assertTrue(url.startswith(bank_feed.RATE_URL + "?"))
+        self.assertIn("from=2026-03-02", url)
+        self.assertIn("to=2026-03-06", url)
+        self.assertIn("base=EUR", url)
+        self.assertIn("quotes=CHF", url)
+
+    def test_fetch_rates_http_error_names_status_only(self):
+        error = urllib.error.HTTPError(bank_feed.RATE_URL, 503, "Unavailable", {}, io.BytesIO(b"rate body"))
+        with self.assertRaises(bank_feed.RateError) as caught:
+            bank_feed.fetch_rates("EUR", datetime.date(2026, 3, 2), datetime.date(2026, 3, 6), opener=FakeOpener(error=error))
+        self.assertIn("HTTP 503", str(caught.exception))
+        self.assertNotIn("rate body", str(caught.exception))
+
+    def test_carry_forward_gives_a_weekend_the_friday_rate(self):
+        days = {"2026-03-06": 0.9, "2026-03-09": 0.8}
+        out = bank_feed.carry_forward(days, datetime.date(2026, 3, 6), datetime.date(2026, 3, 10))
+        self.assertEqual(
+            out,
+            {"2026-03-06": 0.9, "2026-03-07": 0.9, "2026-03-08": 0.9, "2026-03-09": 0.8, "2026-03-10": 0.8},
+        )
+
+    def test_carry_forward_leaves_out_days_before_the_first_rate(self):
+        out = bank_feed.carry_forward({"2026-03-04": 0.9}, datetime.date(2026, 3, 2), datetime.date(2026, 3, 5))
+        self.assertEqual(out, {"2026-03-04": 0.9, "2026-03-05": 0.9})
+
+    def test_fetch_start_is_the_latest_stored_day_when_that_is_later(self):
+        start = datetime.date(2026, 1, 1)
+        self.assertEqual(bank_feed.fetch_start(start, datetime.date(2026, 3, 6)), datetime.date(2026, 3, 6))
+        self.assertEqual(bank_feed.fetch_start(start, None), start)
+        self.assertEqual(bank_feed.fetch_start(datetime.date(2026, 3, 9), datetime.date(2026, 3, 6)), datetime.date(2026, 3, 9))
+
+
 if __name__ == "__main__":
     unittest.main()

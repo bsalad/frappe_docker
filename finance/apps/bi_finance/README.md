@@ -33,3 +33,5 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   shared feed: rows written once by transaction id, deduplicated against imported lines by account, date and
   amount; PayPal reuses it), `bi_finance/wise.py` (balances as Bank Accounts, the sync, the hourly job).
   `bi_finance/test_wise.py` is offline (fake HTTP), run in the image with `bi_finance.test_wise`.
+  CHF rates: a live run stores the day rates of each Wise currency as Currency Exchange rows, from frankfurter.dev v2
+  (the source set in Currency Exchange Settings), one request per currency and range; a dry run stores none.
