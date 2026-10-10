@@ -71,11 +71,15 @@ class MapBillTest(unittest.TestCase):
         doc = ip.map_bill(bill(), lookups())
         self.assertEqual(doc[ip.ATTACHMENTS_FIELD], "a-1,a-2")
 
-    def test_foreign_currency_keeps_currency_and_rate(self):
-        doc = ip.map_bill(bill(currency_code="EUR", exchange_rate=0.93, positions=[pos(1, 200, 35)]), lookups())
-        self.assertEqual(doc["currency"], "EUR")
-        self.assertEqual(doc["conversion_rate"], 0.93)
-        self.assertEqual(ip.document_totals(doc), (Decimal("200.00"), Decimal("16.20"), Decimal("216.20")))
+    def test_foreign_currency_is_booked_in_chf_at_bexios_rate_with_the_original_in_the_remarks(self):
+        doc = ip.map_bill(bill(currency_code="EUR", exchange_rate=0.93, gross=216.20, positions=[pos(1, 200, 35)]), lookups())
+        self.assertEqual((doc["currency"], doc["conversion_rate"]), ("CHF", 1.0))
+        self.assertEqual(doc["remarks"], "bexio: EUR 216.20 @ 0.93")
+        self.assertEqual(ip.document_totals(doc), (Decimal("186.00"), Decimal("15.07"), Decimal("201.07")))
+        self.assertEqual(taxes(doc), {("1170 - Vorsteuer Material/DL - bic", "Test MWST bexio 35"): 15.07})
+
+    def test_chf_bill_has_no_remarks(self):
+        self.assertNotIn("remarks", ip.map_bill(bill(), lookups()))
 
     def test_zero_rate_line_has_no_tax_row(self):
         doc = ip.map_bill(bill(positions=[pos(1, 30, 47)]), lookups())
@@ -180,8 +184,9 @@ class MapBillFromLineItemsTest(unittest.TestCase):
     def test_foreign_bill_needs_its_exchange_rate(self):
         with self.assertRaisesRegex(ip.MappingError, "no exchange rate for EUR"):
             ip.map_bill(full_bill(currency_code="EUR"), lookups())
-        doc = ip.map_bill(full_bill(currency_code="EUR", exchange_rate=0.997002), lookups())
-        self.assertEqual(doc["conversion_rate"], 0.997002)
+        doc = ip.map_bill(full_bill(currency_code="EUR", exchange_rate=0.99, gross=129.7), lookups())
+        self.assertEqual((doc["currency"], doc["conversion_rate"]), ("CHF", 1.0))
+        self.assertEqual(doc["remarks"], "bexio: EUR 129.70 @ 0.99")
 
     def test_detail_positions_are_the_fallback_for_a_bill_without_line_items(self):
         record = bill()
@@ -213,7 +218,7 @@ class DryRunTest(unittest.TestCase):
         good = bill("b-1", net=380, gross=402.85)
         off = bill("b-2", net=380, gross=402.86)  # bexio gross one rappen above what the lines give
         broken = bill("b-3", positions=[pos(1, 10, 16)], currency_code="EUR", net=10, gross=10.81)
-        totals = ip.dry_run([good, off, broken], [self.draft_expense()], lookups())
+        totals = ip.dry_run([good, off, broken], [self.draft_expense()], lookups(), {})
         bill_row = totals.rows[(2025, "CHF")]
         # the CHF row counts the skipped expense too: 2 bills and 1 expense
         self.assertEqual((bill_row["records"], bill_row["mapped"], bill_row["unmapped"], bill_row["differ"]), (3, 2, 0, 1))
@@ -236,7 +241,7 @@ class DryRunTest(unittest.TestCase):
 
 class DraftsTest(unittest.TestCase):
     def test_each_bill_that_maps_is_a_draft_named_by_bexios_document_number(self):
-        (draft,) = ip.drafts([bill(bid="b-1", document_no="R-77")], lookups())
+        (draft,) = ip.drafts([bill(bid="b-1", document_no="R-77")], lookups(), {})
         self.assertEqual((draft["doctype"], draft["name"], draft["bexio_id"]), ("Purchase Invoice", "R-77", "b-1"))
         self.assertEqual(draft["values"]["bill_no"], "LF-1")
         self.assertNotIn("doctype", draft["values"])
@@ -245,11 +250,34 @@ class DraftsTest(unittest.TestCase):
         good = bill(bid="b-1", document_no="R-1")
         off = bill(bid="b-2", document_no="R-2", net=380, gross=402.86)  # one rappen above what its lines give
         broken = bill(bid="b-3", document_no="R-3", positions=[pos(1, 10, 16)])
-        self.assertEqual([d["name"] for d in ip.drafts([good, off, broken], lookups())], ["R-1"])
+        self.assertEqual([d["name"] for d in ip.drafts([good, off, broken], lookups(), {})], ["R-1"])
+
+    def test_a_foreign_bill_is_a_draft_when_its_chf_total_is_bexios_booking(self):
+        foreign = bill(bid="b-f", document_no="R-F", currency_code="EUR", exchange_rate=0.93, gross=216.20,
+                       positions=[pos(1, 200, 35)])
+        (draft,) = ip.drafts([foreign], lookups(), {("KbBill", "b-f"): Decimal("-201.07")})
+        self.assertEqual((draft["name"], draft["values"]["currency"]), ("R-F", "CHF"))
+
+    def test_a_foreign_bill_whose_chf_total_is_not_bexios_booking_is_left_out(self):
+        foreign = bill(bid="b-f", document_no="R-F", currency_code="EUR", exchange_rate=0.93, gross=216.20,
+                       positions=[pos(1, 200, 35)])
+        self.assertEqual(ip.drafts([foreign], lookups(), {("KbBill", "b-f"): Decimal("-201.20")}), [])
+        self.assertEqual(ip.drafts([foreign], lookups(), {}), [])
+
+    def test_the_dry_run_lists_a_foreign_bill_that_differs_from_bexios_chf_booking(self):
+        foreign = bill(bid="b-f", currency_code="EUR", exchange_rate=0.93, gross=216.20, positions=[pos(1, 200, 35)])
+        totals = ip.dry_run([foreign], [], lookups(), {("KbBill", "b-f"): Decimal("-201.20")})
+        self.assertEqual(totals.rows[(2025, "EUR")]["differ"], 1)
+        self.assertEqual(totals.problems, ["bill b-f: differs, CHF total differs from bexio's CHF booking on 2000 by -0.13"])
+
+    def test_the_dry_run_passes_a_foreign_bill_that_is_bexios_chf_booking(self):
+        foreign = bill(bid="b-f", currency_code="EUR", exchange_rate=0.93, gross=216.20, positions=[pos(1, 200, 35)])
+        totals = ip.dry_run([foreign], [], lookups(), {("KbBill", "b-f"): Decimal("-201.07")})
+        self.assertEqual((totals.rows[(2025, "EUR")]["mapped"], totals.rows[(2025, "EUR")]["differ"]), (1, 0))
 
     def test_two_bills_with_one_document_number_are_refused(self):
         with self.assertRaisesRegex(ip.MappingError, "document number R-1"):
-            ip.drafts([bill(bid="b-1", document_no="R-1"), bill(bid="b-2", document_no="R-1")], lookups())
+            ip.drafts([bill(bid="b-1", document_no="R-1"), bill(bid="b-2", document_no="R-1")], lookups(), {})
 
 
 if __name__ == "__main__":

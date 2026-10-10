@@ -122,8 +122,8 @@ GL posts: the documents are drafts (docstatus 0). The posting plan
 backend container as Administrator. Each draft is named by bexio's
 `document_nr` (set on insert, so the ACC-SINV series does not move) and keyed by
 `bexio_id`: a rerun updates a draft in place, skips a submitted one, and changes
-nothing that is already right. The ECB's USD-CHF rate is used where bexio gives
-no rate, and saved as a Currency Exchange record on the invoice date.
+nothing that is already right. A foreign-currency invoice is booked in CHF, as
+bexio books it (see Currencies below).
 
 The dry run reads ERPNext and prints totals only: counts per export file, the
 CHF net, tax and gross per year, and the invoice status counts (8 open, 9
@@ -159,10 +159,31 @@ paid). The differences and unmapped records, by bexio id, go to
   amount, and its quantity and discount stay in its text ("1.58 x 1000.00 less
   10%: ..."). A zero-rate row keeps a zero price list rate, so ERPNext does not
   fill the free-text item's selling price into it.
-- Not written by `--apply`: a foreign-currency invoice (its receivable account is
-  CHF, and ERPNext refuses a document in another currency), and an invoice whose
-  total is a rappen off bexio's and cannot take the difference. Both are listed by
-  bexio id in `<private>/bexio-sales-differences.txt` and in the loader's output.
+- Not written by `--apply`: a foreign-currency invoice that bexio's journal does
+  not book in CHF on the receivables account within 5 rappen (listed with the
+  difference), and an invoice whose total is a rappen off bexio's and cannot take
+  the difference. Both are listed by bexio id in
+  `<private>/bexio-sales-differences.txt` and in the loader's output.
+
+## Currencies
+
+ERPNext 16 requires the party account's currency to equal the document's, and the
+receivable and payable accounts are CHF. So a foreign-currency document is booked in
+CHF, as bexio books it on 1100 and 2000: its conversion rate is 1, and each line rate
+and tax is bexio's amount times the rate, to the cent. The original currency and
+amount, with the rate, go into the remarks (`bexio: USD 1234.00 @ 0.90199`; a rate
+from the ECB adds its day).
+
+The rate is the one bexio booked the document at: the bill's `exchange_rate`, or for
+an invoice the `currency_factor` of its receivable line in the journal. The ECB's
+rate of the invoice date is used only where neither is given (and listed as a
+difference).
+
+A foreign document is checked against bexio's own CHF booking before it is written:
+the CHF total of an invoice must be what the journal books on 1100 for it, and of a
+bill what it books on 2000, within 5 rappen. Otherwise it is left out, with the
+difference, and the journal's lines (`journal.json`, `accounts.json`) are the source.
+The chart's EUR and USD accounts (1101, 2001) stay unused, as bexio did not use them.
 
 ## Attachments (bexio files to Purchase Invoices)
 
@@ -187,5 +208,7 @@ is recognised by the description `bexio file <id>` or by name and size, so a sec
 bexio's `document_no`, through the same loader. A reverse-charge bill (Bezugsteuer
 codes 19, 20, 32, 33) is mapped with its net as the amount; its VAT is booked to
 the Vorsteuer account and taken back on 2203, so the total is the net, as bexio
-books it. Expenses are not written. A foreign-currency bill is refused by the
-loader for the same reason as a foreign-currency invoice.
+books it. Expenses are not written. A foreign-currency bill is booked in CHF at its
+`exchange_rate`, as bexio books it, with the original in the remarks (see Currencies
+under the sales import); it is written only when its CHF total is bexio's CHF
+booking on 2000 within 5 rappen.

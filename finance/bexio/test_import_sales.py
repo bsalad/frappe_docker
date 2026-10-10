@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from decimal import Decimal
 
+import import_master as im
 import import_sales as isl
 
 # the lookups the mapping reads from ERPNext; the ids and names are invented
@@ -86,25 +87,97 @@ class DomesticInvoice(unittest.TestCase):
         self.assertEqual(doc["terms"], "Vielen Dank.\nZahlbar innert 30 Tagen.")
 
 
-class ForeignCurrency(unittest.TestCase):
-    def test_eur_invoice_keeps_currency_and_rate_and_reports_chf_totals(self):
-        eur = record(INVOICE, currency_id=2, exchange_rate="0.94",
+# an EUR invoice of 200.00 net and 216.20 gross, as bexio has it; its rate to CHF is 0.94
+EUR_INVOICE = record(INVOICE, currency_id=2, exchange_rate="0.94",
                      positions=[{"type": "KbPositionArticle", "article_id": 7, "amount": "1",
                                  "unit_price": "200.00", "account_id": 30, "tax_id": 28}],
                      taxs=[{"percentage": "8.1", "value": "16.20"}],
                      total_net="200.00", total_taxes="16.20", total_gross="216.20", total="216.20")
-        doc, differences, totals, rate = isl._document("Sales Invoice", eur, LOOKUPS)
-        self.assertEqual(doc["currency"], "EUR")
-        self.assertEqual(doc["conversion_rate"], 0.94)
-        self.assertEqual(doc["taxes"][0]["tax_amount"], 16.2)
+
+
+class ForeignCurrency(unittest.TestCase):
+    def test_eur_invoice_is_booked_in_chf_at_bexios_rate_with_the_original_in_the_remarks(self):
+        doc, differences, totals, rate = isl._document("Sales Invoice", EUR_INVOICE, LOOKUPS)
+        self.assertEqual((doc["currency"], doc["conversion_rate"]), ("CHF", 1.0))
+        self.assertEqual(doc["items"][0]["rate"], 188.0)
+        self.assertEqual(doc["taxes"][0]["tax_amount"], 15.23)
+        self.assertEqual(doc["remarks"], "bexio Nr. RE-1001; bexio: EUR 216.20 @ 0.94")
         self.assertEqual(differences, [])
-        self.assertEqual(totals, (Decimal("200.00"), Decimal("16.20"), Decimal("216.20")))
-        self.assertEqual(rate, Decimal("0.94"))
+        self.assertEqual(totals, (Decimal("188.00"), Decimal("15.23"), Decimal("203.23")))
+        self.assertEqual(rate, Decimal("1"))
+
+    def test_each_amount_is_rounded_to_the_cent_in_chf(self):
+        usd = record(INVOICE, currency_id=2, exchange_rate="0.90199",
+                     positions=[{"type": "KbPositionCustom", "amount": "1", "unit_price": "33.33",
+                                 "account_id": 30, "tax_id": 28, "text": "Material"}],
+                     taxs=[{"percentage": "8.1", "value": "2.70"}],
+                     total_net="33.33", total_taxes="2.70", total_gross="36.03", total="36.03")
+        doc, differences, _totals, _rate = isl._document("Sales Invoice", usd, LOOKUPS)
+        self.assertEqual(doc["items"][0]["rate"], 30.06)
+        # bexio's tax 2.44 against 8.1 % of 30.06 (2.43): the rappen goes into the tax row with the total's
+        self.assertEqual(doc["taxes"][0]["tax_amount"], 2.44)
+        self.assertIn("total +0.01 taken into the last tax row", differences)
+        self.assertEqual(doc["remarks"], "bexio Nr. RE-1001; bexio: EUR 36.03 @ 0.90199")
 
     def test_foreign_currency_without_rate_is_unmapped(self):
         eur = record(INVOICE, currency_id=2)
         with self.assertRaises(isl.Unmapped):
             isl.sales_invoice(eur, LOOKUPS)
+
+
+class JournalCheck(unittest.TestCase):
+    """A foreign invoice is left out unless bexio's journal books its CHF total on the receivables account."""
+
+    ACCOUNTS = [{"id": 93, "account_no": "1100"}, {"id": 3203, "account_no": "3200"}]
+
+    def journal(self, base, invoice_id=500):
+        return [{"ref_class": "KbInvoice", "ref_id": invoice_id, "ref_uuid": None, "debit_account_id": 93,
+                 "credit_account_id": 3203, "amount": 216.2, "base_currency_amount": base, "currency_factor": 0.94}]
+
+    def plan(self, base=None, **changes):
+        data = {"invoices": [record(EUR_INVOICE, **changes)], "accounts": self.ACCOUNTS}
+        if base is not None:
+            data["journal"] = self.journal(base)
+        return isl.plan(data, lookups(rate_at=lambda code, day: (Decimal("0.90"), day)))
+
+    def test_a_booking_that_matches_the_chf_total_maps(self):
+        (result,) = self.plan(base=203.23)
+        self.assertIsNotNone(result["doc"])
+        self.assertIsNone(result["error"])
+
+    def test_a_booking_5_rappen_off_is_within_tolerance(self):
+        (result,) = self.plan(base=203.18)
+        self.assertIsNotNone(result["doc"])
+
+    def test_a_booking_more_than_5_rappen_off_is_left_out_with_the_difference(self):
+        (result,) = self.plan(base=203.13)
+        self.assertIsNone(result["doc"])
+        self.assertEqual(result["error"], "CHF total differs from bexio's CHF booking on 1100 by +0.10")
+
+    def test_no_journal_or_no_booking_is_left_out(self):
+        (result,) = self.plan()
+        self.assertEqual(result["error"], "bexio's journal has no CHF booking on 1100 for the invoice")
+
+    def test_a_domestic_invoice_is_not_checked_against_the_journal(self):
+        (result,) = self.plan(currency_id=1, exchange_rate=None)
+        self.assertIsNotNone(result["doc"])
+        self.assertEqual(result["doc"]["currency"], "CHF")
+
+    def test_an_invoice_without_a_rate_of_its_own_takes_the_rate_bexio_booked_it_at(self):
+        journal = self.journal(203.23)
+        journal[0]["currency_factor"] = 0.94
+        data = {"invoices": [record(EUR_INVOICE, exchange_rate=None)], "accounts": self.ACCOUNTS, "journal": journal}
+
+        def rate_at(code, day):
+            raise AssertionError("bexio booked the invoice at a rate: no ECB lookup")
+
+        (result,) = isl.plan(data, lookups(rate_at=rate_at))
+        self.assertIsNone(result["error"])
+        self.assertTrue(result["doc"]["remarks"].endswith("; bexio: EUR 216.20 @ 0.94"))
+
+    def test_booked_chf_takes_the_receivable_debit_and_the_credit_back(self):
+        journal = self.journal(203.23) + [dict(self.journal(10)[0], debit_account_id=3203, credit_account_id=93)]
+        self.assertEqual(im.booked_chf(journal, self.ACCOUNTS, "1100"), {("KbInvoice", "500"): Decimal("193.23")})
 
 
 class CreditNote(unittest.TestCase):
@@ -427,8 +500,9 @@ class EcbRate(unittest.TestCase):
 
         doc, differences, _totals, rate = isl._document("Sales Invoice", self.eur(), lookups(rate_at=rate_at))
         self.assertEqual(seen, [("EUR", "2024-03-01")])
-        self.assertEqual((doc["conversion_rate"], rate), (0.9, Decimal("0.90")))
+        self.assertEqual((doc["currency"], doc["conversion_rate"], doc["items"][0]["rate"]), ("CHF", 1.0, 45.0))
         self.assertIn("exchange rate 0.90 for EUR: bexio gives none, the ECB's of 2024-03-01 is used", differences)
+        self.assertTrue(doc["remarks"].endswith("; bexio: EUR 159.40 @ 0.90 (ECB 2024-03-01)"))
 
     def test_no_ecb_rate_is_unmapped(self):
         def rate_at(code, day):
@@ -442,7 +516,8 @@ class EcbRate(unittest.TestCase):
             raise AssertionError("bexio gave a rate: no ECB lookup")
 
         doc = isl.sales_invoice(self.eur(exchange_rate="0.94"), lookups(rate_at=rate_at))
-        self.assertEqual(doc["conversion_rate"], 0.94)
+        self.assertEqual(doc["conversion_rate"], 1.0)
+        self.assertTrue(doc["remarks"].endswith("; bexio: EUR 159.40 @ 0.94"))
 
 
 class UnchargedInvoice(unittest.TestCase):
@@ -468,37 +543,41 @@ class UnchargedInvoice(unittest.TestCase):
 class Drafts(unittest.TestCase):
     """What --apply hands the loader: invoices named by bexio's number, the ECB rates they use, nothing else."""
 
-    def results(self, invoices, **kinds):
-        data = {"invoices": invoices, "credit_vouchers": [], "orders": [], "offers": []}
+    def results(self, invoices, journal=(), **kinds):
+        data = {"invoices": invoices, "credit_vouchers": [], "orders": [], "offers": [],
+                "accounts": JournalCheck.ACCOUNTS, "journal": list(journal)}
         data.update(kinds)
         return isl.plan(data, lookups(rate_at=lambda code, day: (Decimal("0.90"), day)))
 
     def write(self, results):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "drafts.json")
-            counts = isl.write_drafts(results, path)
+            count = isl.write_drafts(results, path)
             with open(path, encoding="utf-8") as f:
-                return counts, json.load(f)
+                return count, json.load(f)
 
     def test_each_invoice_is_a_draft_named_by_bexios_number(self):
-        counts, out = self.write(self.results([INVOICE]))
-        self.assertEqual(counts, (1, 0))
+        count, out = self.write(self.results([INVOICE]))
+        self.assertEqual(count, 1)
         (draft,) = out["documents"]
         self.assertEqual((draft["doctype"], draft["name"], draft["bexio_id"]), ("Sales Invoice", "RE-1001", "500"))
         self.assertNotIn("doctype", draft["values"])
         self.assertEqual(out["exchange_rates"], [])
 
-    def test_an_ecb_rate_becomes_an_exchange_rate_record_on_the_invoice_date(self):
-        counts, out = self.write(self.results([record(INVOICE, id=501, document_nr="RE-1002", currency_id=2)]))
-        self.assertEqual(counts, (1, 1))
-        self.assertEqual(out["exchange_rates"], [{"date": "2024-03-01", "from": "EUR", "to": "CHF", "rate": 0.9}])
+    def test_a_foreign_invoice_is_a_chf_draft_and_hands_over_no_exchange_rate(self):
+        journal = JournalCheck().journal(203.23)
+        count, out = self.write(self.results([EUR_INVOICE], journal=journal))
+        self.assertEqual(count, 1)
+        (draft,) = out["documents"]
+        self.assertEqual((draft["values"]["currency"], draft["values"]["conversion_rate"]), ("CHF", 1.0))
+        self.assertEqual(out["exchange_rates"], [])
 
     def test_orders_and_offers_and_unmapped_invoices_are_left_out(self):
         bad = record(INVOICE, id=502, document_nr="RE-1003", contact_id=999)
         order = {"id": 900, "document_nr": "AB-1", "contact_id": 100, "currency_id": 1, "is_valid_from": "2024-03-01",
                  "positions": [], "total": "0"}
-        counts, out = self.write(self.results([INVOICE, bad], orders=[order]))
-        self.assertEqual(counts, (1, 0))
+        count, out = self.write(self.results([INVOICE, bad], orders=[order]))
+        self.assertEqual(count, 1)
         self.assertEqual([d["name"] for d in out["documents"]], ["RE-1001"])
 
 

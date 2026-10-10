@@ -87,6 +87,9 @@ ONE = Decimal("1")
 QUANTITY = Decimal("0.001")
 # the most a document's total may differ from bexio's; the difference goes into the last tax row
 TOTAL_TOLERANCE = Decimal("0.05")
+# the most a foreign document's CHF total may differ from bexio's own CHF booking on the receivables account
+JOURNAL_TOLERANCE = Decimal("0.05")
+RECEIVABLES = "1100"
 
 
 class Unmapped(Exception):
@@ -128,6 +131,22 @@ def _currency(record, lookups):
         raise Unmapped("no exchange rate for {}".format(code))
     rate, day = rate_at(code, record["is_valid_from"])
     return code, rate, day
+
+
+def _in_chf(record, rate):
+    """The record with its amounts in CHF at bexio's rate, each to the cent: the unit prices, the taxes and the totals.
+
+    A foreign document is booked in CHF, as bexio books it: the receivable account is CHF in ERPNext, and a
+    document must be in the currency of its account. The original amounts go into the remarks.
+    """
+    def chf(value):
+        return None if value is None else float(_cents(_dec(value) * rate))
+
+    positions = [dict(pos, unit_price=chf(pos["unit_price"])) if "unit_price" in pos else pos
+                 for pos in record.get("positions") or []]
+    taxs = [dict(tax_line, value=chf(tax_line["value"])) for tax_line in record.get("taxs") or []]
+    return dict(record, positions=positions, taxs=taxs, total=chf(record.get("total")),
+                total_net=chf(record.get("total_net")), total_taxes=chf(record.get("total_taxes")))
 
 
 def _tax(tax_id, lookups):
@@ -220,6 +239,10 @@ def _document(doctype, record, lookups, credit=False):
         raise Unmapped("contact {} has no Customer".format(record.get("contact_id")))
     included = record.get("mwst_is_net") is False
     currency, rate, rate_day = _currency(record, lookups)
+    foreign = currency != BASE_CURRENCY
+    if foreign:
+        original = record
+        record = _in_chf(record, rate)
     rows, amounts, discount_row = _rows(record, lookups)
     if discount_row and (included or credit):
         raise Unmapped("a document discount with prices including the VAT or on a credit note")
@@ -301,7 +324,7 @@ def _document(doctype, record, lookups, credit=False):
             differences.append("{} {:+}".format(label, diff))
 
     doc = {
-        "doctype": doctype, "company": COMPANY, "currency": currency, "conversion_rate": float(rate),
+        "doctype": doctype, "company": COMPANY, "currency": BASE_CURRENCY, "conversion_rate": 1.0,
         "bexio_id": bexio_id,
         "terms": "\n".join(part for part in (record.get("header"), record.get("footer")) if part),
         "items": rows, "taxes": taxes,
@@ -315,6 +338,10 @@ def _document(doctype, record, lookups, credit=False):
         doc["customer"] = customer
     if doctype == "Sales Invoice":
         remarks = "bexio Nr. {}".format(record.get("document_nr") or "")
+        if foreign:
+            remarks += "; bexio: {} {:.2f} @ {:f}".format(currency, _dec(original["total"]), rate)
+            if rate_day:
+                remarks += " (ECB {})".format(rate_day)
         if uncharged:
             remarks += "; bexio: no VAT charged although positions carry a VAT code"
         doc.update(remarks=remarks,
@@ -340,7 +367,8 @@ def _document(doctype, record, lookups, credit=False):
         for row in taxes:
             row["tax_amount"] = -row["tax_amount"]
     totals = tuple(sign * x for x in (net, tax, target))
-    return doc, differences, totals, rate
+    # the document is in CHF, so its totals are CHF already
+    return doc, differences, totals, ONE
 
 
 def sales_invoice(record, lookups):
@@ -377,8 +405,28 @@ def unknown_fields(doc, metas):
     return sorted(set(found))
 
 
+def _journal_problem(key, record, total, booked):
+    """Why a foreign document is not bexio's own CHF booking on the receivables account, or None when it is."""
+    if key != "invoices":
+        return "a foreign-currency {} is not checked against bexio's journal".format(key)
+    chf = booked.get(("KbInvoice", str(record["id"])))
+    if chf is None:
+        return "bexio's journal has no CHF booking on {} for the invoice".format(RECEIVABLES)
+    if abs(total - chf) > JOURNAL_TOLERANCE:
+        return "CHF total differs from bexio's CHF booking on {} by {:+}".format(RECEIVABLES, total - chf)
+    return None
+
+
 def plan(data, lookups, metas=None):
-    """Map every record of the export. Nothing is written; returns one result per record."""
+    """Map every record of the export. Nothing is written; returns one result per record.
+
+    A foreign document is mapped in CHF and checked against bexio's journal: its CHF total must be the
+    CHF bexio booked on the receivables account for it, within JOURNAL_TOLERANCE, or it is left out.
+    """
+    journal, accounts = data.get("journal", []), data.get("accounts", [])
+    booked = im.booked_chf(journal, accounts, RECEIVABLES)
+    # an invoice without a rate of its own takes the one bexio booked it at, before the ECB's (see _currency)
+    booked_rates = im.booking_rates(journal, accounts, RECEIVABLES, "KbInvoice")
     results = []
     for key, doctype, credit in DOCUMENTS:
         for record in data.get(key, []):
@@ -386,8 +434,14 @@ def plan(data, lookups, metas=None):
             result = {"key": key, "doctype": doctype, "bexio_id": bexio_id, "record": record,
                       "year": str(record.get("is_valid_from") or "????")[:4], "doc": None,
                       "differences": [], "chf": None, "unknown": [], "error": None}
+            if key == "invoices" and not record.get("exchange_rate") and str(record["id"]) in booked_rates:
+                record = dict(record, exchange_rate=booked_rates[str(record["id"])])
             try:
                 doc, differences, totals, rate = _document(doctype, record, lookups, credit)
+                if lookups["currency"].get(str(record.get("currency_id"))) != BASE_CURRENCY:
+                    problem = _journal_problem(key, record, totals[2], booked)
+                    if problem:
+                        raise Unmapped(problem)
             except Unmapped as err:
                 result["error"] = str(err)
             else:
@@ -401,7 +455,7 @@ def plan(data, lookups, metas=None):
 def load_documents(path):
     """The export's documents and currencies; a file the export does not have is left out."""
     data = {}
-    for name in [key for key, _doctype, _credit in DOCUMENTS] + ["currencies"]:
+    for name in [key for key, _doctype, _credit in DOCUMENTS] + ["currencies", "accounts", "journal"]:
         file = os.path.join(path, name + ".json")
         if os.path.exists(file):
             with open(file, encoding="utf-8") as f:
@@ -479,12 +533,13 @@ def summary(results, lookups):
 
 
 def write_drafts(results, path):
-    """The mapped invoices and credit notes as the loader takes them, with the ECB rates they use, into the private file.
+    """The mapped invoices and credit notes as the loader takes them, into the private file; returns their number.
 
     Each draft is named by bexio's document number, which is its ERPNext name; the loader inserts it as a draft
-    (docstatus 0), so nothing posts. The rates go in as Currency Exchange records, so the source is visible.
+    (docstatus 0), so nothing posts. A foreign document is in CHF already, so no exchange rate is handed over:
+    the Currency Exchange records that an ECB rate needed are there from its own run.
     """
-    documents, rates = [], {}
+    documents = []
     for r in results:
         if r["doc"] is None or r["key"] not in APPLY_FILES:
             continue
@@ -492,12 +547,8 @@ def write_drafts(results, path):
         doctype = doc.pop("doctype")
         documents.append({"doctype": doctype, "name": str(r["record"]["document_nr"]), "bexio_id": r["bexio_id"],
                           "values": doc})
-        if doc["currency"] != BASE_CURRENCY and not r["record"].get("exchange_rate"):
-            rates[(r["record"]["is_valid_from"], doc["currency"])] = doc["conversion_rate"]
-    exchange = [{"date": day, "from": code, "to": BASE_CURRENCY, "rate": rate}
-                for (day, code), rate in sorted(rates.items())]
-    write_private(path, json.dumps({"documents": documents, "exchange_rates": exchange}, indent=1))
-    return len(documents), len(exchange)
+    write_private(path, json.dumps({"documents": documents, "exchange_rates": []}, indent=1))
+    return len(documents)
 
 
 def write_private(path, text):
@@ -552,9 +603,9 @@ def main(argv):
         f.write("\n".join(lines) + ("\n" if lines else ""))
     if args.apply:
         path = os.path.join(im.PRIVATE, DRAFTS_FILE)
-        documents, rates = write_drafts(results, path)
-        print("{} drafts and {} exchange rates handed to the loader; {} lines of differences or unmapped records in {}".format(
-            documents, rates, len(lines), args.report))
+        documents = write_drafts(results, path)
+        print("{} drafts handed to the loader; {} lines of differences or unmapped records in {}".format(
+            documents, len(lines), args.report))
         subprocess.run(["sh", LOADER, path], check=True)
     else:
         print("dry run: nothing was written; {} lines of differences or unmapped records in {}".format(len(lines), args.report))

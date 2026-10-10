@@ -60,6 +60,7 @@ ITEM = "bexio Aufwand"
 BASE_CURRENCY = "CHF"
 CENT = Decimal("0.01")
 ZERO = Decimal("0")
+ONE = Decimal("1")
 ATTACHMENTS_FIELD = "bexio_attachment_ids"  # not a field of ERPNext's Purchase Invoice yet: an insert must drop it
 DETAIL_FILE = "bills-detail.json"
 EXPENSES_FILE = "expenses.json"
@@ -68,6 +69,9 @@ DRAFTS_FILE = "bexio-purchase-drafts.json"
 LOADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "bexio-drafts.sh")
 # the most a line's VAT may differ from its rate worked out on the net
 TAX_TOLERANCE = Decimal("0.05")
+# the most a foreign bill's CHF total may differ from bexio's own CHF booking on the payables account
+JOURNAL_TOLERANCE = Decimal("0.05")
+PAYABLES = "2000"
 
 # bexio purchase VAT codes: the Vorsteuer account by the kind of cost
 MAT_SV_IDS = (22, 35, 8, 34, 21, 36)  # VM77, VM81, VM25, VM26, VM37, VM38: Material und Dienstleistungen
@@ -189,7 +193,12 @@ def _lines_of(bill):
 
 
 def map_bill(bill, lookups):
-    """The Purchase Invoice dict for one bexio bill; raises MappingError when a part has no home."""
+    """The Purchase Invoice dict for one bexio bill; raises MappingError when a part has no home.
+
+    A foreign bill is booked in CHF, as bexio books it: each line and each tax is converted at bexio's rate to the
+    cent, and the original currency and amount go into the remarks. The payables account is CHF in ERPNext, and a
+    document must be in the currency of its account.
+    """
     lines_in = _lines_of(bill)
     if not lines_in:
         raise MappingError("no positions in the export")
@@ -200,6 +209,11 @@ def map_bill(bill, lookups):
     currency = bill["currency_code"]
     if currency != BASE_CURRENCY and not bill.get("exchange_rate"):
         raise MappingError("no exchange rate for {}".format(currency))
+    rate_of_exchange = _money(bill["exchange_rate"]) if currency != BASE_CURRENCY else ONE
+
+    def chf(amount):
+        return amount if currency == BASE_CURRENCY else (amount * rate_of_exchange).quantize(CENT, rounding=ROUND_HALF_UP)
+
     lines, taxes = [], {}
     for line in lines_in:
         expense = lookups.accounts.get(str(line["account_id"]))
@@ -208,7 +222,7 @@ def map_bill(bill, lookups):
         net = line["net"]
         lines.append(({
             "item_code": ITEM, "item_name": ITEM, "description": line["text"] or ITEM, "uom": "Nos",
-            "qty": 1.0, "rate": float(net), "amount": float(net), "expense_account": expense,
+            "qty": 1.0, "rate": float(chf(net)), "amount": float(chf(net)), "expense_account": expense,
         }, net))
         rate, kind, account = line_vat(line["tax_id"])
         if rate == 0:
@@ -229,12 +243,25 @@ def map_bill(bill, lookups):
             if not deduction:
                 raise MappingError("no Account {} in ERPNext".format(BEZUGSTEUER))
             for key in ((account_name, template, "Add"), (deduction, template, "Deduct")):
-                taxes[key] = taxes.get(key, ZERO) + tax
+                taxes[key] = taxes.get(key, ZERO) + chf(tax)
             continue
         key = (account_name, template, "Add")
-        taxes[key] = taxes.get(key, ZERO) + tax
-    rate_of_exchange = 1.0 if currency == BASE_CURRENCY else float(bill["exchange_rate"])
-    return _document(bill["id"], bill, supplier, currency, rate_of_exchange, lines, taxes)
+        taxes[key] = taxes.get(key, ZERO) + chf(tax)
+    doc = _document(bill["id"], bill, supplier, BASE_CURRENCY, 1.0, lines, taxes)
+    if currency != BASE_CURRENCY:
+        doc["remarks"] = "bexio: {} {:.2f} @ {:f}".format(currency, _money(bill["gross"]), rate_of_exchange)
+    return doc
+
+
+def journal_problem(bill, total, booked):
+    """Why a foreign bill's CHF total is not bexio's own CHF booking on the payables account, or None when it is."""
+    chf = booked.get(("KbBill", str(bill["id"])))
+    if chf is None:
+        return "bexio's journal has no CHF booking on {} for the bill".format(PAYABLES)
+    # the payables account is credited: its booking is the negative of the debit-positive sum
+    if abs(total + chf) > JOURNAL_TOLERANCE:
+        return "CHF total differs from bexio's CHF booking on {} by {:+}".format(PAYABLES, total + chf)
+    return None
 
 
 def map_expense(expense, lookups):
@@ -264,16 +291,20 @@ def document_totals(doc):
     return net, tax, net + tax
 
 
-def drafts(bills, lookups):
+def drafts(bills, lookups, booked):
     """The bills that map and whose total is bexio's, as the loader takes them: each named by bexio's document
-    number, its ERPNext name. A bill whose total differs is left out; the dry run lists it."""
+    number, its ERPNext name. A bill whose total differs is left out; the dry run lists it. A foreign bill's
+    total is checked against bexio's CHF booking (booked, from import_master.booked_chf) instead."""
     out, names = [], set()
     for bill in bills:
         try:
             doc = map_bill(bill, lookups)
         except MappingError:
             continue
-        if document_totals(doc)[2] != _money(bill["gross"]):
+        if bill["currency_code"] != BASE_CURRENCY:
+            if journal_problem(bill, document_totals(doc)[2], booked):
+                continue
+        elif document_totals(doc)[2] != _money(bill["gross"]):
             continue
         name = str(bill["document_no"])
         if name in names:
@@ -298,8 +329,10 @@ class Totals:
         })
 
 
-def dry_run(bills, expenses, lookups):
-    """Map every record and compare the totals with bexio's; writes nothing. Returns the Totals."""
+def dry_run(bills, expenses, lookups, booked):
+    """Map every record and compare the totals with bexio's; writes nothing. Returns the Totals.
+
+    A foreign bill's ERPNext totals are in CHF, so they are compared with bexio's CHF booking, not with its own totals."""
     totals = Totals()
     for kind, records, mapper in (("bill", bills, map_bill), ("expense", expenses, map_expense)):
         for rec in records:
@@ -327,7 +360,12 @@ def dry_run(bills, expenses, lookups):
             row["erp_net"] += erp_net
             row["erp_tax"] += erp_tax
             row["erp_gross"] += erp_gross
-            if (erp_net, erp_tax, erp_gross) != (net, gross - net, gross):
+            if kind == "bill" and rec["currency_code"] != BASE_CURRENCY:
+                problem = journal_problem(rec, erp_gross, booked)
+                if problem:
+                    row["differ"] += 1
+                    totals.problems.append("{}: differs, {}".format(ref, problem))
+            elif (erp_net, erp_tax, erp_gross) != (net, gross - net, gross):
                 row["differ"] += 1
                 totals.problems.append("{}: differs, bexio {} {} {} against ERPNext {} {} {}".format(
                     ref, net, gross - net, gross, erp_net, erp_tax, erp_gross))
@@ -348,6 +386,7 @@ def report(totals, export_dir):
         lines.append("{:<6}{:<5}{:>8}{:>8}{:>9}{:>9}{:>9}{:>14}{:>12}{:>14}{:>10}".format(
             year, currency, r["records"], r["mapped"], r["skipped"], r["unmapped"], r["differ"],
             r["net"], r["tax"], r["gross"], r["erp_gross"]))
+    lines.append("a row in a foreign currency: bexio's columns are in that currency; erp gross is CHF, checked against bexio's CHF booking")
     lines.append("dry run: nothing was written")
     return "\n".join(lines)
 
@@ -370,6 +409,20 @@ def load_records(export_dir):
     return bills, expenses
 
 
+def load_booked(export_dir):
+    """What bexio's journal books in CHF on the payables account, per bill (import_master.booked_chf).
+
+    Without a journal in the export there is no booking to check a foreign bill against: none is booked, and
+    such a bill is left out."""
+    loaded = {}
+    for name in ("journal", "accounts"):
+        path = os.path.join(export_dir, name + ".json")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                loaded[name] = json.load(f)
+    return im.booked_chf(loaded.get("journal", []), loaded.get("accounts", []), PAYABLES)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="Map the bexio purchase bills to ERPNext Purchase Invoices (a dry run by default).")
     parser.add_argument("--export", default=None, help="export directory (default: the newest under <private>/bexio-export/)")
@@ -386,14 +439,15 @@ def main(argv):
     except im.ErpError as err:
         print("aborted: {}".format(err), file=sys.stderr)
         return 2
-    totals = dry_run(bills, expenses, lookups)
+    booked = load_booked(export_dir)
+    totals = dry_run(bills, expenses, lookups, booked)
     print(report(totals, export_dir))
     if totals.problems:
         write_private(os.path.join(im.PRIVATE, PROBLEMS_FILE), totals.problems)
         print("{} record(s) listed by bexio id in {}".format(len(totals.problems), os.path.join(im.PRIVATE, PROBLEMS_FILE)), file=sys.stderr)
     if args.apply:
         path = os.path.join(im.PRIVATE, DRAFTS_FILE)
-        documents = drafts(bills, lookups)
+        documents = drafts(bills, lookups, booked)
         write_private(path, [json.dumps({"documents": documents, "exchange_rates": []}, indent=1)])
         print("{} bills handed to the loader, in {}".format(len(documents), path))
         subprocess.run(["sh", LOADER, path], check=True)

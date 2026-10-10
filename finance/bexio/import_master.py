@@ -31,6 +31,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from decimal import Decimal
 
 PRIVATE = "/Users/bsaladin/ws_yardr_finance/private"
 TOKEN_FILE = "/Users/bsaladin/ws_yardr_finance/.erpnext-api"
@@ -162,6 +163,42 @@ def load_export(path):
         with open(os.path.join(path, name + ".json"), encoding="utf-8") as f:
             data[name] = json.load(f)
     return data
+
+
+def booked_chf(journal, accounts, account_no):
+    """What bexio's journal books in CHF on an account, per document: {(ref_class, ref): Decimal}, a debit positive.
+
+    A journal line gives its amount in the currency of the document and its base_currency_amount in CHF; the
+    lines of a document carry its ref_class and its ref (ref_uuid for a bill, ref_id for an invoice).
+    """
+    numbers = {str(a["id"]): str(a["account_no"]) for a in accounts}
+    booked = {}
+    for line in journal:
+        if not line.get("ref_class"):
+            continue
+        key = (line["ref_class"], str(line.get("ref_uuid") or line.get("ref_id")))
+        base = Decimal(str(line.get("base_currency_amount") or 0))
+        if numbers.get(str(line["debit_account_id"])) == account_no:
+            booked[key] = booked.get(key, Decimal("0")) + base
+        if numbers.get(str(line["credit_account_id"])) == account_no:
+            booked[key] = booked.get(key, Decimal("0")) - base
+    return booked
+
+
+def booking_rates(journal, accounts, account_no, ref_class):
+    """The exchange rate bexio booked each document of ref_class at, from its lines on an account: {ref: rate text}.
+
+    A journal line carries the currency_factor it was booked with, which is the exchange rate of the document
+    (a bill's exchange_rate is the same figure). A document with no such line has no rate here.
+    """
+    numbers = {str(a["id"]): str(a["account_no"]) for a in accounts}
+    rates = {}
+    for line in journal:
+        if line.get("ref_class") != ref_class or not line.get("currency_factor"):
+            continue
+        if account_no in (numbers.get(str(line["debit_account_id"])), numbers.get(str(line["credit_account_id"]))):
+            rates.setdefault(str(line.get("ref_uuid") or line.get("ref_id")), str(line["currency_factor"]))
+    return rates
 
 
 def norm(value):
