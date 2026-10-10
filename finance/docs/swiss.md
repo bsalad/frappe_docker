@@ -190,3 +190,49 @@ Build result: see the bead note.
    EBICS connection disabled until a test on a bank test environment.
 7. **Migration.** The app adds custom fields and workspaces on install and
    migrate. Install only on a copy of the site, after a backup (later bead).
+
+## Known issues in pin 5d85c45 (2026-10-10)
+
+The pin is the head of upstream's `v16` branch today (`git ls-remote`, 2026-10-10),
+so there is no fixed commit to bump to. Found on the images `bi9` and `bi10` (the
+live site runs `bi10`) and on the HRMS copy image `hrms1`.
+
+| # | Where (erpnextswiss 1.34.1) | Finding | Effect on us |
+| --- | --- | --- | --- |
+| 1 | `erpnextswiss/scripts/item_tools.py` line 43 | Stray comma after a SQL string: `SyntaxError: invalid syntax`. | None at runtime. The module is a maintenance script, not hooked, and nothing we use imports it. It breaks erpnextswiss's own test discovery and `test_item_cleanup_native`. |
+| 2 | `tests/test_ebics_automation` | 6 of 33 tests error, `ImportError: not properly registered`. | None. EBICS stays disabled (Risks 6). erpnextswiss's own tests are not part of our gate. |
+| 3 | `tests/test_workspace_routes_native` | 2 of 7 tests error: `Schweizer Buchhaltung is an archive of the previous navigation and can no longer be edited`. | None. The archived workspace is not used. |
+
+**Confirmed (read-only):** item 1 on `bi9`, `bi10` and `hrms1` with `py_compile`
+(all three fail the same way). Items 2 and 3 were run on `hrms1` only, on a throwaway
+site inside the copy stack (`erp-q38s` review, 2026-10-10: 64 of 76 test modules pass).
+Not compared on `bi9`: no site without HRMS was built for it. The errors do not name
+HRMS, so it is likely they also fail without it, but that is not shown.
+
+**Does anything we use import item_tools?** No. Searched the image's apps for
+`item_tools`: `hooks.py`, the whitelisted methods, page and doctype code do not
+reference it. The hits are `test_item_cleanup_native` (imports it), a
+security test that reads the file, and a verifier script that names it as a string.
+The `bi_finance` app does not import it.
+
+**Repro** (image `frappe-finance-custom:v16.50.0-swiss-bi9`, read-only, `--rm`):
+
+```sh
+docker run --rm --entrypoint python3 frappe-finance-custom:v16.50.0-swiss-bi9 \
+  -m py_compile /home/frappe/frappe-bench/apps/erpnextswiss/erpnextswiss/scripts/item_tools.py
+```
+
+Expected: `SyntaxError: invalid syntax` at line 43, exit 1. The test modules were run per
+module on a throwaway site in the copy stack (`bench --site <throwaway> run-tests --module <m>`),
+then the site was dropped.
+
+**Policy.**
+
+- No vendor patch in the image. We do not edit erpnextswiss in the Containerfile or
+  in a layer. A patched copy would no longer match the pin.
+- Bump the pin when upstream fixes it. At each image build, check the branch:
+  `git ls-remote https://github.com/libracore/erpnextswiss refs/heads/v16`. The build
+  script already stops when the branch has moved from the pin. A fix is a new commit,
+  so treat the bump as a full test (Risks 4).
+- The upstream bug report for item 1 is drafted in
+  `finance/docs/erpnextswiss-upstream-report.md`. It is not posted; Benchi decides.
