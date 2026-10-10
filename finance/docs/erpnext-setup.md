@@ -191,7 +191,10 @@ the as-of date, or the latest one before it. ERPNext fills that table from its r
 (Currency Exchange Settings, frankfurter.dev); the report never fetches a rate. A missing
 rate leaves that account's CHF value out, and the report says so. The hooks of bi_finance
 list the two doctypes (`importable_doctypes`), since Frappe syncs only its own cards and
-charts from the module folders.
+charts from the module folders. Those folders (`workspace/`, `number_card/`,
+`dashboard_chart/`, `report/`, `doctype/`) sit in `finance/apps/bi_finance/bi_finance/bi_finance/`:
+Frappe reads module "BI Finance" from `<package>/bi_finance`. In bi7 they sat one level higher,
+and migrate found no Treasury; bi8 moves them (`test_treasury`, Layout, checks the place).
 
 ## Switching the stack to a new image
 
