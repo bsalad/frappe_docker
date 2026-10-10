@@ -200,6 +200,7 @@ class Submit(unittest.TestCase):
                                              store, submit=True)
         self.assertEqual(counts[("Sales Invoice", "failed")], 1)
         self.assertEqual(counts[("Sales Invoice", "submitted")], 1)
+        self.assertEqual(counts[("Sales Invoice", "created")], 1)  # the rolled-back one is not also "created"
         self.assertEqual(store.rollbacks, 1)
         self.assertEqual([(dt, bid) for dt, bid, _ in failures], [("Sales Invoice", "500")])
         self.assertEqual(store.docs[("Sales Invoice", "RE-1002")]["docstatus"], 1)

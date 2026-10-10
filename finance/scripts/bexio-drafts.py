@@ -107,14 +107,18 @@ def apply_plan(plan, store, submit=False):
     for item in documents:
         try:
             status, name = load_document(item, store)
-            counts[(item["doctype"], status)] += 1
+            after = None
             if submit and status != "skipped":
                 if str(item["bexio_id"]) in keep_draft:
-                    counts[(item["doctype"], "kept draft")] += 1
+                    after = "kept draft"
                 else:
                     store.submit(item["doctype"], name)
-                    counts[(item["doctype"], "submitted")] += 1
+                    after = "submitted"
             store.commit()
+            # counted only once the document is committed, so a rolled-back one is a failure and nothing else
+            counts[(item["doctype"], status)] += 1
+            if after:
+                counts[(item["doctype"], after)] += 1
         except Exception as err:  # one document's failure must not stop the others; it is listed by bexio id
             store.rollback()
             counts[(item["doctype"], "failed")] += 1
