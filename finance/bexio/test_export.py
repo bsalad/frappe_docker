@@ -385,6 +385,12 @@ class PayrollExportTest(unittest.TestCase):
         self.assertNotIn("by_month", manifest["entities"]["paystubs"])
         self.assertEqual(export.failed_required(manifest), [])
 
+    def test_a_failed_entity_removes_its_file_from_an_earlier_run(self):
+        export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
+        export.export_payroll(payroll_client(missing={export.PAYROLL_PAYSTUBS_OVERVIEW}), self.out, [2026],
+                              today=PAYROLL_TODAY)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "paystubs_overview.json")))
+
     def test_a_rerun_gives_the_same_manifest_and_files(self):
         first = export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
         second = export.export_payroll(payroll_client(), self.out, [2026], today=PAYROLL_TODAY)
