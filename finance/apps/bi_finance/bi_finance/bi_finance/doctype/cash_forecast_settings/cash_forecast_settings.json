@@ -1,0 +1,56 @@
+{
+ "actions": [],
+ "creation": "2026-10-10 17:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "note",
+  "expected_monthly_payroll",
+  "manual_lines"
+ ],
+ "fields": [
+  {
+   "fieldname": "note",
+   "fieldtype": "HTML",
+   "options": "<p>The 13-week Cash Flow Forecast takes the payroll from the trailing mean of the last three salary months. Two inputs the books cannot supply replace or add to it: the expected monthly payroll (empty keeps the trailing mean) and dated one-off lines for known events in the horizon. Both are read on each forecast run; nothing here is written back to bexio.</p>"
+  },
+  {
+   "description": "The payroll outflow of a month, in the company currency. Empty: the trailing mean of the salary accounts is used. Set: each salary run in the horizon takes this amount.",
+   "fieldname": "expected_monthly_payroll",
+   "fieldtype": "Currency",
+   "label": "Expected monthly payroll"
+  },
+  {
+   "description": "A dated amount for a known event inside the horizon: a one-off payment or receipt, in or out. A line on the as-of date or before it is not in the forecast, as a salary run on that day is not.",
+   "fieldname": "manual_lines",
+   "fieldtype": "Table",
+   "label": "Manual lines",
+   "options": "Cash Forecast Manual Line"
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-10 17:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "BI Finance",
+ "name": "Cash Forecast Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 0,
+   "export": 0,
+   "print": 0,
+   "read": 1,
+   "report": 0,
+   "role": "System Manager",
+   "share": 0,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

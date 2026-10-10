@@ -364,6 +364,53 @@ class Forecast(unittest.TestCase):
         self.assertEqual([line.get("week") for line in lines], [1, 1, 2, None])
 
 
+class ManualInputs(unittest.TestCase):
+    END = cf.horizon_end(AS_OF)
+
+    def test_a_set_payroll_level_replaces_the_trailing_basis(self):
+        self.assertEqual(cf.payroll_level(5000.0, 4200.0), 5000.0)
+
+    def test_an_empty_or_zero_payroll_level_keeps_the_trailing_basis(self):
+        self.assertEqual(cf.payroll_level(None, 4200.0), 4200.0)
+        self.assertEqual(cf.payroll_level(0.0, 4200.0), 4200.0)
+
+    def test_a_set_level_is_the_payroll_when_there_are_no_postings(self):
+        self.assertEqual(cf.payroll_level(5000.0, None), 5000.0)
+
+    def test_no_level_and_no_postings_is_no_payroll(self):
+        self.assertIsNone(cf.payroll_level(None, None))
+
+    def test_an_inflow_is_positive_and_an_outflow_negative(self):
+        self.assertEqual(cf.manual_amount("In", 250.0), 250.0)
+        self.assertEqual(cf.manual_amount("Out", 250.0), -250.0)
+
+    def test_a_line_counts_after_the_as_of_date_up_to_the_horizon_end(self):
+        self.assertTrue(cf.manual_day_in_window(AS_OF + datetime.timedelta(days=1), AS_OF, self.END))
+        self.assertTrue(cf.manual_day_in_window(self.END, AS_OF, self.END))
+
+    def test_a_line_on_the_as_of_date_is_not_in_the_forecast(self):
+        self.assertFalse(cf.manual_day_in_window(AS_OF, AS_OF, self.END))
+
+    def test_a_line_before_or_after_the_horizon_is_not_in_the_forecast(self):
+        self.assertFalse(cf.manual_day_in_window(AS_OF - datetime.timedelta(days=1), AS_OF, self.END))
+        self.assertFalse(cf.manual_day_in_window(self.END + datetime.timedelta(days=1), AS_OF, self.END))
+
+    def manual(self, day, amount):
+        return {"kind": cf.MANUAL, "day": day, "amount": amount, "party": "", "doctype": "", "name": "", "note": ""}
+
+    def test_a_manual_line_is_its_own_source_and_nets_into_the_balance(self):
+        lines = [self.manual(AS_OF + datetime.timedelta(days=3), -300.0),
+                 {"kind": "receipt", "day": AS_OF + datetime.timedelta(days=3), "amount": 500.0,
+                  "party": "", "doctype": "", "name": "", "note": ""}]
+        weeks, _lowest, _beyond = cf.forecast(AS_OF, 1000.0, lines)
+        self.assertEqual((weeks[0]["manual"], weeks[0]["net"], weeks[0]["closing"]), (-300.0, 200.0, 1200.0))
+        self.assertEqual(weeks[1]["manual"], 0.0)
+
+    def test_an_inflow_line_comes_in_its_week(self):
+        weeks, _lowest, _beyond = cf.forecast(AS_OF, 1000.0, [self.manual(AS_OF + datetime.timedelta(days=20), 400.0)])
+        self.assertEqual((weeks[2]["manual"], weeks[2]["net"], weeks[2]["closing"]), (400.0, 400.0, 1400.0))
+
+
 def paid_in_window(days_back, amount, paid_back=None):
     """A payment of an invoice issued days_back days before as-of and paid paid_back days before (the same window by default)."""
     issued = AS_OF - datetime.timedelta(days=days_back)

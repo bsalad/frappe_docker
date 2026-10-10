@@ -17,6 +17,7 @@ from unittest import mock
 
 from bi_finance import cash_forecast as cf
 from bi_finance.bi_finance.report.cash_flow_forecast import cash_flow_forecast as cff
+from bi_finance.bi_finance.report.cash_flow_forecast_lines import cash_flow_forecast_lines as cffl
 
 D = datetime.date
 AS_OF = D(2026, 10, 10)
@@ -250,7 +251,7 @@ class NewSalesRunRate(unittest.TestCase):
     def patch_readers(self, stack, payments):
         # every read of the books stubbed to nothing but the opening cash and the new sales receipts
         stubs = {
-            "opening_cash": 1000.0, "open_documents": {}, "paid_history": {},
+            "opening_cash": 1000.0, "manual_inputs": (0.0, []), "open_documents": {}, "paid_history": {},
             "recurring_sources": {"bills": [], "bank": [], "contra": [], "contra_not_modelled": {}},
             "personnel_postings": [], "vat_balances": {},
             "vat_paid_since": 0.0, "sales_paid_in_windows": payments, "purchase_paid_in_windows": [],
@@ -446,7 +447,7 @@ class NewPurchasesRunRate(LedgerFixture):
         bills = [{"supplier": supplier, "amount": 900.0, "period": "monthly", "count": 3, "last_bill": "PI-HIST"}
                  for supplier in recurring]
         stubs = {
-            "opening_cash": 1000.0, "open_documents": {}, "paid_history": {}, "sales_paid_in_windows": [],
+            "opening_cash": 1000.0, "manual_inputs": (0.0, []), "open_documents": {}, "paid_history": {}, "sales_paid_in_windows": [],
             "recurring_sources": {"bills": bills, "bank": [], "contra": [], "contra_not_modelled": {}},
             "personnel_postings": [], "vat_balances": {},
             "vat_paid_since": 0.0, "insurer_suppliers": set(insurers),
@@ -484,7 +485,7 @@ class NewPurchasesRunRate(LedgerFixture):
 
         def run(filters):
             with contextlib.ExitStack() as stack:
-                stubs = {"opening_cash": 1000.0, "open_documents": {}, "paid_history": {}, "sales_paid_in_windows": [],
+                stubs = {"opening_cash": 1000.0, "manual_inputs": (0.0, []), "open_documents": {}, "paid_history": {}, "sales_paid_in_windows": [],
                          "recurring_sources": {"bills": [], "bank": [], "contra": [], "contra_not_modelled": {}},
                          "personnel_postings": [], "vat_balances": {},
                          "vat_paid_since": 0.0, "insurer_suppliers": set()}
@@ -569,7 +570,7 @@ class OpenDocuments(LedgerFixture):
     def compute(self, recurring):
         item = {"supplier": "Test Supplier", "amount": 40.0, "period": "monthly", "count": 3, "last_bill": "PI-HIST"}
         stubs = {
-            "opening_cash": 1000.0, "paid_history": {}, "sales_paid_in_windows": [],
+            "opening_cash": 1000.0, "manual_inputs": (0.0, []), "paid_history": {}, "sales_paid_in_windows": [],
             "recurring_sources": {"bills": [item], "bank": [], "contra": [], "contra_not_modelled": {}},
             "personnel_postings": [], "vat_balances": {},
             "vat_paid_since": 0.0,
@@ -580,6 +581,99 @@ class OpenDocuments(LedgerFixture):
             stack.enter_context(mock.patch.object(cf, "recurring_dates", return_value=recurring))
             stack.enter_context(mock.patch.object(cff, "_", lambda text: text))
             return cff.compute("Test Company", AS_OF, include_run_rate=False, include_new_purchases=False)
+
+
+class ManualInputsAndPayroll(unittest.TestCase):
+    # the Cash Forecast Settings: the expected payroll and the dated manual lines, with the books stubbed. The trailing
+    # three salary months are July to September at 3000 each, so the trailing basis is 3000 a month.
+    @contextlib.contextmanager
+    def books(self, expected=0.0, manual=()):
+        postings = [(D(2026, month, 25), "5000", 3000.0) for month in (7, 8, 9)]
+        stubs = {
+            "opening_cash": 1000.0, "open_documents": {}, "paid_history": {},
+            "recurring_sources": {"bills": [], "bank": [], "contra": [], "contra_not_modelled": {}},
+            "personnel_postings": postings, "vat_balances": {}, "vat_paid_since": 0.0,
+            "sales_paid_in_windows": [], "purchase_paid_in_windows": [], "insurer_suppliers": set(),
+            "manual_inputs": (expected, list(manual)),
+        }
+        with contextlib.ExitStack() as stack:
+            for name, value in stubs.items():
+                stack.enter_context(mock.patch.object(cff, name, return_value=value))
+            stack.enter_context(mock.patch.object(cff, "_", lambda text: text))  # no site, so no translations
+            stack.enter_context(mock.patch.object(cff, "fmt_money", side_effect=money))
+            stack.enter_context(mock.patch.object(cff.frappe, "get_cached_value", return_value="CHF"))
+            yield
+
+    def manual_rows(self):
+        return [
+            types.SimpleNamespace(name="MLINE-AS-OF", date=AS_OF, direction="Out", amount=200.0,
+                                  label="Invented on the as-of day", account=None),
+            types.SimpleNamespace(name="MLINE-OUT", date=D(2026, 10, 20), direction="Out", amount=200.0,
+                                  label="Invented payment", account=None),
+            types.SimpleNamespace(name="MLINE-IN", date=D(2026, 11, 20), direction="In", amount=700.0,
+                                  label="Invented receipt", account="Test Account - TC"),
+            types.SimpleNamespace(name="MLINE-LATE", date=D(2027, 2, 1), direction="Out", amount=900.0,
+                                  label="Invented after the horizon", account=None),
+        ]
+
+    def payroll(self, result):
+        return [(line["day"], line["amount"], line["note"]) for line in result["lines"] if line["kind"] == "payroll"]
+
+    def test_the_trailing_mean_is_the_payroll_when_no_level_is_set(self):
+        with self.books():
+            result = cff.compute("Test Company", AS_OF)
+        runs = self.payroll(result)
+        self.assertEqual([amount for _day, amount, _note in runs], [3000.0, 3000.0, 3000.0])
+        self.assertFalse(any("payroll from settings" in note for _day, _amount, note in runs))
+        self.assertFalse(result["expected_payroll"])
+
+    def test_a_set_level_takes_each_salary_run_in_the_horizon(self):
+        with self.books(expected=4500.0):
+            result = cff.compute("Test Company", AS_OF)
+        runs = self.payroll(result)
+        self.assertEqual([(day, amount) for day, amount, _note in runs],
+                         [(D(2026, 10, 30), 4500.0), (D(2026, 11, 30), 4500.0), (D(2026, 12, 31), 4500.0)])
+        self.assertTrue(all(note.startswith("payroll from settings") for _day, _amount, note in runs))
+        self.assertEqual(result["expected_payroll"], 4500.0)
+
+    def test_a_manual_line_inside_the_window_is_one_line_of_its_own(self):
+        with self.books(manual=self.manual_rows()):
+            result = cff.compute("Test Company", AS_OF)
+        manual = [line for line in result["lines"] if line["kind"] == cf.MANUAL]
+        self.assertEqual([(line["day"], line["amount"], line["party"], line["name"]) for line in manual],
+                         [(D(2026, 10, 20), -200.0, "Invented payment", "MLINE-OUT"),
+                          (D(2026, 11, 20), 700.0, "Invented receipt", "MLINE-IN")])
+        self.assertIn("Test Account - TC", manual[1]["note"])
+        self.assertEqual(result["weeks"][1]["manual"], -200.0)
+        self.assertEqual(result["weeks"][5]["manual"], 700.0)
+
+    def test_a_manual_line_on_the_as_of_day_or_after_the_horizon_is_not_in_the_forecast(self):
+        with self.books(manual=self.manual_rows()):
+            result = cff.compute("Test Company", AS_OF)
+        names = {line["name"] for line in result["lines"] if line["kind"] == cf.MANUAL}
+        self.assertNotIn("MLINE-AS-OF", names)
+        self.assertNotIn("MLINE-LATE", names)
+
+    def test_the_lines_report_shows_a_manual_line_signed_as_entered(self):
+        with self.books(manual=self.manual_rows()):
+            _columns, rows, _message = cffl.execute({"company": "Test Company", "as_of_date": AS_OF})
+        self.assertEqual([(row["expected"], row["amount"], row["type"]) for row in rows if row["type"] == "Manual input"],
+                         [(D(2026, 10, 20), -200.0, "Manual input"), (D(2026, 11, 20), 700.0, "Manual input")])
+
+    def test_the_manual_column_shows_only_when_there_are_manual_lines(self):
+        filters = {"company": "Test Company", "as_of_date": AS_OF}
+        with self.books(manual=self.manual_rows()):
+            columns, rows, _message, _chart, _summary = cff.execute(filters)
+        self.assertIn("manual", [column["fieldname"] for column in columns])
+        self.assertEqual(sum(row["manual"] for row in rows), 500.0)
+        with self.books():
+            columns, _rows, _message, _chart, _summary = cff.execute(filters)
+        self.assertNotIn("manual", [column["fieldname"] for column in columns])
+
+    def test_the_report_message_says_the_payroll_is_from_settings(self):
+        with self.books(expected=4500.0):
+            _columns, _rows, message, _chart, _summary = cff.execute({"company": "Test Company", "as_of_date": AS_OF})
+        self.assertIn("Payroll is from settings: 4500.00 CHF a month", message)
 
 
 class OwnerAccounts(unittest.TestCase):
@@ -593,7 +687,7 @@ class OwnerAccounts(unittest.TestCase):
             contra("2010", "2010 Invented Card Settlement - TC", 800.0),
             contra("2100", "2100 Invented Owner Account - TC", 500.0)]}
         stubs = {
-            "opening_cash": 1000.0, "open_documents": {}, "paid_history": {}, "recurring_sources": sources,
+            "opening_cash": 1000.0, "manual_inputs": (0.0, []), "open_documents": {}, "paid_history": {}, "recurring_sources": sources,
             "personnel_postings": [], "vat_balances": {}, "vat_paid_since": 0.0, "sales_paid_in_windows": [],
         }
         with contextlib.ExitStack() as stack:

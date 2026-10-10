@@ -32,7 +32,10 @@ The dates and sums are in bi_finance/cash_forecast.py. This module reads the boo
     (2100, 2121) are labelled "(average, discretionary)" and can be left out by a filter;
 - payroll: the salary accounts 5000 to 5099 of the last year (not the 57xx social contributions nor the 58xx other
   personnel costs: those are bills or bank lines), the average of the last three months, paid on the last day of
-  the month (the Friday before when that is a weekend);
+  the month (the Friday before when that is a weekend); the expected monthly payroll of the Cash Forecast Settings
+  replaces that average when it is set;
+- manual: the dated one-off lines of the Cash Forecast Settings, in or out, inside the horizon (after the as-of date);
+  one line each, with its label, and a column of its own that shows only when there are lines;
 - VAT: the balance of 2200 and 2202 less 1170 to 1172, split at the start of the current quarter: the quarter closed
   last is paid on its due date, the current quarter's VAT so far is projected on its own due date; a refund comes
   in 30 days after the due date.
@@ -62,6 +65,7 @@ def kind_label(kind):
         "recurring": _("Recurring cost"),
         "payroll": _("Payroll"),
         "vat": _("VAT"),
+        cf.MANUAL: _("Manual input"),
     }[kind]
 
 
@@ -445,6 +449,13 @@ def dry_run(company=None, as_of=None):
     }
 
 
+def manual_inputs():
+    """(expected monthly payroll, manual lines) of the Cash Forecast Settings: the level is 0 when it is empty, the lines
+    are the child rows (date, direction, amount, label, account)."""
+    settings = frappe.get_single("Cash Forecast Settings")
+    return flt(settings.expected_monthly_payroll), settings.get("manual_lines") or []
+
+
 def line(kind, day, amount, party, doctype, name, note):
     return {"kind": kind, "day": day, "amount": round(amount, 2), "party": party,
             "doctype": doctype, "name": name, "note": note}
@@ -521,12 +532,23 @@ def compute(company, as_of, include_run_rate=True, include_new_purchases=True, i
             note = _("{0}, {1} journal entries to this account, from the last one").format(item["period"], item["count"])
             lines.append(line("recurring", day, item["amount"], label, "Journal Entry", item["last_bill"], note))
 
-    amount = cf.payroll_from_postings(cf.payroll_postings(personnel_postings(company, as_of)))
+    expected, manual = manual_inputs()
+    trailing = cf.payroll_from_postings(cf.payroll_postings(personnel_postings(company, as_of)))
+    amount = cf.payroll_level(expected, trailing)
     if amount:
-        note = _("average of the last three salary months (accounts {0} to {1}), run on the last day of the month or the Friday before a weekend").format(
-            *cf.SALARY_ACCOUNTS)
+        if expected:
+            note = _("payroll from settings: the expected monthly payroll, run on the last day of the month or the Friday before a weekend")
+        else:
+            note = _("average of the last three salary months (accounts {0} to {1}), run on the last day of the month or the Friday before a weekend").format(
+                *cf.SALARY_ACCOUNTS)
         for day in cf.payroll_dates(as_of, horizon):
             lines.append(line("payroll", day, amount, "", "", "", note))
+
+    for row in manual:
+        if cf.manual_day_in_window(row.date, as_of, horizon):
+            note = _("manual input from Cash Forecast Settings, {0}").format(row.account) if row.account else _("manual input from Cash Forecast Settings")
+            lines.append(line(cf.MANUAL, row.date, cf.manual_amount(row.direction, flt(row.amount)), row.label,
+                              "Cash Forecast Manual Line", row.name, note))
 
     closed_end = cf.quarter_start(as_of) - datetime.timedelta(days=1)
     owed_closed, owed_this_quarter = cf.vat_split(
@@ -551,6 +573,7 @@ def compute(company, as_of, include_run_rate=True, include_new_purchases=True, i
         "without_history": len(without_history),
         "run_rate": run_rate,
         "new_purchases": new_purchases,
+        "expected_payroll": expected,
         "closing_band": cf.closing_band(weeks[-1]["closing"], run_rate, new_purchases),
         "not_modelled": sources["contra_not_modelled"],
     }
@@ -576,13 +599,15 @@ def execute(filters=None):
                      include_new_purchases=cint(filters.get("include_new_purchases", 1)),
                      include_owner_accounts=cint(filters.get("include_owner_accounts", 1)))
     weeks, lowest, opening = result["weeks"], result["lowest"], result["opening"]
+    has_manual = any(l["kind"] == cf.MANUAL for l in result["lines"])
 
     rows = [
         {
             "week": row["week"], "from": row["start"], "to": row["end"],
             "receipt": row["receipt"], "new_sales": row["new_sales"], "bill": row["bill"],
             "new_purchases": row["new_purchases"], "recurring": row["recurring"],
-            "payroll": row["payroll"], "vat": row["vat"], "net": row["net"], "closing": row["closing"],
+            "payroll": row["payroll"], "vat": row["vat"], "manual": row[cf.MANUAL],
+            "net": row["net"], "closing": row["closing"],
             "lowest": _("lowest") if row["week"] == lowest else None,
         }
         for row in weeks
@@ -627,16 +652,24 @@ def execute(filters=None):
             fmt_money(result["new_purchases"]["weekly"], currency=currency), fmt_money(result["new_purchases"]["low"], currency=currency),
             fmt_money(result["new_purchases"]["high"], currency=currency), basis_label(result["new_purchases"]["basis"]),
             result["new_purchases"]["since"], result["new_purchases"]["excluded"]))
+    if result["expected_payroll"]:
+        messages.append(_("Payroll is from settings: {0} a month, in place of the trailing mean of the last three salary months.").format(
+            fmt_money(result["expected_payroll"], currency=currency)))
+    manual_count = sum(1 for l in result["lines"] if l["kind"] == cf.MANUAL)
+    if manual_count:
+        messages.append(_("{0} manual lines from Cash Forecast Settings are in the forecast.").format(manual_count))
     messages.extend(closing_band_messages(result, currency))
     if result["beyond"]:
         messages.append(_("{0} lines fall after week {1} and are not in the forecast.").format(result["beyond"], len(weeks)))
     if result["without_history"]:
         messages.append(_("{0} customers have no paid invoice in the last year: their open invoices are taken as paid on the due date.").format(result["without_history"]))
     message = "<br>".join(escape_html(m) for m in messages) or None
-    return columns(currency), rows, message, chart, summary
+    return columns(currency, has_manual), rows, message, chart, summary
 
 
-def columns(currency):
+def columns(currency, has_manual=False):
+    """The report's columns. The manual column is there only when the forecast has manual lines (has_manual)."""
+    manual = [{"label": _("Manual inputs"), "fieldname": cf.MANUAL, "fieldtype": "Float", "precision": 2, "width": 130}] if has_manual else []
     return [
         {"label": _("Week"), "fieldname": "week", "fieldtype": "Int", "width": 70},
         {"label": _("From"), "fieldname": "from", "fieldtype": "Date", "width": 110},
@@ -648,6 +681,7 @@ def columns(currency):
         {"label": _("Recurring costs"), "fieldname": "recurring", "fieldtype": "Float", "precision": 2, "width": 130},
         {"label": _("Payroll"), "fieldname": "payroll", "fieldtype": "Float", "precision": 2, "width": 120},
         {"label": _("VAT"), "fieldname": "vat", "fieldtype": "Float", "precision": 2, "width": 120},
+    ] + manual + [
         {"label": _("Net"), "fieldname": "net", "fieldtype": "Float", "precision": 2, "width": 120},
         {"label": _("Closing cash ({0})").format(currency), "fieldname": "closing", "fieldtype": "Float", "precision": 2, "width": 150},
         {"label": _("Lowest point"), "fieldname": "lowest", "fieldtype": "Data", "width": 110},

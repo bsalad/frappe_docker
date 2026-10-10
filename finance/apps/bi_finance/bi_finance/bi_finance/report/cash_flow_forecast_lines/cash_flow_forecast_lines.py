@@ -23,7 +23,8 @@ def execute(filters=None):
 
     rows = []
     for line in result["lines"]:
-        sign = 1 if line["kind"] in cf.INFLOW_KINDS else -1
+        # a manual line's amount is signed already (cf.manual_amount), so it is shown as it is
+        sign = -1 if line["kind"] in cf.OUTFLOW_KINDS else 1
         rows.append({
             "week": line["week"],
             "expected": line["day"],

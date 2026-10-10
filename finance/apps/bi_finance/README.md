@@ -68,6 +68,15 @@ Invoice prints, with the QR code drawn on our own server (no external host, see
   `bi_finance/bi_finance/report/cash_flow_forecast_lines/`: the "Cash Flow Forecast Lines" report, each line with its source document.
   Both read the books through the Payment Ledger and the GL and call `cash_forecast.py`. Both are shortcuts
   on the Treasury workspace (`workspace/treasury`); `test_treasury.py` checks them.
+- `bi_finance/bi_finance/doctype/cash_forecast_settings/` (the single "Cash Forecast Settings", its child table
+  `cash_forecast_manual_line/`, the Treasury shortcut): two inputs the books cannot supply. The expected monthly payroll,
+  when set, takes the place of the trailing mean of the last three salary months at each salary run in the horizon; empty,
+  the trailing mean stays (the basis of erp-q1w8, not changed here). The dated manual lines (in or out, a label, an optional
+  account) are their own source "manual" in the forecast when their date is after the as-of date and up to the horizon end,
+  one line each; a line on the as-of date is in the opening balance already, as a salary run on that day is. The per-source
+  back-test does not cover them: they have no history, and a back-test for a past as-of date reads the settings as they
+  stand, so it runs with them empty. The next step is a payroll level read from HRMS (Salary Structure
+  Assignments or the last submitted slips), once payroll has run on the live site.
 - `bi_finance/test_cash_forecast.py`: offline tests of `cash_forecast.py` with invented data:
   `python3 -m unittest bi_finance.test_cash_forecast` from this directory.
 - `bi_finance/cash_conversion.py`: the Cash Conversion Cycle arithmetic, pure Python: DSO, DPO and DIO per month

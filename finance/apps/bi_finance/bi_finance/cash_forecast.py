@@ -8,7 +8,8 @@ the horizon. A line due before the as-of date is overdue and falls in week 1: it
 
 Kinds of line: receipt (a customer pays an open Sales Invoice), new_sales (the run-rate of receipts from invoices not
 issued yet), bill (an open Purchase Invoice), new_purchases (the run-rate of payments of bills not posted yet), recurring
-(a cost that repeats per supplier), payroll (the monthly salary run), vat (the VAT the books owe, or a refund).
+(a cost that repeats per supplier), payroll (the monthly salary run), vat (the VAT the books owe, or a refund),
+manual (a dated one-off line of the Cash Forecast Settings, signed: an inflow positive, an outflow negative).
 Only receipts and new sales come in; the others go out. A refund is a vat line with a negative amount, so it comes in.
 """
 
@@ -37,8 +38,12 @@ REGULAR_SHARE = 0.8
 RECEIPT = "receipt"
 NEW_SALES = "new_sales"
 NEW_PURCHASES = "new_purchases"
+MANUAL = "manual"
 INFLOW_KINDS = (RECEIPT, NEW_SALES)
 OUTFLOW_KINDS = ("bill", NEW_PURCHASES, "recurring", "payroll", "vat")
+# The manual lines' direction as the settings form says it (a Select), and their sign in the forecast.
+MANUAL_IN = "In"
+MANUAL_OUT = "Out"
 # The salary accounts by number, inclusive (5000 Loehne, 5003 and the rest of the 50xx run). The payroll line is
 # the salary run only: the 57xx social contributions are paid through the insurers' bills, the 58xx other personnel
 # costs come as bills or bank lines, so none of them is in the payroll basis.
@@ -258,6 +263,23 @@ def recurring_dates(item, as_of, end):
             yield day
 
 
+def payroll_level(expected, trailing):
+    """The monthly payroll of each salary run: the expected level of the Cash Forecast Settings when it is set (above
+    zero), else the trailing basis (payroll_from_postings), None when neither is there."""
+    return expected if expected else trailing
+
+
+def manual_amount(direction, amount):
+    """A manual line's signed amount: an inflow (MANUAL_IN) positive, an outflow negative."""
+    return amount if direction == MANUAL_IN else -amount
+
+
+def manual_day_in_window(day, as_of, end):
+    """A manual line counts when its day is after as_of and up to end, the rule of payroll_dates: a line on the as-of day
+    is in the opening balance already, as a salary run paid that day is."""
+    return as_of < day <= end
+
+
 def payroll_postings(rows):
     """rows: (posting date, account number, debit minus credit) of the personnel accounts (group 5). The salary
     accounts' postings only, as (posting date, amount): a contribution posted on the same day is not a salary."""
@@ -447,12 +469,13 @@ def forecast(as_of, opening, lines):
     """lines: dicts with kind, day, amount (positive; negative for a vat refund), party, doctype, name, note.
     Places each line in its week and runs the balance from the opening cash.
     Returns (weeks, lowest, beyond): weeks is 13 dicts (week, start, end, the amount per kind, net, closing);
-    lowest is the week with the lowest closing balance, the earliest on a tie; beyond counts the lines after the horizon."""
+    lowest is the week with the lowest closing balance, the earliest on a tie; beyond counts the lines after the horizon.
+    A manual line is signed (its kind MANUAL), so net adds it as it is."""
     weeks = []
     for week in range(1, WEEKS + 1):
         start, end = week_bounds(week, as_of)
         weeks.append({"week": week, "start": start, "end": end, "receipt": 0.0, "new_sales": 0.0, "bill": 0.0,
-                      "new_purchases": 0.0, "recurring": 0.0, "payroll": 0.0, "vat": 0.0})
+                      "new_purchases": 0.0, "recurring": 0.0, "payroll": 0.0, "vat": 0.0, MANUAL: 0.0})
     beyond = 0
     for line in lines:
         week = week_of(line["day"], as_of)
@@ -467,7 +490,9 @@ def forecast(as_of, opening, lines):
             row[kind] = round(row[kind], 2)
         for kind in INFLOW_KINDS:
             row[kind] = round(row[kind], 2)
-        row["net"] = round(sum(row[kind] for kind in INFLOW_KINDS) - sum(row[kind] for kind in OUTFLOW_KINDS), 2)
+        row[MANUAL] = round(row[MANUAL], 2)
+        row["net"] = round(sum(row[kind] for kind in INFLOW_KINDS) + row[MANUAL]
+                           - sum(row[kind] for kind in OUTFLOW_KINDS), 2)
         balance = round(balance + row["net"], 2)
         row["closing"] = balance
     lowest = min(weeks, key=lambda row: row["closing"])["week"]
