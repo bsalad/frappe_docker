@@ -2,5 +2,9 @@
  "bi_payroll/doctype/payroll_swiss_settings/payroll_swiss_settings.json": {
   "modified": "2026-10-10 14:00:00.000000",
   "sha": "362fac8827aebf2c46025b76fe5fe8dbbfdf60c5ded44bb5372109778cd8c0c4"
+ },
+ "bi_payroll/report/payroll_hand_over/payroll_hand_over.json": {
+  "modified": "2026-10-10 15:00:00.000000",
+  "sha": "3f85259b1986a7e6d7ed6cd784d60abf105bdf58dc74d7647f4086ecb5484c3a"
  }
 }

@@ -24,6 +24,27 @@ Those stay in `private/`.
   Salary Components with formulas, with no code. Quellensteuer and ELM are not covered by
   either app (see Gaps).
 
+## Decision (2026-10-10)
+
+Benchi decided on 2026-10-10:
+
+- **Calculator:** ERPNext with HRMS, as above. Live payroll in ERPNext as soon as the HRMS
+  copy passes, still in 2026.
+- **ELM:** no own Swissdec certification. The transmission is bought from a certified vendor,
+  if one takes our data (see `elm.md`). Vendor inquiry: not now.
+- **2026 wage reports:** done by the company's trustee / payroll service. The payroll
+  hand-over export is their input: the report `Payroll hand-over` in `bi_payroll`, per employee
+  and year, or per employee and month. It lists gross, each Swiss deduction by component
+  (AHV/IV/EO, ALV, BVG, UVG/NBU, KTG, FAK, Quellensteuer), net, the employer shares and the
+  AHV number, and exports as Excel or CSV. It runs on the HRMS copy only.
+
+**Open:** certified ELM transmitter: inquiry later.
+
+The hand-over rows are checked against invented employees (`python3 -m unittest
+bi_payroll.test_hand_over`). They are not yet run on the copy site with real slips. Two parts
+are open and stay so: Quellensteuer has no component yet (its column is 0), and the Lohnausweis
+line mapping is not checked against the 2026 form (step 6).
+
 ## Versions
 
 | Item | Pin | Evidence |

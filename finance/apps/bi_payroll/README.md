@@ -15,6 +15,10 @@ copy only: it requires `hrms`, which the live site does not have, so nothing her
 - `bi_payroll/bi_payroll/doctype/payroll_swiss_settings`: the settings (single). The insurers' rates are empty until
   Benchi gives them. The BVG age-band rates are placeholders (half the statutory minimum), until the fund's plan
   sheet is in `private/payroll-insurance/`.
+- `bi_payroll/hand_over.py` and `bi_payroll/bi_payroll/report/payroll_hand_over`: the report `Payroll hand-over`, per
+  employee and year or per employee and month, for the trustee's filing (Excel or CSV). The rows are summed from the
+  submitted slips and their Salary Detail lines; the logic is pure Python, so `bi_payroll/test_hand_over.py` tests it
+  with invented employees.
 - `bi_payroll/test_swiss_payroll.py`: offline tests with invented employees and rates:
   `python3 -m unittest bi_payroll.test_swiss_payroll` from this directory (no frappe needed).
 - `bi_payroll/test_layout.py`: the layout and stamp guard, copied from `bi_finance`:

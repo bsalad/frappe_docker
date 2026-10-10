@@ -11,6 +11,27 @@ Public facts only (Swissdec, BFS, public product pages). No company or employee 
 insurer or fund names of the company, no rates from policy sheets. Those stay in `private/`.
 Figures are as published on 2026-10-10 and are not a quote.
 
+## Decision (2026-10-10)
+
+Benchi decided the ELM route on 2026-10-10:
+
+- **Calculator:** ERPNext with HRMS stays the payroll calculator (`hrms.md`).
+- **Transmission:** buy the ELM transmission from a Swissdec-certified vendor, if one takes
+  our data. Vendor inquiry: not now.
+- **Own certification:** no. We do not build our own Swissdec certification (the budget is
+  not acceptable). The options below stay on record, not as a plan.
+- **Live payroll:** in ERPNext as soon as the HRMS copy passes, still in 2026.
+- **2026 wage reports:** done by the company's trustee / payroll service. They file the 2026
+  ELM from the payroll hand-over export (the report `Payroll hand-over` in `bi_payroll`, on the
+  HRMS copy only). The export is sent to the trustee by Benchi, never committed.
+- **Receivers:** no inquiry to the receivers (AHV/FAK, UVG, BVG, KTG, tax offices, statistics)
+  now.
+
+**Open:** certified ELM transmitter: inquiry later.
+
+The rest of this document is the study behind the decision. Its "Recommendation" and
+"Questions for Benchi" are answered by the decision above.
+
 ## Verdict
 
 **Self-certification is not a realistic path for us at this stage. Send ELM through a
