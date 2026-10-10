@@ -180,6 +180,15 @@ def vat_due_date(end):
     return datetime.date(later.year, later.month, calendar.monthrange(later.year, later.month)[1])
 
 
+def vat_split(owed_at_closed_end, paid_since, owed_now):
+    """Splits the VAT on the books into (closed quarter, current quarter so far). owed_at_closed_end: the VAT owed
+    when the last quarter closed; paid_since: what was paid to the tax office since (debits on the liability
+    accounts); owed_now: the VAT owed on the as-of date. A closed quarter's VAT already paid is not owed again,
+    and is not taken off the current quarter. A refund due is left as the books show it."""
+    closed = max(owed_at_closed_end - paid_since, 0.0) if owed_at_closed_end > 0 else owed_at_closed_end
+    return round(closed, 2), round(owed_now - closed, 2)
+
+
 def vat_lines(as_of, owed_closed, owed_this_quarter):
     """The VAT cash from the books, as (day, amount, quarter end): a payment is positive, a refund negative.
     owed_closed: the VAT the books owed at the start of the current quarter, which is the VAT of the quarter closed

@@ -156,6 +156,18 @@ class Vat(unittest.TestCase):
     def test_a_refund_comes_in_thirty_days_after_the_due_date(self):
         self.assertEqual(cf.vat_lines(AS_OF, -400.0, 0.0), [(D(2026, 12, 30), -400.0, D(2026, 9, 30))])
 
+    def test_a_closed_quarter_already_paid_is_not_owed_and_not_taken_off_the_current_one(self):
+        self.assertEqual(cf.vat_split(1000.0, 1000.0, 300.0), (0.0, 300.0))
+
+    def test_a_closed_quarter_not_yet_paid_leaves_the_rest_to_the_current_one(self):
+        self.assertEqual(cf.vat_split(1000.0, 0.0, 1300.0), (1000.0, 300.0))
+
+    def test_a_closed_quarter_part_paid(self):
+        self.assertEqual(cf.vat_split(1000.0, 400.0, 900.0), (600.0, 300.0))
+
+    def test_a_refund_due_is_kept_as_the_books_show_it(self):
+        self.assertEqual(cf.vat_split(-400.0, 0.0, -300.0), (-400.0, 100.0))
+
     def test_a_quarter_with_nothing_owed_has_no_line(self):
         self.assertEqual(cf.vat_lines(AS_OF, 0.0, 0.0), [])
 

@@ -125,6 +125,18 @@ def vat_balances(company, as_of):
     return {number: flt(amount) for number, amount in rows}
 
 
+def vat_paid_since(company, start, as_of):
+    """The debits of the VAT liability accounts after start up to as_of: the payments to the tax office."""
+    rows = frappe.db.sql(
+        """select sum(gle.debit)
+        from `tabGL Entry` gle join `tabAccount` a on a.name = gle.account
+        where gle.company = %s and gle.is_cancelled = 0 and a.account_number in %s
+          and gle.posting_date > %s and gle.posting_date <= %s""",
+        (company, cf.VAT_LIABILITY_ACCOUNTS, start, as_of),
+    )
+    return flt(rows[0][0])
+
+
 def opening_cash(company, as_of):
     """The Bank and Cash accounts' balance on as_of, in the company currency."""
     rows = frappe.db.sql(
@@ -181,8 +193,9 @@ def compute(company, as_of):
             lines.append(line("payroll", day, amount, "", "", "", note))
 
     closed_end = cf.quarter_start(as_of) - datetime.timedelta(days=1)
-    owed_closed = cf.vat_owed(vat_balances(company, closed_end))
-    owed_this_quarter = cf.vat_owed(vat_balances(company, as_of)) - owed_closed
+    owed_closed, owed_this_quarter = cf.vat_split(
+        cf.vat_owed(vat_balances(company, closed_end)), vat_paid_since(company, closed_end, as_of),
+        cf.vat_owed(vat_balances(company, as_of)))
     for day, amount, end in cf.vat_lines(as_of, owed_closed, owed_this_quarter):
         if end == closed_end:
             basis = _("VAT of the quarter ending {0}, as the books owed it on {1}").format(end, closed_end)
